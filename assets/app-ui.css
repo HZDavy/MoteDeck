@@ -1,0 +1,166 @@
+/* MoteDeck 软件界面 HTML 重绘（按最新 QML）。全部作用域限定在 .win 内 */
+.win{
+  --bg:#f5f5f5;--panel:#ffffff;--inset:#f0f0f0;--line:#e6e6e6;--line2:#d4d4d4;
+  --text:#141414;--text2:#525252;--text3:#6b6b6b;
+  --ink:#141414;--on-ink:#ffffff;
+  --accent:#141414;--accent-text:#141414;--on-accent:#ffffff;--accent-line:#bdbdbd;--sel-bg:#f0f0f0;--halo:rgba(20,20,20,.08);
+  --ok:#16a34a;--ok-text:#15803d;--ok-soft:rgba(22,163,74,.10);
+  --hover:rgba(0,0,0,.05);--wire:#c8c8c8;
+  --sw-off:#d6d6d6;--knob-off:#ffffff;--winline:rgba(0,0,0,.10);
+  width:880px;height:660px;border-radius:14px;overflow:hidden;position:relative;flex:none;
+  display:grid;grid-template-columns:72px 1fr;grid-template-rows:72px 1fr;background:var(--bg);color:var(--text);
+  outline:1px solid var(--winline);outline-offset:-1px;text-align:left;
+  font-family:"Segoe UI Variable Text","Segoe UI","Microsoft YaHei UI",sans-serif;font-size:13px;line-height:normal;letter-spacing:0;
+  -webkit-font-smoothing:antialiased;
+  box-shadow:0 40px 80px -40px rgba(0,0,0,.35),0 2px 6px rgba(0,0,0,.06);
+}
+.win *{box-sizing:border-box;margin:0;padding:0}
+.win.dark{
+  --bg:#0f0f0f;--panel:#181818;--inset:#212121;--line:rgba(255,255,255,.07);--line2:rgba(255,255,255,.14);
+  --text:#f2f2f2;--text2:#b3b3b3;--text3:#949494;--ink:#f2f2f2;--on-ink:#111111;
+  --accent:#f2f2f2;--accent-text:#f2f2f2;--on-accent:#111111;--accent-line:rgba(255,255,255,.35);--sel-bg:#242424;--halo:rgba(255,255,255,.10);
+  --ok:#4ade80;--ok-text:#6ee7a0;--ok-soft:rgba(74,222,128,.12);
+  --hover:rgba(255,255,255,.06);--wire:rgba(255,255,255,.18);
+  --sw-off:#3a3a3a;--knob-off:#999999;--winline:rgba(255,255,255,.10);
+}
+.win .ic{width:20px;height:20px;flex:none;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
+.win .mono{font-family:"Cascadia Mono",Consolas,monospace;font-variant-numeric:tabular-nums}
+.win button{font:inherit;color:inherit;background:none;border:0;cursor:default}
+
+/* 标题栏：矢量字标 */
+.win .titlebar{grid-column:2;grid-row:1;height:72px;display:flex;align-items:center;gap:2px;padding:0 20px}
+.win .wm{flex:1;display:flex;align-items:center;color:var(--text2)}
+.win .wm svg{height:10.5px;width:63.3px;display:block}
+.win .tb-btn{width:40px;height:32px;border-radius:8px;display:grid;place-items:center;color:var(--text2)}
+.win .tb-btn .ic{width:16px;height:16px}
+
+/* 导航 */
+.win .nav{grid-column:1;grid-row:1/3;display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--panel);box-shadow:inset -1px 0 0 var(--line)}
+.win .app-ic{width:24px;height:24px;flex:none;margin:24px 0 16px;display:block}
+.win .app-ic svg{width:100%;height:100%;display:block}
+.win .nav-item{position:relative;width:72px;height:56px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;color:var(--text3);font-size:11px;line-height:14px}
+.win .nav-item.on{color:var(--accent);font-weight:600}
+.win .nav-item.on::before{content:"";position:absolute;left:0;top:12px;bottom:12px;width:3px;border-radius:0 3px 3px 0;background:var(--accent)}
+.win .battery{margin-top:auto;margin-bottom:24px;width:36px;height:36px;border-radius:50%;position:relative;display:grid;place-items:center;
+  background:conic-gradient(var(--ok) calc(var(--v,60)*1%),var(--line2) 0)}
+.win .battery::before{content:"";position:absolute;inset:3px;border-radius:50%;background:var(--panel)}
+.win .battery .pct{position:relative;font-size:11px;line-height:12px;font-weight:600;color:var(--text);letter-spacing:-.02em}
+.win .battery .pct small{font-size:8px;font-weight:500;color:var(--text3)}
+
+/* 内容 */
+.win .content{grid-column:2;grid-row:2;min-width:0;padding:0 28px 24px 20px}
+.win .page{height:564px;display:flex;flex-direction:column}
+.win .head{display:flex;align-items:baseline;gap:14px;height:40px;margin-bottom:20px;padding-top:2px}
+.win .head h1{font-family:"Segoe UI Variable Display","Segoe UI","Microsoft YaHei UI",sans-serif;font-size:28px;line-height:36px;font-weight:600;letter-spacing:-.02em;white-space:nowrap}
+.win .head p{font-size:13px;color:var(--text3);white-space:nowrap}
+.win .sec-title{display:flex;align-items:center;gap:8px;height:20px;margin-bottom:8px;font-size:12px;font-weight:600;color:var(--text3)}
+.win .sec-title::after{content:"";flex:1;height:1px;background:var(--line)}
+.win .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:0 16px}
+.win .row{display:flex;align-items:center;gap:12px;border-bottom:1px solid var(--line)}
+.win .row:last-child{border-bottom:0}
+.win .h44 .row{height:48px}
+.win .h60 .row{height:60px}
+.win .lbl{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.win .lbl .t{font-size:13px;line-height:18px;font-weight:600;white-space:nowrap}
+.win .lbl .d{font-size:12px;line-height:16px;color:var(--text3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.win .h44 .lbl{flex-direction:row;align-items:baseline;gap:12px}
+.win .h44 .lbl .t{width:168px;flex:none}
+.win .act{display:flex;align-items:center;justify-content:flex-end;gap:4px;flex:none}
+.win .split{gap:0}
+.win .split .cell{flex:1;min-width:0;height:100%;display:flex;align-items:center;gap:12px}
+.win .split .cell+.cell{border-left:1px solid var(--line);padding-left:16px;margin-left:16px}
+.win .split .lbl .t{width:auto}
+
+/* 控件 */
+.win .btn1,.win .btn2,.win .btn-t,.win .btn-i{height:30px;border-radius:8px;display:inline-flex;align-items:center;justify-content:center;gap:6px;font-size:13px;white-space:nowrap}
+.win .btn1{padding:0 14px;background:var(--accent);color:var(--on-accent);font-weight:600}
+.win .btn2{padding:0 12px;background:var(--panel);border:1px solid var(--line2);color:var(--text);font-weight:500}
+.win .btn-t{padding:0 8px;color:var(--text2)}
+.win .btn-t .ic{width:14px;height:14px;color:var(--text3)}
+.win .btn-i{width:30px;color:var(--text2)}
+.win .btn-i .ic{width:18px;height:18px}
+.win .switch{width:38px;height:22px;border-radius:999px;background:var(--sw-off);position:relative;flex:none;display:inline-block}
+.win .switch::after{content:"";position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;background:var(--knob-off)}
+.win .switch.on{background:var(--ink)}
+.win .switch.on::after{left:19px;background:var(--on-ink)}
+.win .pill{height:22px;padding:0 9px;border-radius:11px;display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:500;background:var(--inset);color:var(--text2);flex:none}
+.win .pill::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor;opacity:.7}
+.win .pill.ok{background:var(--ok-soft);color:var(--ok-text)}
+.win .pill.ok::before{background:var(--ok);opacity:1}
+.win .select{height:30px;border-radius:8px;border:1px solid var(--line2);background:var(--panel);display:inline-flex;align-items:center;justify-content:space-between;gap:8px;padding:0 10px;font-size:13px;width:168px}
+.win .select .ic{width:16px;height:16px;color:var(--text3)}
+.win .chips{display:inline-flex;align-items:center;gap:2px;padding:3px;border-radius:11px;background:var(--inset);border:1px solid var(--line)}
+.win .chip{height:24px;padding:0 10px;border-radius:8px;display:inline-flex;align-items:center;font-size:12px;font-weight:500;color:var(--text2)}
+.win .chip.on{background:var(--panel);color:var(--text);box-shadow:0 1px 2px rgba(0,0,0,.08),0 0 0 1px var(--line)}
+
+/* 设备页 */
+.win .hero{height:132px;flex:none;border-radius:14px;color:#f2f2f2;display:flex;align-items:center;gap:20px;padding:0 20px 0 0;overflow:hidden;position:relative;margin-bottom:16px;
+  background:radial-gradient(120% 140% at 12% 0%,rgba(255,255,255,.13),transparent 55%),linear-gradient(135deg,#262626 0%,#161616 45%,#0c0c0c 100%);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.10),0 10px 24px -14px rgba(0,0,0,.45)}
+.win .hero-pic{width:112px;height:132px;flex:none;margin-left:12px;position:relative;overflow:hidden;-webkit-mask-image:linear-gradient(#000 60%,transparent);mask-image:linear-gradient(#000 60%,transparent)}
+.win .hero-pic img{position:absolute;height:280px;left:50%;top:14px;transform:translateX(-50%);filter:drop-shadow(0 10px 18px rgba(0,0,0,.45))}
+.win .hero-body{flex:1;min-width:0;display:flex;flex-direction:column;gap:6px}
+.win .hero-k{font-size:12px;color:#a3a3a3;display:flex;align-items:center;gap:10px}
+.win .hero-name{font-family:"Segoe UI Variable Display","Segoe UI","Microsoft YaHei UI",sans-serif;font-size:24px;line-height:32px;font-weight:600;letter-spacing:-.02em}
+.win .hero .pill.ok{background:rgba(74,222,128,.14);color:#86efac}
+.win .hero .pill.ok::before{background:#4ade80}
+.win .hero .act{align-self:flex-end;margin-bottom:20px}
+.win .hero .btn-i,.win .hero .btn-t{color:#d4d4d4}
+.win .hero .btn2{background:#f2f2f2;border-color:#f2f2f2;color:#141414}
+.win .tiles{flex:none;display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:20px}
+.win .tile{height:119px;border-radius:14px;background:var(--panel);border:1px solid var(--line);padding:14px 14px 12px 16px;display:flex;flex-direction:column}
+.win .tile-top{display:flex;align-items:center;justify-content:space-between}
+.win .tile-ic{width:32px;height:32px;border-radius:10px;background:var(--inset);color:var(--text2);display:grid;place-items:center}
+.win .tile-ic .ic{width:18px;height:18px}
+.win .tile .t{font-size:14px;line-height:20px;font-weight:600;margin-top:10px}
+.win .tile .d{font-size:12px;line-height:16px;color:var(--text3)}
+.win .tile.focus{border-color:var(--accent-line);background:var(--sel-bg)}
+.win .tile.focus .tile-ic{background:var(--accent);color:var(--on-accent)}
+.win .sec+.sec{margin-top:12px}
+
+/* 按键页 */
+.win .apps{margin-left:auto;align-self:center;display:flex;align-items:center;gap:4px}
+.win .apps .btn-i{width:28px;height:28px}
+.win .apps .btn-i .ic{width:16px;height:16px}
+.win .apps-track{display:flex;gap:4px;width:140px;overflow:hidden}
+.win .app{flex:none;width:32px;height:32px;border-radius:9px;display:grid;place-items:center;border:1px solid transparent;transition:background .2s,border-color .2s}
+.win .app.on{background:var(--panel);border-color:var(--line2);box-shadow:0 1px 2px rgba(0,0,0,.08)}
+.win .app img{width:20px;height:20px;border-radius:5px;display:block}
+.win .app>.ic{width:18px;height:18px;color:var(--text)}
+.win .board{position:relative;height:448px;flex:none}
+.win .stage{position:absolute;left:312px;top:0;width:140px;height:448px}
+.win .stage::before{content:"";position:absolute;left:50%;bottom:8px;width:96px;height:14px;transform:translateX(-50%);border-radius:50%;background:radial-gradient(closest-side,rgba(0,0,0,.20),transparent)}
+.win .stage img{position:absolute;height:400px;left:50%;top:34px;transform:translateX(-50%);filter:drop-shadow(0 14px 18px rgba(0,0,0,.16))}
+.win .wires{position:absolute;inset:0;width:764px;height:448px;pointer-events:none;fill:none;stroke:var(--wire);stroke-width:1;stroke-linecap:round;stroke-opacity:.7}
+.win .wires .hs{fill:rgba(255,255,255,.55);stroke:rgba(0,0,0,.35);stroke-width:.75;stroke-opacity:1}
+.win .wires .sel{stroke:var(--accent);stroke-width:1.5;stroke-opacity:.55}
+.win .wires .sel .hs{fill:rgba(255,255,255,.85);stroke:var(--accent);stroke-width:1.25}
+.win .wires .halo{fill:var(--halo);stroke:none}
+.win .kc{position:absolute;width:300px;height:56px;border-radius:14px;background:var(--panel);border:1px solid var(--line);display:grid;grid-template-columns:36px repeat(3,1fr);column-gap:6px;align-items:center;padding:0 8px;transition:background .25s,border-color .25s,box-shadow .25s}
+.win .kc.l{left:0}.win .kc.r{left:464px}
+.win .kc .k{width:36px;height:36px;border-radius:10px;background:var(--inset);border:1px solid var(--line);border-bottom-width:2px;display:grid;place-items:center;font-size:12px;font-weight:600;color:var(--text);transition:background .25s,color .25s}
+.win .kc .c{min-width:0;display:flex;flex-direction:column;align-items:center;gap:2px}
+.win .kc .c small{font-size:11px;line-height:14px;color:var(--text3)}
+.win .kc .c span{width:100%;height:24px;border-radius:7px;display:grid;place-items:center;font-size:12px;font-weight:500;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:0 4px}
+.win .kc .c span.none{color:var(--text3);font-weight:400;border:1px dashed var(--line2)}
+.win .kc .c span:not(.none){background:var(--inset)}
+.win .kc .span2{grid-column:span 2}
+.win .kc.sel{background:var(--sel-bg);border-color:var(--accent);box-shadow:0 0 0 4px var(--halo)}
+.win .kc.sel .k{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+.win .kc.sel .c span:not(.none){background:var(--panel);box-shadow:0 0 0 1px var(--accent-line)}
+.win .toolbar{height:32px;margin-top:auto;display:flex;align-items:center;gap:4px}
+.win .toolbar .sp{flex:1}
+.win .drv{height:24px;display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--text3);margin-right:4px}
+.win .drv b{font-weight:600;color:var(--text2)}
+.win .drv::before{content:"";width:6px;height:6px;border-radius:50%;border:1.5px solid var(--text3)}
+
+/* 语音页 */
+.win .cols{display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start}
+.win .cols .sec+.sec{margin-top:16px}
+.win .full{margin-top:16px}
+.win .vu{height:52px;margin:auto -28px -24px -20px;position:relative}
+.win .vu canvas{position:absolute;inset:0;width:100%;height:100%}
+
+/* 浮动状态胶囊 */
+.win .toast{position:absolute;left:calc(50% + 36px);bottom:16px;transform:translateX(-50%);height:26px;padding:0 12px;border-radius:13px;background:var(--panel);border:1px solid var(--line);display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text2);box-shadow:0 6px 16px -8px rgba(0,0,0,.2);white-space:nowrap}
+.win .toast::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--ok)}

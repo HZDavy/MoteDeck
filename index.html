@@ -1,0 +1,329 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MoteDeck · 电视遥控器，就是你的电脑键盘</title>
+<meta name="description" content="开源免费的蓝牙遥控器驱动，用小米电视遥控器控制 Windows 电脑：13 颗按键各有单击、双击、长按，按应用自动换键位，按住说话直接上屏。">
+<link rel="stylesheet" href="assets/app-ui.css">
+<link rel="stylesheet" href="site.css">
+</head>
+<body>
+<script src="assets/sprite.js"></script>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-window" viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="15" rx="3"/><path d="M3 9h18"/></symbol>
+  <symbol id="i-contrast" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 3.5v17a8.5 8.5 0 0 0 0-17z" fill="currentColor"/></symbol>
+  <symbol id="i-focus" viewBox="0 0 24 24"><rect x="7" y="9.5" width="10" height="5" rx="2.5"/><rect x="3.5" y="6.5" width="17" height="11" rx="5.5" stroke-dasharray="2.4 2.4"/></symbol>
+  <symbol id="i-tray" viewBox="0 0 24 24"><path d="M4 14v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4"/><path d="M4 14h4l1.5 2h5L16 14h4"/><path d="M12 4v7m-3-3 3 3 3-3"/></symbol>
+  <symbol id="i-power" viewBox="0 0 24 24"><path d="M12 3.5V11"/><path d="M7.2 6.5a7 7 0 1 0 9.6 0"/></symbol>
+  <symbol id="i-log" viewBox="0 0 24 24"><path d="M6 3.5h8l4 4V20a.5.5 0 0 1-.5.5h-11A.5.5 0 0 1 6 20z"/><path d="M14 3.5V8h4M9 12.5h6M9 16h6"/></symbol>
+  <symbol id="i-tv" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8 20.5h8"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24"><path d="M19.5 14.5A8 8 0 0 1 9.5 4.5a8 8 0 1 0 10 10z"/></symbol>
+  <symbol id="i-present" viewBox="0 0 24 24"><path d="M3.5 4.5h17M5 4.5v10h14v-10M12 14.5v3m-4 3 4-3 4 3"/></symbol>
+  <symbol id="i-hand" viewBox="0 0 24 24"><path d="M8 13V6.5a1.5 1.5 0 0 1 3 0V12m0-6.5V5a1.5 1.5 0 0 1 3 0v7m0-5.5a1.5 1.5 0 0 1 3 0V14a6.5 6.5 0 0 1-6.5 6.5h-.3a6 6 0 0 1-4.6-2.2L4.2 15.4a1.6 1.6 0 0 1 2.4-2.1L8 14.6"/></symbol>
+</svg>
+
+<header class="top" id="top"><div class="wrap">
+  <a class="brand" href="#kv" aria-label="MoteDeck 首页"><svg class="g"><use href="#i-glass"/></svg><svg class="w" viewBox="0 0 784 130"><use href="#i-wordmark"/></svg></a>
+  <nav aria-label="主导航"><a href="#keys">功能</a><a href="https://github.com/HZDavy/MoteDeck/blob/main/apps/windows/rc003/README.md">使用说明 ↗</a><a href="#faq">常见问题</a></nav>
+  <span class="sp"></span>
+  <a class="gh" href="https://github.com/HZDavy/MoteDeck"><svg viewBox="0 0 24 24"><use href="#i-github"/></svg><span>GitHub</span></a>
+  <a class="b1 sm" href="https://github.com/HZDavy/MoteDeck/releases/latest">下载</a>
+</div></header>
+
+<main>
+<section class="kv" id="kv">
+  <div class="kv-copy">
+    <h1>电视遥控器，就是你的电脑键盘</h1>
+    <p class="sub">开源免费的蓝牙遥控器驱动，用小米电视遥控器控制 Windows 电脑。</p>
+    <div class="cta"><a class="b1" href="https://github.com/HZDavy/MoteDeck/releases/latest"><svg class="ic"><use href="#i-download"/></svg>下载 Windows 版</a><a class="b2" href="https://github.com/HZDavy/MoteDeck">在 GitHub 上查看 ↗</a></div>
+    <p class="req">Windows 10 1809 及以上 · 64 位 · 安装包约 90 MB · 无需注册</p>
+  </div>
+  <div class="kv-veil"></div>
+  <div class="kv-stage"><div class="frame"><div class="win" data-page="keys" id="keywin" role="img" aria-label="MoteDeck 按键映射页：13 颗按键各有单击、双击、长按三个动作位">
+    <div class="content"><div class="page">
+      <div class="head"><h1>按键映射</h1><p>为每个按键设置动作</p>
+        <div class="apps">
+          <button class="app on" data-app="global"><svg class="ic"><use href="#i-globe"/></svg></button>
+          <button class="btn-i"><svg class="ic"><use href="#i-prev"/></svg></button>
+          <div class="apps-track">
+            <button class="app" data-app="chrome"><img src="assets/app-chrome.svg" alt=""></button>
+            <button class="app" data-app="potplayer"><img src="assets/app-potplayer.svg" alt=""></button>
+            <button class="app" data-app="wechat"><img src="assets/app-wechat.svg" alt=""></button>
+            <button class="app" data-app="vscode"><img src="assets/app-vscode.svg" alt=""></button>
+          </div>
+          <button class="btn-i"><svg class="ic"><use href="#i-next"/></svg></button>
+          <button class="btn-i"><svg class="ic"><use href="#i-plus"/></svg></button>
+        </div>
+      </div>
+      <div class="board">
+        <div class="stage"><img src="assets/remote.png" alt=""></div>
+        <svg class="wires" viewBox="0 0 764 448">
+          <g>
+            <path d="M300 64C340 64 316 76.5 356 76.5"/><path d="M300 128C340 128 342 105 382 105"/><path d="M300 192C340 192 317 128 357 128"/>
+            <path d="M300 256C340 256 320 188 360 188"/><path d="M300 320C340 320 320 220 360 220"/><path d="M300 384C340 384 320 255 360 255"/>
+            <path d="M464 32C424 32 444 76.5 404 76.5"/><path d="M464 96C424 96 447 128 407 128"/><path d="M464 224C424 224 422 150 382 150"/>
+            <path d="M464 288C424 288 446 189 406 189"/><path d="M464 352C424 352 446 220 406 220"/><path d="M464 416C424 416 446 256 406 256"/>
+          </g>
+          <g class="sel"><circle class="halo" cx="382" cy="128" r="11"/><path d="M464 160C424 160 422 128 382 128"/><circle class="hs" cx="382" cy="128" r="4.5"/></g>
+        </svg>
+        <div class="kc l" data-key="power" style="top:36px"><span class="k">电源</span><div class="c"><small>单击</small><span class="mono">Esc</span></div><div class="c"><small>双击</small><span class="none">未设置</span></div><div class="c"><small>长按</small><span class="none">未设置</span></div></div>
+        <div class="kc l" data-key="up" style="top:100px"><span class="k">上</span><div class="c"><small>单击</small><span>↑</span></div><div class="c"><small>双击</small><span class="none">未设置</span></div><div class="c"><small>长按</small><span class="none">未设置</span></div></div>
+        <div class="kc l" data-key="left" style="top:164px"><span class="k">左</span><div class="c"><small>单击</small><span>←</span></div><div class="c"><small>双击</small><span class="none">未设置</span></div><div class="c"><small>长按</small><span class="none">未设置</span></div></div>
+        <div class="kc l" data-key="back" style="top:228px"><span class="k">返回</span><div class="c"><small>单击</small><span class="mono">Del</span></div><div class="c"><small>双击</small><span class="none">未设置</span></div><div class="c"><small>长按</small><span class="none">未设置</span></div></div>
+        <div class="kc l" data-key="home" style="top:292px"><span class="k">主页</span><div class="c"><small>单击</small><span>显示桌面</span></div><div class="c"><small>双击</small><span class="none">未设置</span></div><div class="c"><small>长按</small><span class="none">未设置</span></div></div>
+        <div class="kc l" data-key="menu" style="top:356px"><span class="k">菜单</span><div class="c"><small>单击</small><span>右键菜单</span></div><div class="c"><small>双击</small><span class="none">未设置</span></div><div class="c"><small>长按</small><span class="none">未设置</span></div></div>
+        <div class="kc r" data-key="voice" style="top:4px"><span class="k">语音</span><div class="c"><small>单击</small><span>语音1</span></div><div class="c span2"><small>双击 / 长按</small><span>语音模式下暂停</span></div></div>
+        <div class="kc r" data-key="right" style="top:68px"><span class="k">右</span><div class="c"><small>单击</small><span>→</span></div><div class="c"><small>双击</small><span class="none">未设置</span></div><div class="c"><small>长按</small><span class="none">未设置</span></div></div>
+        <div class="kc r sel" data-key="ok" style="top:132px"><span class="k">确定</span><div class="c"><small>单击</small><span class="mono">Enter</span></div><div class="c"><small>双击</small><span class="none">未设置</span></div><div class="c"><small>长按</small><span class="none">未设置</span></div></div>
+        <div class="kc r" data-key="down" style="top:196px"><span class="k">下</span><div class="c"><small>单击</small><span>↓</span></div><div class="c"><small>双击</small><span class="none">未设置</span></div><div class="c"><small>长按</small><span class="none">未设置</span></div></div>
+        <div class="kc r" data-key="volup" style="top:260px"><span class="k">+</span><div class="c"><small>单击</small><span class="mono">Vol +</span></div><div class="c"><small>双击</small><span class="none">未设置</span></div><div class="c"><small>长按</small><span class="none">未设置</span></div></div>
+        <div class="kc r" data-key="voldn" style="top:324px"><span class="k">−</span><div class="c"><small>单击</small><span class="mono">Vol -</span></div><div class="c"><small>双击</small><span class="none">未设置</span></div><div class="c"><small>长按</small><span class="none">未设置</span></div></div>
+        <div class="kc r" data-key="tv" style="top:388px"><span class="k">TV</span><div class="c"><small>单击</small><span>应用切换</span></div><div class="c"><small>双击</small><span class="none">未设置</span></div><div class="c"><small>长按</small><span class="none">未设置</span></div></div>
+      </div>
+      <div class="toolbar">
+        <button class="btn2">检测按键</button><button class="btn-t">恢复默认</button><button class="btn-t">导入/导出</button>
+        <span class="sp"></span><span class="drv">驱动<b>未安装</b></span><button class="btn-t">安装驱动</button>
+      </div>
+    </div></div>
+    <div class="toast off">配置已导入</div>
+  </div></div></div>
+  <ol class="press" aria-label="确定键的三种按法">
+    <li><b>单击</b><span class="mono">Enter</span><small>确认选择</small></li>
+    <li><b>双击</b><span class="mono">F11</span><small>切换全屏</small></li>
+    <li><b>长按</b><span>右键菜单</span><small>按住只触发一次，不连发</small></li>
+  </ol>
+  <a class="skip" href="#stats">跳过动画</a>
+</section>
+<section class="stats" id="stats"><div class="wrap"><p class="eq" data-r>
+  <span><b data-to="13">13</b><small>颗按键</small></span><i>×</i>
+  <span><b data-to="3">3</b><small>种按法</small></span><i>=</i>
+  <span><b data-to="39">39</b><small>个动作位</small></span>
+</p></div></section>
+
+<section class="blk" id="keys"><div class="wrap">
+  <div class="head2">
+    <div data-r>
+      <h2>切到哪个软件，就用哪套键位</h2>
+      <p class="lead">按前台进程自动切换。应用档案只记改过的键，其余沿用全局，不用维护两份完整配置。</p>
+    </div>
+    <ul class="pts" data-r>
+      <li>按键、组合键、鼠标动作、应用切换、Quicker 动作都能挂到任意按法上</li>
+      <li>长按支持鼠标左键、右键、X1、X2，按住即按下，松手立即释放</li>
+      <li>档案可复制、重命名、单独删除，删一份不影响全局和其它应用</li>
+    </ul>
+  </div>
+  <div class="demo" data-r>
+    <div class="seg" data-seg="apps" role="group" aria-label="切换档案"><span class="thumb"></span>
+      <button aria-pressed="true" data-v="global"><svg class="ic"><use href="#i-globe"/></svg>全局</button>
+      <button aria-pressed="false" data-v="chrome"><img src="assets/app-chrome.svg" alt="">Chrome</button>
+      <button aria-pressed="false" data-v="potplayer"><img src="assets/app-potplayer.svg" alt="">PotPlayer</button>
+      <button aria-pressed="false" data-v="wechat"><img src="assets/app-wechat.svg" alt="">微信</button>
+    </div>
+    <div class="frame" data-keys="apps"></div>
+    <p class="note" aria-live="polite"></p>
+  </div>
+</div></section>
+<section class="blk" id="voice"><div class="wrap duo">
+  <div class="txt" data-r>
+    <h2>按住话筒键，说完松手就上屏</h2>
+    <p class="lead">遥控器的声音经虚拟声卡送进你惯用的输入法，再自动触发它的语音快捷键。</p>
+    <ul class="pts">
+      <li>支持搜狗、豆包、微信、Chatterfly、Vokie 输入法</li>
+      <li>自动读取输入法的语音快捷键，换输入法不用重配</li>
+      <li>安装引导覆盖虚拟音频、输出端点和麦克风权限</li>
+    </ul>
+    <div class="talk">
+      <p class="talk-out" aria-live="polite"><span class="ph">按住下面的按钮试试</span></p>
+      <button class="hold" type="button"><span class="dot"><svg class="ic"><use href="#i-mic"/></svg></span><span class="hl">按住说话</span></button>
+      <p class="hint">也可以按住空格键</p>
+    </div>
+  </div>
+  <div class="vis" data-r><div class="frame"><div class="win" data-page="voice" aria-label="MoteDeck 语音页" role="img">
+  <div class="content"><div class="page">
+    <div class="head"><h1>语音</h1><p>音频通路与语音键</p></div>
+    <div class="cols">
+      <div>
+        <div class="sec"><div class="sec-title">音频前置</div><div class="card h60">
+          <div class="row"><div class="lbl"><span class="t">虚拟音频</span><span class="d">安装后提供虚拟声卡</span></div><span class="pill ok">已安装</span><div class="act"><button class="btn-t">安装音频</button></div></div>
+          <div class="row"><div class="lbl"><span class="t">输出端点</span><span class="d">选择虚拟声卡输出</span></div><div class="act"><span class="select">CABLE Input<svg class="ic"><use href="#i-chevron"/></svg></span></div></div>
+          <div class="row"><div class="lbl"><span class="t">麦克风权限</span><span class="d">允许语音程序访问麦克风</span></div><div class="act"><button class="btn-t">麦克风隐私<svg class="ic"><use href="#i-external"/></svg></button></div></div>
+        </div></div>
+        <div class="sec"><div class="sec-title">配置档案</div><div class="card h60">
+          <div class="row"><div class="lbl"><span class="t">已保存配置</span><span class="d">切换按键映射与语音模式</span></div><div class="act"><button class="btn2">管理配置…</button></div></div>
+        </div></div>
+      </div>
+      <div class="sec"><div class="sec-title">语音键</div><div class="card h60">
+        <div class="row"><div class="lbl"><span class="t">短按切换模式</span><span class="d">适配双模式或多个输入法</span></div><div class="act"><span class="switch"></span></div></div>
+        <div class="row"><div class="lbl"><span class="t">使用其他按键切换模式</span><span class="d">在按键设置里指定切换键</span></div><div class="act"><span class="switch"></span></div></div>
+        <div class="row"><div class="lbl"><span class="t">短按自动双击</span><span class="d">可屏蔽部分输入法的短按</span></div><div class="act"><span class="switch on"></span></div></div>
+        <div class="row"><div class="lbl"><span class="t">模式切换气泡</span><span class="d">切换时显示模式名称</span></div><div class="act"><div class="chips"><span class="chip on">深色</span><span class="chip">浅色</span><span class="chip">关闭</span></div></div></div>
+        <div class="row"><div class="lbl"><span class="t">语音键配置</span><span class="d">已配置 1 个语音键</span></div><div class="act"><button class="btn2">管理配置…</button></div></div>
+      </div></div>
+    </div>
+    <div class="sec full"><div class="sec-title">测试验证</div><div class="card h60">
+      <div class="row"><div class="lbl"><span class="t">虚拟声卡</span><span class="d">只检查声音通路</span></div><span class="pill vstate">就绪</span><div class="act"><button class="btn2">检查虚拟声卡</button></div></div>
+    </div></div>
+    <div class="vu"></div>
+  </div></div>
+</div></div></div>
+</div></section>
+
+<section class="blk" id="json"><div class="wrap">
+  <div class="head2">
+    <div data-r>
+      <h2>一个 JSON，<br>装下你所有键位</h2>
+      <p class="lead">换电脑、重装系统，导入一次就回到熟悉的手感。日常小改把文件拖进按键页就行。</p>
+    </div>
+    <div data-r>
+      <ul class="pts">
+        <li>覆盖前先确认要替换哪份档案，其它布局不受影响</li>
+        <li>不是配置文件会被拦下，不会误伤当前设置</li>
+        <li>重名档案自动加序号；导出不含设备身份和配对信息</li>
+      </ul>
+      <button class="replay" type="button"><svg class="ic"><use href="#i-refresh"/></svg>再拖一次</button>
+    </div>
+  </div>
+  <div class="vis" data-r><div class="drop">
+    <div class="jfile" aria-hidden="true">
+      <div class="fh"><i>JSON</i>motedeck-config.json<small>4 KB</small></div>
+<pre>{
+  <b>"format"</b>: "RemoteMic.full-configuration",
+  <b>"schema_version"</b>: 2,
+  <b>"profile"</b>: "rc003",
+  <b>"global"</b>: { "bindings": { … } },
+  <b>"apps"</b>: [
+    { "name": "PotPlayer",
+      "process": "PotPlayerMini64.exe" }
+  ]
+}</pre>
+    </div>
+    <div class="frame" data-keys="drop"></div>
+  </div></div>
+</div></section>
+
+<section class="blk" id="state"><div class="wrap duo">
+  <div class="txt" data-r>
+    <h2>红黄绿一眼看懂，出问题有下一步</h2>
+    <p class="lead">设备页把每种异常都对应到一个能点的按钮，不甩英文报错。</p>
+    <ul class="lamps" aria-label="切换设备状态">
+      <li data-c="r"><button type="button" aria-pressed="false"><i></i><b>启动失败</b><span>权限没给，点「修复权限」</span></button></li>
+      <li data-c="y"><button type="button" aria-pressed="false"><i></i><b>正在连接遥控器</b><span>蓝牙断开后自动重连</span></button></li>
+      <li data-c="g" class="on"><button type="button" aria-pressed="true"><i></i><b>已连接</b><span>按键和语音都在工作</span></button></li>
+    </ul>
+    <ul class="pts">
+      <li>断线、停服务、切设备、退出时都会松开已按下的键，不卡键</li>
+      <li>诊断日志只存本机，一键导出给反馈用</li>
+    </ul>
+  </div>
+  <div class="vis" data-r><div class="frame"><div class="win dark" data-page="device" aria-label="MoteDeck 设备页（深色外观）" role="img">
+  <div class="content"><div class="page">
+    <div class="head"><h1>设备</h1><p>遥控器、服务与启动行为</p></div>
+    <div class="hero">
+      <div class="hero-pic"><img src="assets/remote.png" alt=""></div>
+      <div class="hero-body">
+        <div class="hero-k">当前设备<span class="pill ok" id="dpill">已连接</span></div>
+        <div class="hero-name">小米遥控器 2 Pro</div>
+      </div>
+      <div class="act">
+        <button class="btn-i"><svg class="ic"><use href="#i-refresh"/></svg></button>
+        <button class="btn-t">蓝牙设置<svg class="ic"><use href="#i-external"/></svg></button>
+        <button class="btn2">选择设备</button>
+      </div>
+    </div>
+    <div class="tiles">
+      <div class="tile">
+        <div class="tile-top"><span class="tile-ic"><svg class="ic"><use href="#i-keys"/></svg></span><button class="btn-t">按键设置</button></div>
+        <span class="t">按键接收</span><span class="d" id="drecv">正常</span>
+      </div>
+      <div class="tile focus">
+        <div class="tile-top"><span class="tile-ic"><svg class="ic"><use href="#i-remote"/></svg></span><button class="btn1" id="dbtn">重启服务</button></div>
+        <span class="t">遥控器服务</span><span class="d" id="dsvc">连接遥控器，接收按键和语音</span>
+      </div>
+      <div class="tile">
+        <div class="tile-top"><span class="tile-ic"><svg class="ic"><use href="#i-refresh"/></svg></span><div class="act"><button class="btn-t">关于</button><button class="btn2">检查更新</button></div></div>
+        <span class="t">检查更新</span><span class="d">有新版本时在这里提示</span>
+      </div>
+    </div>
+    <div class="sec">
+      <div class="sec-title">通用设置</div>
+      <div class="card h44">
+        <div class="row split"><div class="cell"><div class="lbl"><span class="t">随 Windows 启动</span><span class="d">登录后后台运行</span></div><div class="act"><span class="switch on"></span></div></div><div class="cell"><div class="lbl"><span class="t">启动程序时自动运行服务</span><span class="d">自动连接遥控器</span></div><div class="act"><span class="switch on"></span></div></div></div>
+        <div class="row split"><div class="cell"><div class="lbl"><span class="t">关闭窗口时隐藏到任务栏</span><span class="d">保留右下角图标</span></div><div class="act"><span class="switch on"></span></div></div><div class="cell"><div class="lbl"><span class="t">外观</span><span class="d">界面主题</span></div><div class="act"><div class="chips"><span class="chip">跟随系统</span><span class="chip">浅色</span><span class="chip on">深色</span></div></div></div></div>
+      </div>
+    </div>
+    <div class="sec">
+      <div class="sec-title">软件协助</div>
+      <div class="card h44">
+        <div class="row"><div class="lbl"><span class="t">诊断日志</span><span class="d">记录按键与语音排查信息，本地保存</span></div><div class="act"><button class="btn-t">打开日志位置</button><button class="btn-t">导出日志</button><span class="switch on"></span></div></div>
+      </div>
+    </div>
+  </div></div>
+</div></div></div>
+</div></section>
+
+<section class="blk" id="native"><div class="wrap">
+  <div class="head2">
+    <div data-r>
+      <h2>关掉窗口，遥控器还能用</h2>
+    </div>
+    <p class="lead" data-r>它更像一个后台服务，开机就在，平时不用管。</p>
+  </div>
+  <div class="grid3">
+    <div data-r><svg class="ic"><use href="#i-tray"/></svg><h3>隐藏到托盘</h3><p>关闭窗口只是收进通知区域，服务照常运行。要彻底结束，右键托盘选「完全退出」。</p></div>
+    <div data-r><svg class="ic"><use href="#i-power"/></svg><h3>两个独立开关</h3><p>「随 Windows 启动」和「启动时自动运行服务」分开设，开机后直接连上上次那只遥控器。</p></div>
+    <div data-r><svg class="ic"><use href="#i-contrast"/></svg><h3>三种外观</h3><p>浅色、深色或跟随系统，用键盘或遥控器都能走完全部设置。</p></div>
+  </div>
+</div></section>
+
+<section class="open" id="open"><div class="wrap row3">
+  <div data-r>
+    <h2>没有账号，没有订阅，配置只存在你的电脑上</h2>
+    <p class="lead">全部功能免费，代码公开，可以自行编译。不收集按键内容，不上传使用数据。</p>
+    <a class="b1" href="https://github.com/HZDavy/MoteDeck"><svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><use href="#i-github"/></svg>查看源代码 ↗</a>
+  </div>
+  <ul class="pts" data-r>
+    <li>配置保存在本机用户目录，卸载时自己决定删不删</li>
+    <li>更新只提示和下载，不静默安装，也不覆盖配置</li>
+  </ul>
+</div></section>
+
+<section class="blk" id="scenes"><div class="wrap">
+  <div data-r><h2>这些场景，它最省事</h2></div>
+  <div class="scenes">
+    <div data-r><svg class="ic"><use href="#i-tv"/></svg><h3>客厅 HTPC 与投影</h3><p>躺着切片源、调音量、开关弹幕，不用摸键盘。</p></div>
+    <div data-r><svg class="ic"><use href="#i-moon"/></svg><h3>床上看剧</h3><p>一只遥控器管播放、暂停、倍速和语音搜索。</p></div>
+    <div data-r><svg class="ic"><use href="#i-present"/></svg><h3>演示与直播</h3><p>当翻页器和场景切换器用，走动时也能操作。</p></div>
+    <div data-r><svg class="ic"><use href="#i-hand"/></svg><h3>不便用键鼠的人</h3><p>大按键加长按手势，少做精细操作。</p></div>
+  </div>
+</div></section>
+<section class="blk" id="faq"><div class="wrap">
+  <div data-r><h2>先说清楚的几件事</h2></div>
+  <div class="faq" style="margin-top:48px" data-r>
+    <details><summary>支持哪些遥控器？<svg class="ic"><use href="#i-chevron"/></svg></summary><p>目前主要面向小米遥控器 2 Pro 和 RC003 同型号设备，经蓝牙连接 Windows。其它蓝牙遥控器的支持范围以每次的<a href="https://github.com/HZDavy/MoteDeck/releases">版本说明 ↗</a>为准。</p></details>
+    <details><summary>语音识别准不准？<svg class="ic"><use href="#i-chevron"/></svg></summary><p>MoteDeck 只负责把声音送进输入法并触发它的语音快捷键，识别由你本机的输入法完成，准确度取决于输入法本身。</p></details>
+    <details><summary>能在游戏里用吗？<svg class="ic"><use href="#i-chevron"/></svg></summary><p>能发出按键，但部分游戏和反作弊软件会把模拟按键视为自动化操作。请按目标软件的规则使用。</p></details>
+    <details><summary>公司电脑装不上怎么办？<svg class="ic"><use href="#i-chevron"/></svg></summary><p>受管理的电脑可能禁止 UAC 提权、按键组件或虚拟音频安装。这类情况需要找管理员放行，或改用个人电脑。</p></details>
+    <details><summary>Windows 提示「已保护你的电脑」？<svg class="ic"><use href="#i-chevron"/></svg></summary><p>安装包暂未签名，SmartScreen 会拦一下。点「更多信息」再选「仍要运行」即可。源代码公开，可以自行核对或编译。</p></details>
+  </div>
+</div></section>
+
+<section class="end" id="download"><div class="wrap" data-r>
+  <svg class="g"><use href="#i-glass"/></svg>
+  <h2>把遥控器拿起来试试</h2>
+  <div class="cta"><a class="b1" href="https://github.com/HZDavy/MoteDeck/releases/latest"><svg class="ic"><use href="#i-download"/></svg>下载 Windows 版</a><a class="b2" href="https://github.com/HZDavy/MoteDeck/issues">反馈问题 ↗</a></div>
+  <p class="req">Windows 10 1809 及以上 · 64 位 · 安装包约 90 MB</p>
+</div></section>
+</main>
+
+<footer class="foot"><div class="wrap">
+  <svg class="w" viewBox="0 0 784 130" aria-label="MoteDeck"><use href="#i-wordmark"/></svg>
+  <nav aria-label="页脚"><a href="https://github.com/HZDavy/MoteDeck">GitHub ↗</a><a href="https://github.com/HZDavy/MoteDeck/releases">版本记录 ↗</a><a href="https://github.com/HZDavy/MoteDeck/issues">反馈 ↗</a></nav>
+</div></footer>
+
+<script src="vendor/gsap.min.js"></script>
+<script src="vendor/ScrollTrigger.min.js"></script>
+<script src="vendor/lenis.min.js"></script>
+<script src="site.js"></script>
+</body>
+</html>
