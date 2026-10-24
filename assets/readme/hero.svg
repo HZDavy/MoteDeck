@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="344" viewBox="0 0 1200 344" role="img" aria-labelledby="heroTitle heroDesc">
+  <title id="heroTitle">MoteDeck：把小米蓝牙语音遥控器 2 Pro 变成 Windows 的快捷键和麦克风</title>
+  <desc id="heroDesc">深色标题板。左侧是项目名、一句话说明和版本信息；右侧是一支遥控器示意图，并标注电源、方向、语音三个按键可以映射成什么。</desc>
+
+  <defs>
+    <linearGradient id="remoteBody" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#232B36"/>
+      <stop offset="0.55" stop-color="#141A22"/>
+      <stop offset="1" stop-color="#0A0E13"/>
+    </linearGradient>
+    <linearGradient id="markBody" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#39424F"/>
+      <stop offset="0.4" stop-color="#1B212A"/>
+      <stop offset="1" stop-color="#05080B"/>
+    </linearGradient>
+    <linearGradient id="markPill" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#D7E1EE"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1200" height="344" rx="28" fill="#0B0F15"/>
+
+  <g id="identity">
+    <g transform="translate(64 44)">
+      <rect width="44" height="44" rx="10" fill="url(#markBody)"/>
+      <g transform="rotate(45 22 22)">
+        <rect x="16.5" y="10" width="11" height="24" rx="5.5" fill="url(#markPill)"/>
+      </g>
+    </g>
+    <text x="124" y="73" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="18" letter-spacing="2" fill="#8C9AAB">WINDOWS · 蓝牙语音遥控器</text>
+
+    <text x="64" y="146" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="62" font-weight="700" letter-spacing="-0.5" fill="#F4F7FB">MoteDeck</text>
+
+    <text x="64" y="196" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="26" fill="#CBD5E1">把小米蓝牙语音遥控器 2 Pro</text>
+    <text x="64" y="232" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="26" fill="#CBD5E1">变成 Windows 的快捷键和麦克风</text>
+
+    <line x1="64" y1="262" x2="520" y2="262" stroke="#1E2732" stroke-width="1"/>
+
+    <text x="64" y="294" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="17" fill="#77869A">本机运行 · 不上传录音 · GPL-3.0 · Windows 10/11 x64</text>
+  </g>
+
+  <line x1="660" y1="48" x2="660" y2="296" stroke="#1A222C" stroke-width="1"/>
+
+  <g id="remote-proof">
+    <g id="remote">
+      <rect x="1014" y="24" width="132" height="296" rx="24" fill="url(#remoteBody)" stroke="#2B3543" stroke-width="1.5"/>
+      <circle cx="1044" cy="54" r="8" fill="#0A0E13" stroke="#5C6A7E" stroke-width="1.5"/>
+      <circle cx="1116" cy="54" r="8" fill="#0A0E13" stroke="#5C6A7E" stroke-width="1.5"/>
+
+      <circle cx="1080" cy="152" r="52" fill="#0A0E13" stroke="#39424F" stroke-width="1.5"/>
+      <circle cx="1080" cy="152" r="19" fill="#1C242E" stroke="#4E5C70" stroke-width="1.5"/>
+      <path d="M1080 106 L1091 121 L1069 121 Z" fill="#8695A9"/>
+      <path d="M1080 198 L1069 183 L1091 183 Z" fill="#8695A9"/>
+      <path d="M1034 152 L1049 141 L1049 163 Z" fill="#8695A9"/>
+      <path d="M1126 152 L1111 163 L1111 141 Z" fill="#8695A9"/>
+
+      <rect x="1104" y="212" width="14" height="58" rx="7" fill="#222B37" stroke="#3B4757" stroke-width="1"/>
+      <line x1="1107" y1="230" x2="1115" y2="230" stroke="#93A2B6" stroke-width="1.5"/>
+      <line x1="1111" y1="226" x2="1111" y2="234" stroke="#93A2B6" stroke-width="1.5"/>
+      <line x1="1107" y1="252" x2="1115" y2="252" stroke="#93A2B6" stroke-width="1.5"/>
+
+      <circle cx="1080" cy="298" r="15" fill="#1C242E" stroke="#4E5C70" stroke-width="1.5"/>
+      <rect x="1077.5" y="291" width="5" height="9" rx="2.5" fill="#C9D4E2"/>
+      <path d="M1075 300 A5 5 0 0 0 1085 300" fill="none" stroke="#C9D4E2" stroke-width="1.5"/>
+      <line x1="1080" y1="305" x2="1080" y2="307" stroke="#C9D4E2" stroke-width="1.5"/>
+    </g>
+
+    <g id="callouts" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" text-anchor="end">
+      <line x1="950" y1="68" x2="1006" y2="68" stroke="#2A3543" stroke-width="1"/>
+      <circle cx="1010" cy="68" r="3" fill="#7FB4FF"/>
+      <text x="940" y="76" font-size="22" font-weight="600" fill="#E6EDF6">电源 <tspan fill="#6E7C8E">→</tspan> <tspan fill="#9AA8B9" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="20">Esc</tspan></text>
+
+      <line x1="950" y1="152" x2="1006" y2="152" stroke="#2A3543" stroke-width="1"/>
+      <circle cx="1010" cy="152" r="3" fill="#7FB4FF"/>
+      <text x="940" y="160" font-size="22" font-weight="600" fill="#E6EDF6">方向 <tspan fill="#6E7C8E">→</tspan> <tspan fill="#9AA8B9" font-size="20">方向键 / 鼠标</tspan></text>
+
+      <line x1="950" y1="290" x2="1006" y2="290" stroke="#2A3543" stroke-width="1"/>
+      <circle cx="1010" cy="290" r="3" fill="#7FB4FF"/>
+      <text x="940" y="298" font-size="22" font-weight="600" fill="#E6EDF6">语音 <tspan fill="#6E7C8E">→</tspan> <tspan fill="#9AA8B9" font-size="20">按住说话</tspan></text>
+    </g>
+  </g>
+</svg>

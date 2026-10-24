@@ -1,0 +1,15 @@
+.build/
+dist/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+apps/windows/rc003/build/cython-stage/
+apps/windows/rc003/build/cython-work/
+
+# Local project-control records are not part of the public source release.
+docs/*
+!docs/screenshots/
+!docs/screenshots/settings-connection.png
+!docs/screenshots/settings-buttons.png
+AGENTS.md

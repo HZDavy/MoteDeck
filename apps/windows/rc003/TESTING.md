@@ -1,0 +1,4843 @@
+# RC003 Windows 测试与验收
+
+当前状态：各项分别验收，仍有检查点待实测。2026-09-12 校核：本机重复输入修复
+见 `CHECK-HID-COPY-001`（通过）；新日志重载见 `CHECK-HID-LOG-001`（待实测）。
+这不代表整版、异机或其它输入法项目全部通过。
+
+## 0.1.0 重写批次本地测试包（2026-10-17，检查点待实测）
+
+- 来源与范围：RC003 Windows 客户端重写批次（`RC003-重写开发文档.md` 的 R1～R4 与阶段 6），源码版本 `src/ovb_rc003/VERSION` 为 `0.1.0`。包含：移除输入法 provider 概念、逐按键可选 Interception／SendInput 注入后端、两个语音键的短按锁存／长按按住状态机、按键配置改为「全局 + 按应用」（`app_profiles.json` schema 4 取代 `mapping_presets.json` schema 3，只读迁移、旧文件不改写）、整体删除谷歌／Chromecast 支持，以及配置 schema 17→18 迁移。仅制作本地未签名 ZIP。
+- 升级兼容修复（本批同版本重打）：schema 18 退役的逐设备字段（`voice_shortcut_enabled`／`voice_trigger_mode`／`voice_program`／`voice_hotkeys_by_provider`／`remote_recording_mode`）此前会让旧版写出的 `config.json` 整体判为非法，界面只读且暂停保存与遥控服务。现改为「可读但丢弃」：旧文件能正常打开、实时设置（增益／端点／语音槽／录音时长）保留，退役字段在读取末端剔除，并在下一次保存时被物理清除；旧 `toggle` 语义仍受保护（不被重解释为按住键）。真正非法的记录（如 `{"address": "raw"}`、越界录音时长）继续 fail-closed 拒绝。
+- Interception 驱动探测修复（本批同版本重打 2）：官方安装程序注册 `keyboard`／`mouse` 两个内核服务时不写 `ImagePath` 值（Windows 按键名推断 `System32\drivers\<name>.sys`），而 `driver_installed()` 依赖该值，导致一次成功安装被误判为未安装——界面提示「未检测到 Interception 驱动，仅可用 SendInput」，安装流程报「退出码 0 但注册表中未发现完整过滤驱动」，且重启后仍复现。现改为：服务键存在但无 `ImagePath` 时按推断路径回退判定；服务键缺失或驱动文件缺失仍判未安装（fail-closed）。本机实测修复后 `driver_installed()`／`driver_running()`／`driver_ready()` 均为 `True`（两服务 `Running`、`System32\drivers\{keyboard,mouse}.sys` 已就位、两类 `UpperFilters` 已注册）。
+- 验证入口：固定本工作区 `.venv` Python 3.12.10，UTF-8、Qt offscreen、禁用真实输入（`RC003_DISABLE_LIVE_INPUT=1`、`RC003_ALLOW_LIVE_INPUT_TESTS=0`）。唯一完整入口为 `build/build-candidate.ps1` 调用的编译后 `build/check_native.py --tests`：3325 项、11 项按环境条件跳过，其余通过，485.901 秒；全日志资源泄漏扫描、资源泄漏门禁、固定组件摘要、`check-third-party-notices`、公开边界与来源指纹门禁通过。
+- 资源与产物：`fetch-vb-cable`／`fetch-frida-gadget`／`fetch-interception` 三个第三方资源本地已缓存并「already verified」；87 个业务原生模块与两份 EXE 内部归档核验通过；PyInstaller 产物含 `MoteDeck win版 0.1.0.exe`，构建以 0 退出并输出 `== build complete: dist\RemoteMicRC003\ (unsigned) ==`。
+- 桌面 ZIP：`%USERPROFILE%\Desktop\MoteDeck-Windows-0.1.0-免安装.zip`，153566675 字节、2227 个文件，唯一顶层目录 `MoteDeck win版 0.1.0`。ZIP SHA-256 `C8AD5559994A1765C1C419C1774D013750B7FD8AFBA5802F80D5B840B11BC35C`；主 EXE SHA-256 `3AD6F9A9C0020FAECD212368168F838F2F04189C5D985D2789154CBB257638FD`。源码、内部 VERSION、产物元数据与包内版本（`0.1.0`）一致，构建与包装均以 0 退出。包装流程内的内部助手无提权 `--self-check`、主程序 `--dry-run` 与 `--qt-runtime-check` 通过。
+- 人工边界：本批只完成自动检查与本地打包，尚未真机验收。需在完全退出旧版后把 `0.1.0` 解压到新目录，逐项验证：两个语音键的短按锁存／长按按住及再次按下关闭、按应用自动切换按键映射、逐按键 Interception 注入（含首次驱动安装与重启）、非可扫描码按键的置灰提示，以及小米遥控器实体按键与文字上屏。自动结果不写成真机通过；未推送、上传或发布。
+- 长按统一与语音键补发修复（本批同版本重打 3，2026-10-19，检查点待实测）：删除方向、退格、音量、滚轮的连发白名单，以及「自定义组合键只点按一次」的例外；所有未配置长按动作的按键统一为 sustained，按住期间只补发该动作自身的 key-down，不重放完整点按、不发送 key-up，松手停止。语音键两条路并行：真实按键边沿照常触发输入法自行判定短按/长按，App 同时按「短按锁存、长按松手关」控制麦克风。实测确认注入 key-down 不会触发 Windows 原生 typematic（`SendInput`、`keybd_event`、Interception 均不重复），因此 `voice_shortcut_session.py` 在按住期间按系统键盘重复率（`SPI_GETKEYBOARDSPEED`，钳制 20–65 ms）主动补发同一快捷键 key-down；初次补发延迟 0.550 秒与长按阈值对齐。补发走 `key_repeat` 并跳过物理键预检；key-up、松手、取消或发送失败都先停止补发。短按锁存在物理释放、`_finish_voice_mic_gesture`、`AudioStarted` 和 `AudioStopped` 四处同步，锁存期间额外的语音键不再重复 `MIC_OPEN`，也不会关闭共享麦克风流。
+- 本轮自动结果：定向 8 个模块 501 项通过、1 项按环境条件跳过；干净重建的完整 `check_native.py --tests` 3351 项通过、11 项按环境条件跳过，耗时 463.438 秒，资源泄漏扫描与全部门禁通过；构建以 0 退出，87 个业务原生模块与两份 EXE 内部归档核验通过。新桌面 ZIP `%USERPROFILE%\Desktop\MoteDeck-Windows-0.1.0-免安装-重打3.zip`，153599626 字节；ZIP SHA-256 `CF6F8FA832741B041137F2217C2D70252559B49FB3094148F560A5C8A177C990`，主 EXE SHA-256 `251800ACFAA7C14DD3897FEF8907EC946E71E49569607870313CE91DF0A3652F`，旧包保留。真机待验证：实体方向/音量/退格按住时的连续手感、自定义组合键长按只保持按住不重复点按，以及两个语音键长按后输入法持续识别、松手立即结束，短按后保持到再次短按。
+
+- 按键连击按注入方式分化与麦克风短按锁存修复（本批同版本重打 4，2026-10-19，检查点待实测）：①连击语义按注入后端分化——方向、退格、音量在 `SendInput`（默认）时恢复原有连击，按住期间每次重复都重放完整点按（down+up），因为 `SendInput` 注入不会触发 Windows 原生 typematic；只有 `Interception`（驱动级）保持 sustained，按住期间只补发该动作自身的 key-down、松手才发一次 key-up，因为驱动级会模拟 Windows 长按。元素导航仍按点按处理（它自行消费映射导航键），自定义组合键、ESC、菜单键等不在方向/退格/音量名单内的动作仍为 sustained。②麦克风开启判断修正：遥控器语音键在无 HID 物理边沿时，按压与释放完全由 BLE 音频生命周期推断（ATVV `MicButtonPressed` 只有按下、无配对释放 opcode，释放由 `AudioStopped` 推断），此前该路径从不调用手势 `on_press`，短按无法锁存；现在 ATVV 认领与 `AudioStarted` 回退认领都会推进手势状态机，`AudioStopped` 在「手势处于按住且无物理语音源按下」时按 `on_release` 判定短按（LATCH）或长按（CLOSE），锁存期间第二次物理短按（HID 边沿或 ATVV）经 `_close_latched_voice_session_locked` 结束锁存会话并关麦。短按由此持续开麦到再次短按，长按持续开麦到松手。
+- 本轮自动结果：定向 `tests.test_app_wiring` 242 项通过、1 项按环境条件跳过；干净重建的完整 `check_native.py --tests` 3352 项通过、11 项按环境条件跳过，耗时 431.801 秒，资源泄漏扫描与全部门禁通过；构建以 0 退出，87 个业务原生模块与两份 EXE 内部归档核验通过。新增 1 项 Interception 方向键 sustained 回归用例（`test_interception_direction_hold_replays_key_down_until_release`），并把 14 处 SendInput 方向/退格/音量断言从 sustained 改为完整连击。新桌面 ZIP `%USERPROFILE%\Desktop\MoteDeck-Windows-0.1.0-免安装-重打4.zip`，153601686 字节、2227 个文件，唯一顶层目录 `MoteDeck win版 0.1.0`；ZIP SHA-256 `B83AE3478ACD288A837F70156D0446CBFE24E042FB51C8EF8415D974D242333E`，主 EXE SHA-256 `436EC9EAD419D81A3A78192F252AB8E463048F5AAAB4336A2F2B5FF10A2DE9D4`，旧包保留。真机待验证：`SendInput` 下实体方向/音量/退格按住为连续点按手感、切到 `Interception` 后为持续按住手感；两个语音键短按后保持开麦到再次短按、长按松手立即关麦。
+
+- 双语音模式、带语音模式的配置档案与元素导航卡顿修复（本批同版本重打 6，2026-10-20，检查点待实测）：
+  - 范围：`voice_input_source`／`voice_local_input_device` 两个配置字段；模式1 的话筒键短按守卫与「只认话筒键、只跑语音1」约束；模式2 的 `sounddevice.RawInputStream` 本机采集；`app_profiles.json` schema 4→5、`mode_tag`／`label`／`voice_conflicts`；`export_library()`（`RemoteMic.profile-library`，schema 1）与语音页「配置档案」区；`_cache_is_reusable(ignore_dirty, max_age)` 与 `_ALIGNED_CACHE_REUSE_SECONDS = 60` 的几何对齐快路径。
+  - 自动结果：本机 `unittest discover` 全量 3378 项通过、10 项按环境条件跳过，耗时 485.835 秒；其中 `tests.test_element_navigation_diagnostics` + `tests.test_element_navigation_prototype` 269 项通过（元素导航快路径与既有诊断契约）。
+  - 新增回归用例：`test_voice_profiles_rows_carry_the_automatic_mode_tag`（自动标签与模式1 清空设备名）、`test_mode_1_profile_flags_and_refuses_voice_keys_it_cannot_fire`（冲突列出、应用被拒且实时布局不变）、`test_applying_a_profile_restores_its_voice_mode_and_microphone`（应用档案一并恢复语音模式与麦克风）、`test_export_all_mapping_presets_writes_a_library_backup`（库格式、拒绝非本地路径）、`test_library_export_carries_the_global_row_and_every_saved_profile`（模型层库字段与数据目录防护）、`test_voice_page_offers_the_saved_profile_library`（QML 对象名与调用契约）。
+  - 适配修正：`SettingsSectionTitle`／`SettingsDialog` 计数由 3／2 改为 4／4（新增「配置档案」标题、命名与删除对话框），配置行的应用按钮文案改为「应用此配置」以保留「语音音频行必须自动保存、无应用按钮」的断言；元素导航诊断测试里的 `_cache_is_reusable` 替身改为接受关键字参数，匹配新的 `ignore_dirty`／`max_age` 调用。
+  - 门禁与打包：唯一正式入口 `build/build-candidate.ps1` 干净重建通过——编译后 3378 项、11 项按环境条件跳过，480.317 秒，`== build complete: dist\RemoteMicRC003\ (unsigned) ==`，退出码 0。`build/package-local-test.ps1` 交付桌面未签名免安装 ZIP `%USERPROFILE%\Desktop\MoteDeck-Windows-0.1.0-免安装-重打6.zip`，153738252 字节、2228 个文件，唯一顶层目录 `MoteDeck win版 0.1.0`；ZIP SHA-256 `933148849D5687158818400DC5362A665A182C851F6DA7A314D421F0E3D6676B`，主 EXE SHA-256 `C26CAF78908F8781D3D91458756B9E876FE451271B141847C6CA8A0306718862`。包装内冻结助手 `--self-check`、主程序 `--dry-run` 与 `--qt-runtime-check` 均通过，旧包保留。
+  - 人工边界：模式1 「短按不惊动输入法」以 0.55 秒守卫实现，代价是每次长按最前面 0.55 秒的语音不会被采集，是否需要更短阈值需真机试用确认；模式2 需真机核对接入的麦克风枚举名与回声/音量；元素导航卡顿修复需在 Chromium 类应用（按应用配置）里实测「按下即出浮窗」。自动结果不写成真机通过。
+
+- 模式1 短按守卫全路径覆盖、配置档案弹窗与语音页文字重叠修复（本批同版本重打 7，2026-10-20，检查点待实测）：
+  - 范围：`_on_control_event` 的 ATVV `MicButtonPressed`、作为首次触发的 `AudioStarted`、以及 `AudioStopped` 三条路径接入 `_arm_voice_tap_guard_locked`／`_voice_tap_guard_active`／`_drop_guarded_voice_press_locked`；`VoicePage.qml` 的配置档案由页面平铺改为 `SettingsDialog` 弹窗；`localMicrophoneRow` 取消状态列与操作列占位、编辑器列固定 300 px，并缩短「语音模式」「本机麦克风」说明文案。
+  - 新增回归用例（`VoiceRemoteMicrophoneModeTests`，本轮 5 项）：`test_atvv_short_press_never_reaches_the_input_method`（ATVV 触发→音频流→停止，全程零注入、守卫取消、`mic_open_calls=0`、`mic_close_calls=1`）、`test_atvv_held_press_starts_the_session_when_the_guard_elapses`（到点注入一次 down，`AudioStopped` 补 up）、`test_audio_started_first_short_press_never_reaches_the_input_method`（仅音频流先到也不注入）、`test_short_press_never_reaches_the_interception_backend`（驱动级短按 `backend_for` 从未调用）、`test_held_press_uses_the_interception_backend_after_the_guard`（驱动级长按只调用一次 `backend_for(INJECT_MODE_INTERCEPTION)` 并 down/up 各一次）。
+  - 定向结果：`tests.test_app_wiring` 255 项通过、1 项按环境条件跳过；`tests.test_qt_settings_app` 401 项通过（含 `SettingsDialog` 计数 4→5、档案卡片不在页面内的断言）。
+  - 门禁与打包：唯一正式入口 `build/build-candidate.ps1` 干净重建通过——编译后 3383 项、11 项按环境条件跳过，478.646 秒，`== build complete: dist\RemoteMicRC003\ (unsigned) ==`，退出码 0，88 个业务原生模块与两份 EXE 内部归档核验通过。`build/package-local-test.ps1` 交付桌面未签名免安装 ZIP `%USERPROFILE%\Desktop\MoteDeck-Windows-0.1.0-免安装-重打7.zip`，153740095 字节、2228 个文件；ZIP SHA-256 `C56CAC5BEA01F9145124740729B41873FBA9800985DDBD3079DEDB83FA6EDC3A`，主 EXE SHA-256 `C9AF3FB492F36E3483A033E5C2DEC007CB3CF0E49DAE9E339B0007118A5EF551`。包装内冻结助手 `--self-check`、主程序 `--dry-run` 与 `--qt-runtime-check` 均通过，旧包保留。
+  - 人工边界：真机需确认①模式1 短按（含驱动级注入）不再弹出输入法、长按照常上屏；②长按最前面 0.55 秒仍不采集（守卫代价，与重打 6 相同）；③配置档案弹窗在最小窗口下可滚动、按钮可点；④语音页两行说明不再被下拉框与「刷新」压住。自动结果不写成真机通过；未推送或发布。
+
+- 模式1 语音键改为按下即弹、删除短按守卫（本批同版本重打 8，2026-10-20，检查点待实测）：
+  - 范围：删除 `_VOICE_TAP_GUARD_SECONDS`、`_arm_voice_tap_guard_locked`／`_voice_tap_guard_active`／`_cancel_voice_tap_guard_locked`／`_voice_tap_guard_expired`／`_drop_guarded_voice_press_locked` 及测试替身 `_RecordingGuardTimer`／`guard_timers`／`_fire_guard`；HID 物理边沿、ATVV `MicButtonPressed`、作为首次触发的 `AudioStarted` 三条路径改为按下瞬间 `_handle_mic_button_pressed()`，释放仍由物理抬起或 `AudioStopped` 补 key-up。模式1 只支持长按，两条释放路径都把 `LATCH` 强制改为 `CLOSE`，短按不锁存。
+  - 回归用例（`VoiceRemoteMicrophoneModeTests`，本轮 8 项）：`test_tap_press_sends_one_short_combo_without_latching`、`test_held_press_injects_once_at_press_time`、`test_audio_start_after_the_press_does_not_repeat_the_hotkey`、`test_atvv_press_injects_immediately_and_stops_with_the_stream`、`test_atvv_held_press_keeps_the_session_until_audio_stop`、`test_audio_started_first_injects_immediately`、`test_press_immediately_reaches_the_interception_backend`（驱动级在按下时即以 `INJECT_MODE_INTERCEPTION` 调用 `backend_for` 并 down 一次）、`test_extra_voice_keys_are_inert_in_remote_microphone_mode`。
+  - 定向结果：`tests.test_app_wiring` 254 项通过、1 项按环境条件跳过。
+  - 门禁与打包：唯一正式入口 `build/build-candidate.ps1` 干净重建通过——编译后 3382 项、11 项按环境条件跳过，463.599 秒，`== build complete: dist\RemoteMicRC003\ (unsigned) ==`，退出码 0，88 个业务原生模块与两份 EXE 内部归档核验通过。`build/package-local-test.ps1` 交付桌面未签名免安装 ZIP `%USERPROFILE%\Desktop\MoteDeck-Windows-0.1.0-免安装-重打8.zip`，153731457 字节、2228 个文件；ZIP SHA-256 `D1BC3BF43F3DB47360ADC9FE1F6C9496FDCA6E5EB4044D942178324FB9D43369`，主 EXE SHA-256 `0C4C1461C4AC05B9021DCEBA2D2B46958F02F57F24B6AFE9DD240F3EFF40C077`。包装内冻结助手 `--self-check`、主程序 `--dry-run` 与 `--qt-runtime-check` 均通过，旧包保留。
+  - 人工边界：真机需确认①模式1 按下瞬间输入法即弹出（无 0.55 秒等待），松手立即结束；②短按只让输入法收到一次极短按压、不残留「录音中」状态（本批已取消模式1 短按锁存，取代重打 7 的「短按零注入」验收项）；③驱动级（Interception）注入下同样零延迟。自动结果不写成真机通过；未推送或发布。
+
+- 模式1 短按补偿（可选自动双击，本批同版本重打 9，2026-10-20，检查点待实测）：
+  - 范围：新增全局配置字段 `voice_short_press_dismiss`（`config.default_config()`、`config.voice_short_press_dismiss()`、`_normalize_voice_input_source()` 归一化）与 `VoicePage.qml` 的「短按补偿」`CompactSwitch`（仅模式1 显示）；设置控制器新增 `voiceShortPressDismiss` 属性、`voiceShortPressDismissChanged` 信号与 `setVoiceShortPressDismiss()` 写入槽；`app.py` 新增 `_dismiss_short_voice_press_locked()`，在物理松手与 `AudioStopped` 两条模式1 短按路径上于 `LATCH`→`CLOSE` 之后补发一次 down/up。
+  - 回归用例：`test_config` 的默认关闭、非布尔归一化为 `True`、落盘往返 3 项；`VoiceRemoteMicrophoneModeTests` 4 项——`test_short_press_dismiss_option_adds_a_second_tap`（开关开、短按得到 `down/up/down/up` 且不锁存）、`test_short_press_dismiss_option_ignores_a_held_press`（按住 1.0 秒只有 `down/up`）、`test_short_press_dismiss_option_adds_a_second_tap_after_audio_stop`（ATVV 按压 + `AudioStopped` 同样补发）、`test_short_press_dismiss_option_is_ignored_in_local_microphone_mode`（模式2 调用私有方法零注入）；`SettingsControllerTests` 1 项覆盖默认 `False`、写入 `True` 后 Property／信号载荷／磁盘持久化与同值不重复发信号。
+  - 定向结果：`tests.test_config` + `tests.test_app_wiring.VoiceRemoteMicrophoneModeTests` + `tests.test_qt_settings_app.SettingsControllerTests` 共 321 项通过（6.243 秒）；`VoiceRemoteMicrophoneModeTests` 单独 12 项通过。
+  - 门禁与打包：唯一正式入口 `build/build-candidate.ps1` 编译后完整检查 3390 项、11 项按环境条件跳过，472.864 秒，`== build complete: dist\RemoteMicRC003\ (unsigned) ==`，退出码 0，88 个业务原生模块与两份 EXE 内部归档核验通过。`build/package-local-test.ps1` 交付桌面未签名免安装 ZIP `%USERPROFILE%\Desktop\MoteDeck-Windows-0.1.0-免安装-重打9.zip`，153737788 字节、2228 个文件，唯一顶层目录 `MoteDeck win版 0.1.0`；ZIP SHA-256 `E5899886017FE3BD9BF0A65C0D8F22133D87B7C209384967186CA42CFC454648`，主 EXE SHA-256 `35D745B4111D5DC4F87D5657CF7D63A2A2DC0A29CCC3B8C878EE3B7971D6C3AA`。包装内冻结助手 `--self-check`、主程序 `--dry-run` 与 `--qt-runtime-check` 均通过，旧包保留。
+  - 人工边界：真机需确认①模式1 打开「短按补偿」后，短按弹出即被第二次按压关闭、不留残影，长按照常上屏且不补发；②`SendInput` 与驱动级（Interception）注入下都补发一次；③不需要该行为的输入法（如双击会重开面板或切换状态）关闭开关后行为与重打 8 一致；④模式2 下界面不显示该开关、行为不受影响。自动结果不写成真机通过；未推送或发布。
+
+- 驱动级注入下短按补偿不生效的修复（本批同版本重打 10，2026-10-20，检查点待实测）：
+  - 现象与根因：真机开启「短按补偿」后无效果。日志显示补发实际执行（`voice shortcut edge released on short press dismiss second tap`），但第一次松开 `15:24:45,369` 到补发结束 `15:24:45,373` 仅约 3 ms；驱动级注入下输入法面板尚未创建，第二次按键被当作重复事件吞掉。临时探针确认驱动级路由正确：四次按键全部走 `send_hold_tokens_down/up`，无 `SendInput` 混入，`pending_inject_mode`、`VoiceController` 状态机、E0 扫描码与驱动层去重均已排除。
+  - 范围：`app.py` 新增 `_VOICE_SHORT_PRESS_DISMISS_DELAY_SECONDS = 0.09` 与 `_VOICE_SHORT_PRESS_DISMISS_TAP_HOLD_SECONDS = 0.03`；`_dismiss_short_voice_press_locked()` 改为排定 daemon 延迟定时器，新增 `_cancel_voice_short_press_dismiss_locked()`、`_voice_short_press_dismiss_delay_elapsed()`、`_short_press_dismiss_still_wanted_locked()`、`_arm_voice_short_press_dismiss_release_locked()`、`_voice_short_press_dismiss_release_elapsed()`；延迟定时器与松开定时器分开存放，`_handle_mic_button_pressed()` 在真实按下时清除「补发按住中」标记；`_release_voice_shortcut_edge_locked()` 新增显式 `inject_mode` 形参并透传给 `apply()`。
+  - 回归用例（`VoiceRemoteMicrophoneModeTests`，本轮 6 项）：原 4 项改为手动定时器驱动，断言松手后不立即补发、延迟到点才 down、保持后再 up；新增 `test_short_press_dismiss_option_is_cancelled_when_the_mic_presses_again`（补发落地前又按住话筒则放弃）与 `test_short_press_dismiss_option_replays_through_the_interception_backend`（驱动级下 `send_hold_tokens_down/up` 各 2 次、`SendInput` 零调用）。
+  - 定向结果：`tests.test_app_wiring` 260 项通过、1 项按环境条件跳过（`VoiceRemoteMicrophoneModeTests` 单独 14 项通过）。
+  - 门禁与打包：唯一正式入口 `build/build-candidate.ps1` 干净重建通过——编译后 3392 项、11 项按环境条件跳过，462.535 秒，`== build complete: dist\RemoteMicRC003\ (unsigned) ==`，退出码 0，88 个业务原生模块与两份 EXE 内部归档核验通过。`build/package-local-test.ps1` 交付桌面未签名免安装 ZIP `%USERPROFILE%\Desktop\MoteDeck-Windows-0.1.0-免安装-重打10.zip`，153749107 字节、2228 个文件，唯一顶层目录 `MoteDeck win版 0.1.0`；ZIP SHA-256 `581A90D28E1D08CBEC76DE252E1FE2459C8152E279DD13909445D2B2C6D6E112`，主 EXE SHA-256 `743AF97862541BCCB73BBC90A9FE06AECCE128BB7CC5E4DA44555CF4A9938328`。包装内冻结助手 `--self-check`、主程序 `--dry-run` 与 `--qt-runtime-check` 均通过，旧包保留。
+  - 人工边界：真机需确认①模式1、驱动级注入、开关打开后，短按弹出即被 90 ms 后的第二次按键关闭；②长按仍只发一次 down/up，不出现补发；③补发间隔 90 ms／保持 30 ms 对目标输入法足够（若仍不关面板，需要再调这两个常量，而不是改回同步补发）；④`SendInput` 注入下补偿行为仍正常。自动结果不写成真机通过；未推送或发布。
+
+- 更名 MoteDeck、英文路径与安装包分发（本批同版本重打 11，2026-10-20，检查点待实测）：
+  - 范围：`product_identity.DISPLAY_NAME` 改为 `MoteDeck`，删除 `WINDOWS_EDITION_NAME`；`LEGACY_WINDOWS_PRODUCT_NAMES` 继续识别旧 `MoteDeck win版` 与 `MoteDeck` 版本化 EXE。`WINDOWS_RUNTIME_DIRECTORY_NAME` 改为 `app`、`WINDOWS_DOCUMENTATION_DIRECTORY_NAME` 改为 `docs`、`WINDOWS_PORTABLE_README_NAME` 改为 `README.txt`；`RemoteMicRC003Setup.iss` 的 `AppExeName` 改为 `AppName + " " + AppVersion + ".exe"`，`DefaultDirName` 改为 `{localappdata}\MoteDeck`，输出改为 `MoteDeckSetup-<版本>-unsigned.exe`，隔离/恢复逻辑使用 `{#RuntimeDirName}`（`app`）。`build/build-candidate.ps1` 新增 Inno Setup 编译步骤（缺少 ISCC 时 fail-closed）；新增 `build/package-installer.ps1`；CI 增加 `choco install innosetup` 并把发布目录改为安装器 + `SHA256SUMS.txt`。`application_update` 改为查询 `HZDavy/MoteDeck`，支持只提供安装器的 Release；`openUsageGuide` 改为打开官网 `#guide`。图标 SVG/ICO 全部重绘为蓝底圆角矩形 + 白色线稿遥控器（离线态灰底加斜线）。README 按 OpenMexia 风格重写。
+  - 回归用例：`test_product_identity`（新名称、旧名称兼容、英文目录、安装器定义）；`test_application_update`（HZDavy/MoteDeck 来源）；`test_build_artifacts`（安装器打包与 CI 步骤、README 安装器下载）；`test_application_icon`（蓝底圆角矩形与白色线稿）；`test_hid_elevation_windows`（`app` 运行时目录）；`test_qt_settings_app`（使用方法打开官网）。
+  - 定向结果：`tests.test_app_wiring` 260 项、`tests.test_build_artifacts` 214 项、`tests.test_product_identity` 11 项、`tests.test_application_update` 49 项通过。
+  - 门禁与打包：唯一正式入口 `build/build-candidate.ps1` 干净重建通过——编译后 3392 项、11 项按环境条件跳过，437.833 秒，`== build complete: dist\RemoteMicRC003\ (unsigned) ==`，退出码 0，88 个业务原生模块与两份 EXE 内部归档核验通过；Inno Setup 编译输出 `dist\installer\MoteDeckSetup-0.1.0-unsigned.exe`。`build/package-installer.ps1` 交付桌面 `MoteDeckSetup-0.1.0-unsigned.exe`（105347179 字节，SHA-256 `88B0D2AF722D5A56D51A3464694AD8353807C250206A06771EAA95D9870C94AE`）与 `SHA256SUMS.txt`。包装内冻结助手 `--self-check`、主程序 `--dry-run` 与 `--qt-runtime-check` 均通过。
+  - 人工边界：真机需确认①安装包可在普通账号安装到 `%LOCALAPPDATA%\MoteDeck`，开始菜单/桌面快捷方式与卸载入口可用；②卸载后程序文件与快捷方式移除、个人配置保留；③旧版 `MoteDeck win版` 启动项能被新版接管；④图标在资源管理器、任务栏、通知区域和设置窗口一致；⑤「使用方法」打开官网、检查更新只查询 `HZDavy/MoteDeck`。自动结果不写成真机通过；未推送或发布。
+
+## 1.0.91 本地测试包（2026-10-13，检查点待实测）
+
+- 来源与范围：正式主目录 `main/dd69d9568b2190357999c35c6757e621f8042f89`，构建输入为该提交加本任务对 `src/ovb_rc003/qt_settings_app.py`、`src/ovb_rc003/VERSION`、业务 `README.md` 和 `tests/test_remote_selection.py` 的改动，版本沿同一主线递增为 `1.0.91-candidate.91`。修复与全局核查范围见本页 `CHECK-CHATTERFLY-001` 的“快捷键自动更新全局修复”。认证 GitHub API 于 2026-10-12 23:28 核实 latest Release 为 `v1.0.87`、远端 `main` 为 `b879af8`；仅制作本地未签名 ZIP。
+- 验证入口：固定本工作区 `.venv` Python 3.12.10，UTF-8、Qt offscreen、禁用真实输入。唯一完整入口为 `build/build-candidate.ps1` 调用的编译后 `build/check_native.py --tests`：4124 项、8 项条件跳过、4116 项通过，612.897 秒。资源泄漏、固定组件摘要、许可及公开边界门禁通过；105 个业务原生模块和两份 EXE 内部归档、自检、Qt/QML 资源、版本元数据及来源指纹核验通过，未另跑完整检查。
+- 实际程序基础流程：用临时 `LOCALAPPDATA`、Windows 平台及普通权限打开 `.91` 冻结窗口；真实设备二级面板从小米切至谷歌，Chatterfly 的旧自动值 `rctrl+rshift+0` 无需主动刷新即更新为 `rshift+i`，语音页显示“右 Shift＋I / 自动识别”，通过正式配置读取接口核实落盘。重复启动进程以 0 退出并保持同一窗口；正常关闭后重开仍保留谷歌配置，最终关闭以 0 退出。没有启动遥控器服务或接收实体输入。首个观察脚本在操作完成前超过五分钟等待上限，不计作退出成功证据；已仅补做重开/退出观察，记录实际退出码 0。
+- 来源指纹：348 个输入，SHA-256 `12D27927710999F3B76E9FB831F898E57D14459EAD2FF2EE70D7C3797CF71927`；2206 个产物文件，指纹 `91AC422B00A31C4D17E536E1CB0E869CE90D137BBDFA50BE977BC3063ECF35D9`。包装由本次正式 `package-local-test.ps1` 的临时副本执行，复用相同产物已通过的冻结自检，保留来源、暂存一致性、许可与 ZIP 逐文件核验；最终仅补读顶层目录、六个关键成员和 VERSION，未重复完整解压或冻结自检。
+- 桌面 ZIP：`%USERPROFILE%\Desktop\MoteDeck-Windows-1.0.91-candidate.91-免安装.zip`，158466806 字节、2231 个文件，唯一顶层目录 `MoteDeck win版 1.0.91-candidate.91`。ZIP SHA-256 `CB1D1FA49A17CA6B9413A6A05161D47B412A9FF6825ED41C7B80E847E4035DE6`；主 EXE SHA-256 `663C1C694A0BCED53E08E5E2DC2FE908BD108C2D829F0B8F1FD3EA4404F071DF`。源码、内部 VERSION、文件元数据和包内版本一致，构建/包装均以 0 退出，旧 `.90` 包保留。
+- 人工边界：完全退出旧版并将 `.91` 解压到新目录，确认真实日常使用中切换设备/模式后自动值及时更新，手动值不被覆盖。实体按键、三键录入和宿主识别效果仍按原条目验收；用户指定“有气泡但不上屏”暂缓，不改记为已修复。未签名、推送、上传或发布。本次临时脚本、日志、配置和 `package-result.json` 位于已忽略的 `.build/local91/`，用于此次验证与证据复用，不进 Git 或程序 ZIP；不再需要复用后随构建缓存清理。
+
+## 1.0.90 本地测试包（2026-10-12，检查点待实测）
+
+- 来源与范围：正式主目录 `main/b0acaba6b76dfbc6ca8b6c55d576119bd532215c`，在同一主线递增为 `1.0.90-candidate.90`；构建时只含本任务对 `src/ovb_rc003/VERSION`、业务 `README.md` 和 `CHANGELOG.md` 的未提交版本说明，未加入其它源码入口或第三方改版。包含 `.89` 之后的 Chatterfly 直接控制、快捷键录入修复、滚动条遮挡修复、小米开发版授权修复、四种鼠标长按、配置管理及说明/按钮调整。认证 GitHub API 于本日核实 latest Release 仍为 `v1.0.87`、远端 `main` 为 `b879af8`；此次仅制作本地未签名 ZIP。
+- 验证入口与环境：固定本工作区 `.venv` Python 3.12.10，UTF-8、Qt offscreen、禁用真实输入。唯一完整检查入口为 `build/build-candidate.ps1` 调用的编译后 `build/check_native.py --tests`，运行 4113 项、8 项按环境条件跳过，其余通过，耗时 701.164 秒；资源泄漏门禁、固定组件摘要、许可及公开边界检查通过，没有另跑一轮完整检查。
+- 构建与基础流程：105 个业务原生模块和两份 EXE 内部归档核验通过；构建内的主程序 `--dry-run`、Qt/QML 资源检查、内部助手无提权 `--self-check`、Windows 版本元数据和来源指纹门禁通过。随后以临时 `LOCALAPPDATA`、Windows 平台、普通权限启动实际冻结设置窗口，标题为 `MoteDeck win版 1.0.90-candidate.90`；默认自动保存项、复制命名、确认应用、关闭后重开及列表加粗/勾选均正确，普通备注最多两行，按键底栏按钮同宽。重复启动保持同一窗口且重复进程以 0 退出；正常关闭后可重新启动，最终关闭以 0 退出，没有修改真实配置、安装权限或接收实体输入。
+- 来源与产物指纹：348 个构建输入，SHA-256 `1EB08DE823349BC6D12591D93F9989A0B3ECD99C39091CA2B33CCC2E1B3AA26A`；2206 个产物文件，指纹 `B4846140455641CCDAF34FE287CFACFABA8D2A6D0984DEF65F5E6C3E1F620D88`。包装沿当前正式 `package-local-test.ps1` 的临时适配副本，复用同一产物已通过的冻结自检，保留来源、暂存一致性、许可和 ZIP 逐文件核验；最终只补读 ZIP 的顶层目录、关键文件与实际 VERSION，没有重复完整解压或运行相同自检。
+- 桌面 ZIP：`%USERPROFILE%\Desktop\MoteDeck-Windows-1.0.90-candidate.90-免安装.zip`，158460856 字节、2231 个文件，唯一顶层目录 `MoteDeck win版 1.0.90-candidate.90`。ZIP SHA-256 `96AD2FEDCAA47DEAD39E4F04B09B073AF3428C71F8B0ACFF1005F3F4632DE640`；主 EXE SHA-256 `3101E86CDF545012E272BADF09A29F938448B97F813DAE8CAB840E6421EE9919`。源码、内部 VERSION、文件元数据与包内版本一致，构建和包装均以 0 退出，旧包保留。
+- 人工边界：完整解压到新目录，完全退出旧程序后确认窗口为 `.90`。按 `CHECK-MAPPING-PRESETS-001` 验证实体左/右/X1/X2 长按及取消清理、真实文件选择器和用户屏幕；按 `CHECK-HOTKEY-EDIT-001` 验证实体三键录入；按 `CHECK-CHATTERFLY-001` 验证实体传声及文字上屏。本日晚间“一开始有气泡但不上屏”尚未定位，切换谷歌后旧自动快捷键未及时校准也未修改；不把气泡、自动检查或打包写成识别效果通过。其它输入法和异机待测项继续按原条目验收，未签名、推送、上传或发布。
+- 本机证据：构建/包装日志、来源快照、窗口流程与退出记录和 `package-result.json` 位于已忽略的 `.build/local90/`，仅供本次证据复用，不纳入 Git 或程序 ZIP；无需复用后可随构建缓存清理。最初窗口探针使用隐藏启动方式，未获得可见窗口，随后改用普通可见启动；首个退出观察脚本未保留进程句柄而得到空退出码，不计为退出成功证据，最终以保留句柄的实际关闭记录确认 0。这些是验证包装问题，没有为此改动产品源码。
+
+## CHECK-MAPPING-PRESETS-001 — 鼠标长按与配置管理（2026-10-12，检查点待实测）
+
+- 2026-10-12 晚间界面反馈：从 `main/25c594d` 修复“管理按键配置”遗漏六字按钮宽度 token，和底栏检测、恢复入口同档；扫描全部 QML 按钮及其父布局，设备/语音右侧列、等分切换、弹窗紧凑操作、图标和链接分别遵守既有职责，没有把自然宽度的横排操作一律拉宽。配置面板固定备注压为一行，普通结果提示出现时共两行；错误仍完整换行。复用 `test_mapping_presets_qml.PROBE` 的真实管理流程，在临时探针追加最终尺寸和行数测量：640×480 逻辑窗口，小米浅色 100%、谷歌深色 150% 均通过、无 QML 警告；底栏三按钮均 92 逻辑像素，应用状态和说明各一行且左右边界一致，截图复核通过。未改共享按钮默认值、操作功能或配置逻辑。日志快照、尺寸结果、截图及本次诊断摘要位于忽略目录 `.build/ui-google-20261012`，仅供本次本机核实，不进 Git/发布；无需复核时可清理该目录。实际用户屏幕视觉仍待确认。
+
+- 基线与范围：正式主目录 `main/41dea0a`，源码版本 `1.0.89-candidate.89`，固定本工作区 `.venv/Scripts/python.exe` Python 3.12.10。用户批准四种鼠标长按及独立配置管理，不引入第三方改版的循环切换和 `active_profile/profiles` 配置替换。真实用户文件和设备只读，测试使用临时配置、隔离 Qt 进程与鼠标发送替身。
+- 当前基础流程已走通：两种型号真实 QML 控件点击编辑长按并自动保存 → 打开管理面板看到默认自动保存项 → 复制配置并命名，空名错误可继续编辑 → 再次复制 → 重命名 → 取消应用 → 确认应用 → 浏览其它选项时保留实际应用项加粗和勾选 → 重开面板定位应用项 → 确认删除全部副本，自动保存项仍在。确认和命名以固定方案 ID 为对象，弹窗期间选择变化不会改错方案。导出再导入、同名导入自动编号、同型号限制及应用不改语音、音频和物理绑定，由控制器与文件集成测试覆盖；原生文件选择器的手工交互待用户验收。
+- 输入测试覆盖四种鼠标键及小米/谷歌两条事件来源：短按不触发鼠标 down、重复 down 和迟到回调不会重复按下、松手与已预约长按回调交错、普通 10 秒保护不截断持续鼠标长按、同一鼠标键多个持有者最后松手才 up、源取消/全局取消/停止清理、多键清理中单键失败、实体鼠标占用、down 不确定/零发送、up 失败重试及 fallback 已成功的区分。按住时应用新映射，先释放原鼠标键，再使用新映射。
+- 数据测试覆盖副本删空不写当前配置、重命名目标固定、无效/跨型号/未知版本导入拒绝、非法动作与语音冲突拒绝、损坏方案库不被覆盖、磁盘替换失败保留旧字节并清理临时文件、导出不得覆盖程序数据目录、应用失败保留模型以及未保存草稿阻止应用。原 `config.json`/`key_bindings.json` 格式与每设备记录保留；方案库版本 1 可只读打开，首次写入原子升级版本 2，保留原副本并只增加应用标记。
+- 初版 `4da7536` 的受影响回归：`test_app_wiring`、`test_config`、`test_remote_selection`、`test_key_mapping`、`test_settings_ui_helpers`、`test_win32_input_batching` 共 615 项，1 项按环境条件跳过，其余通过；新增三个测试模块、`test_button_gesture`、Qt 模型/界面来源合同及三项保存/恢复用例共 115 项通过（含畸形文件报错长度限制）；谷歌按键与既有直接编辑自动保存共 31 项通过。复用同输入下的有效结果，未重复跑全项目测试。开发中修正了取消门闩的回归、旧测试对长按菜单数量的预期，以及 Qt 弹窗动画等待；这些失败不计为通过证据。
+- 2026-10-12 面板反馈修正的定向验证：`test_mapping_presets` 20 项通过，真实 `test_mapping_presets_qml` 的两型号流程通过。覆盖自动项读取当前值且打开不新增数据文件、旧副本原样保留及升级失败回退、自动项导出再导入、复制命名与同名拒绝、应用标记跨库重读与重开面板保留、应用后手动改键回到自动项、运行配置标准化后标记仍正确，以及标记落盘失败时明确提示但不把已成功应用误报为失败。默认名按用户指定固定为“26-1012 自动保存”，不随日期改变。最终文字与两行布局的真实控件无越界，下拉实际字重与勾选位置按应用状态核对；不重复执行未触达的鼠标生命周期与全项目检查。
+- 2026-10-12 旧映射兼容修复：在 `main/2843f0c` 的临时用户目录保存旧 `voice_toggle` 配置并重新创建控制器，自检复现刷新失败／空列表，随后导入返回失败但库中副本数量从 1 增至 2，当前映射文件未变。按用户“继续”修复后，列表展示不再要求当前映射可导出，合法副本可管理；操作已落盘但刷新失败时返回成功并提示重开面板，真实写入失败仍返回失败并保留旧文件。最终 `.venv` Python 3.12.10、UTF-8、`-B`、Qt offscreen、禁用真实输入下，`test_mapping_presets_qml` 与 `test_mapping_presets` 共 25 项通过（其中 QML 用例覆盖小米浅色 100%、谷歌深色 150%）。新增覆盖真实旧文件重载后查看／导入／管理副本和重开、非法自动项不可复制／导出、当前文件字节不变、已提交导入遇到刷新失败不误报、原子写入失败不新增副本；两型号真实界面加载旧动作后列表和导入项正常显示，无 QML 警告。当前映射的调整与未保存保护仍保留，未制作产物。
+- 隔离界面：`test_mapping_presets_qml` 加载真实 `main.qml`、FluentWinUI3，640×480 逻辑窗口，小米浅色 100%、谷歌深色 150%，新面板及确认操作无 QML 警告。离屏环境显式载入系统中文字体后核对中文、按钮、换行及边界，临时截图在 `.build/mapping-presets-20261012`；该目录由本任务测试生成，仅用于本机复核，不纳入 Git/发布，验收后可随构建缓存清理。
+- 人工待测：① 两种实体遥控器分别验证左/右/X1/X2 长按，短按无鼠标长按、超过 10 秒仍保持、松手停止，左键拖动效果正确；② 按住期间断线、停服务、切换设备及退出不残留按下；③ 实际使用导出/导入文件选择器、重开程序后方案仍在，应用当前型号配置并确认动作及备注；④ 在用户屏幕上确认二级面板与设备选择风格、缩放及键盘操作。自动检查不替代真实设备/宿主效果，本轮未制作 EXE/ZIP。
+
+## 1.0.89 本地测试包（2026-10-10，检查点待实测）
+
+- 来源与范围：正式主目录 `main/df08960732aad1e438d5f72eb0ad53f8ce852fc1` 的未提交四组改动，由本任务统一集成并分配 `1.0.89-candidate.89`，从干净源码提交 `f155dff3758cfb8252c030f935d827f4c4f81f4e` 构建。包含谷歌清理/崩溃诊断与脱敏、微信按住/慢启动/快速重开修复、豆包 0.9.2.7 精确适配和方向键长按提速；保留 `.88` 已有功能。认证 GitHub API 在 2026-10-10 核实 latest 为 `v1.0.87`（来源 `27c9076`）、远端 `main` 为 `b879af8`，本地包含远端提交，未建立其它开发入口。
+- 集成源码验证：当前 `.venv` Python 3.12.10，UTF-8、`-B`、`PYTHONPATH=src;tests`，Qt offscreen 且禁用真实输入。源码 `--version`、`--dry-run`、`--qt-runtime-check` 与 `pip check` 通过，16 项固定依赖匹配，实际打包 hooks 为 2026.6。13 个受影响测试模块运行 1057 项、1 项非 Windows 条件跳过，其余通过，耗时 315.900 秒，资源与运行时告警按错误处理。测试期间 HEAD、目标文件哈希与空暂存区未变；本次将完整检查唯一入口交给本地构建流程，不在构建前重复全量测试。
+- 基础流程与交付标准：先从已核验的源码形成检查点提交；新冻结主程序须报告 `.89`、完成业务模块导入和真实 Qt/QML 资源检查，内部助手完成无提权自检并正常退出。之后核对新 ZIP 的唯一顶层目录、关键组件、许可、实际 VERSION 和摘要；独立输出目录保留旧包，不启动会争用在用实例的设置窗口。
+- 用户实测：完全退出旧版后完整解压新版，确认窗口版本；按各正式条目验证小米/微信连续说话及松手、短按后重开、谷歌正常语音和停止、豆包正常/快速结束、方向键长按手感。Chatterfly 手动录入漏 `0` 和异机谷歌 CCCD 写入拒绝/真实崩溃仍未证明已修复。新增日志不能代替实体语音、文字上屏或异机验收。
+- 版本递增后补做版本/更新 61 项检查与源码 `--version`，全部通过。唯一完整检查入口为正式构建脚本的本地适配副本：保留资源、许可、公开边界、原生编译与产物门禁，沿用已核验依赖，保留在用开发程序，输出到独立 `.build/local89/dist`。完整原生测试运行 4029 项、8 项按条件跳过，其余通过，耗时 474.757 秒；全日志资源泄漏检查通过，没有另跑第二轮完整测试。
+- 产物与基础流程：101 个业务原生模块的源码、二进制摘要及实际导入来源一致，两份 EXE 归档核验通过。构建流程中的主程序 `--dry-run`、真实 Qt/QML 资源检查、内部助手无提权 `--self-check` 和 Windows 元数据检查均通过；实际主 EXE `--version` 输出 `1.0.89-candidate.89`、退出码 0、无错误输出。没有启动会争用在用实例的设置窗口或操作真实遥控器/录音；窗口切换和人工语音效果仍按上条待测。
+- 来源指纹：337 个构建输入，SHA-256 `9F0A5246CFBCDE9FAD841A31EF34061D9DF93D35A25D8860C8BDE467E21D74C5`；2201 个产物文件，指纹 `CD4C8CFA002F3577756C1B033758F92EAB030F7F48821D2231D1AB077B132786`。包装复用同一产物已通过的冻结自检，沿正式包装入口完成来源/暂存一致性、许可、ZIP 逐文件摘要和版本核对，之后只补做最终 ZIP 的目录、关键文件及版本抽查，没有重复解压或全量检查。
+- 桌面未签名 ZIP：`%USERPROFILE%\Desktop\MoteDeck-1.0.89-candidate.89-本地测试.zip`，158138695 字节、2226 个文件，唯一顶层目录 `MoteDeck win版 1.0.89-candidate.89`。ZIP SHA-256 `E8CFD5E6F69A59A835F8AEF494230491DD308407C996D503565B254C4F3BFE99`；主 EXE SHA-256 `21FC54F8FA842D5D4EC2D3D93BA00A85DF9DA6D4500CE168DF305FCA2E0B86DE`。构建与包装均以 0 退出，原包保留，未签名、上传或发布；不把诊断补强写成异机故障已修复。
+- 临时本地适配、检查日志、独立构建产物和来源快照使用已忽略的 `.build/local89/`，只供本任务构建、包装及证据复用，不进 Git 或程序 ZIP；不再需要复用后可清理该任务目录，不作为新源码入口。最后仅补交付记录，不改已验证的程序源码、版本或包内容。
+
+## CHECK-DIRECTION-REPEAT-001 — 普通方向键长按提速（2026-10-10，源码检查点待实测）
+
+- 来源与范围：正式主目录 `main`，开始时 HEAD 为 `df08960`，源码版本仍为 `1.0.88-candidate.88`。用户确认普通方向键的光标/菜单移动偏慢，授权做当前结构内的优化。本项只修改方向连发策略、定向测试和本记录/版本说明；工作区已有微信语音改动不纳入本项。
+- 行为：小米 HID 与谷歌事件共用的映射入口中，实体上下左右键且主动作是四个方向之一时，重复间隔从 100 毫秒调整为 65 毫秒。保留立即首步、350 毫秒首轮等待、松手取消、10 秒防卡键保护及双击/长按配置优先规则；不是完全复制系统键盘设置。方向键映射为其它动作、返回与音量键原间隔不变。元素导航接管方向时沿用同一连发节奏，接受后不重复注入系统按键。
+- 2026-10-10 验证：当前工作区 `.venv` Python 3.12.10，`.\.venv\Scripts\python.exe -B -W error::ResourceWarning -m unittest tests.test_app_wiring.OrdinaryButtonGestureWiringTests tests.test_app_wiring.LiveSettingsReloadTests tests.test_button_gesture tests.test_key_mapping tests.test_buttons -q` 共 175 项通过。新增流程覆盖两种事件来源和四方向的首步、350/65 毫秒节奏、重复 DOWN 去重、松手后迟到回调、重新按下时旧回调失效，以及非方向动作原速度和元素导航无重复注入；现有用例覆盖手势、映射重载、定时器失败、取消与清理。
+- 人工基础流程：在包含本修改的程序中，分别用小米/谷歌对文本光标和菜单短按、按住 1–5 秒后松手，再快速换方向；应短按一步、长按更快、松手停止且无多跳。元素导航启用时检查连续选框与松手停止，关闭后普通方向恢复。实际宿主响应和遥控器手感尚未验证，自动结果不等于真机通过。
+- 交付边界：只更新源码，未更改版本、制作 EXE/ZIP、推送或发布；既有 `.87` 和 `.88` 程序包均不包含本项修改。收尾核对发现其它任务仍在同一工作区写入，本文件也新增了其它任务记录；按并发提交保护，本项不操作真实 index 或提交，保留各任务改动。
+
+## CHECK-WETYPE-HOLD-INTERRUPT-001 — 小米微信按住几秒提前结束（2026-10-10，源码检查点待实测）
+
+- 范围与来源：用户反馈 26-1010 调试好后，小米遥控器按住语音键只能录 3–6 秒；未提供精确测试时间。依据 ZIP 内最后一次连续启动，候选窗口为 **21:21:48～21:34:35（+08:00）**，包含该次启动到导出前全部日志、9 轮完整语音及 1 次按键检测；这是依据日志圈定的候选范围，未冒充用户确认的窗口。修复基于正式主工作区 `main` 的 `df08960`，源码仍为 `1.0.88-candidate.88`。用户 ZIP 实际运行版本为 `1.0.87`；修复前微信控制模块与 `v1.0.87` 相同，共享快捷键模块后续只有 Chatterfly 分支变化。
+- 整包核对：`C:/Users/DELL/Downloads/MoteDeck日志-20261010-213435.zip`，SHA-256 `4808C9DF1736E870B1DB808FA26A5403273CA2EE236125DEF49ADE4BB7AC81CB`。已用 `scripts/audit_log_bundle.py` 只读核对全部 4 个成员：`app.log` 337796 字节、2092 行，20:37:25.883～21:34:35.376；`diagnostic-trace.jsonl` 222533 字节、409 条、无非法 JSON；`diagnostic-report.json` 343388 字节；`export-info.json` 1723 字节。清单导出时间为 21:34:40.444398+08:00，`.87`，`incomplete=false`、`snapshot_stable=true`，刷新均成功，无截断/读取失败。轮转 `.1/.2/.3` 及 helper 日志不存在，清单如实标记 missing，未把导出时间或缺失轮转当测试边界。
+- 运行关联：完整读取候选启动的应用记录，并与诊断流、报告交叉关联。小米没有谷歌的 `run=` 字段，审计脚本 `run_count=0` 不代表没有运行；按同次启动、tap、attempt 和 gesture 还原。两段 trace 会话分别为 `c407d4058edb42c9b6ecde0abc625118`（142 条，以导航为主，无语音）和 `24c100846e684c268135b5ec65f8cd5d`（267 条，包含末轮语音），各自 seq 连续。后者启动前设备上下文对应小米短编号 `0739bf3694c8`，末轮 tap `563572f292a544dcadc691f31f1f495b`、generation 9、ATVV session 95、attempt `5c2b03a469e9460ba5c3ce5c3c88c06c`。报告 3 个故障窗口均 `before_limited=true`，`dropped_after` 为 9/8/0，已用完整 app/trace 补齐，未把报告采样当完整运行。
+- 直接证据：末轮 21:34:20.270 `AudioStarted`、20.271 HID down，20.290/20.372 发出 Ctrl/Win DOWN；21.067 读到 baseline=current=`134327256604965111`（2026-09-01 的历史记录）。21.073 恢复切换返回 `0x80004005`，未成功切换。**23.075/23.157 程序先发送 Win/Ctrl UP，23.159/23.242 又重发 DOWN**；23.426 仍有 PCM，遥控器直到 **24.969** 才报 `AudioStopped reason=2`，24.971 HID up、`forced=false`，24.978 共 303 帧/4545 ms；25.060 最终释放，25.064 误记 `host_start_failed`，随后记事本长度增加 13。原始 reason=2 不额外推定物理原因；文字长度增长也不证明识别内容正确。程序在遥控器结束之前自行松键重按是确定缺陷；日志未记录微信 UI 结束的准确瞬间，不能证明它是反馈现象的唯一原因。
+- 同轮与历史边界：最后启动的 9 轮完整语音 PCM 时长为 4080/4215/4335/4770/4095/75/3720/1650/4545 ms，8 轮有信号、1 轮过短，全部被记为宿主启动失败，4 轮记事本长度增加 4/9/13/13。为排查是否只是末轮偶发，回查包内 8 次 `.87` 启动、94 次 AudioStarted、82 轮完整交互、78 条 PCM 汇总；4 轮前置就绪拦截不是本次按住中断链，不混入9轮结论。早期设备绑定不足的记录保留未知。整包同类确认均未成功，并有 127 次恢复错误。与 `MAINTENANCE.md` 的 2026-09-11 旧安装记录修正/静音保护对照：本次源码已读取最大历史时间，旧补丁未丢失；缺陷是把仍可能不更新的历史记录当实时开麦证据，并据此自动重按，不是再漏读一条新版注册表记录。
+- 因果复核：隔离发送器、时钟及读取函数，旧实现对历史时间不变/读取缺失会在约 2.7/6.4/12.1 秒主动 UP/DOWN；1 秒才更新的记录还会被重取为新 baseline 而漏认。只禁用重试仍会误报启动失败，并让静音保护永远等不到确认。因此本次统一修复启动观察、自动重按、结果分类和静音保护，而非只改等待时长。
+- 修复合同（同日自检补修后）：复用按微信录音进程筛选的 Core Audio `CaptureWatch`，激活输入法后、发键前保存活动采集集合；只确认本轮新出现且唯一的活动会话。旧观察交接与新基线共用最多 250 ms 等待预算，沿原基线观察到本轮确认或结束；前 0.5 秒最多快查 10 次，之后每次至少间隔 250 ms，不再在第 3 秒自行退出。基线失败、旧会话、空读、歧义及已取消结果不冒称成功；后续有效读数仍可确认慢启动。不使用麦克风历史时间、不循环切换输入法、不自动重发 DOWN。松键立即唤醒采集和静音观察的等待，新轮次限时接替正常退出的旧线程；原生读取仍阻塞时同一控制器只保留一个观察线程、后续轮次可继续交付快捷键但保持未知，不借旧结果确认或解除静音。谷歌两种微信模式仍要求 9 秒内 ready，超时后的迟到确认不能放宽此限制；豆包入口不改。
+- 同日自检复现与补修：首轮 3 秒观察窗口漏掉第 4 秒才启动的微信，谷歌独立采集已为 tracking 仍会在第 9 秒误报失败；普通 250 ms 轮询等待尚未退出时快速松开再按，也会把新轮次永久标为 observer_busy。均为隔离可执行复现，不冒充硬件实测。现改为按本轮生命周期观察、可取消等待和有界交接；静音保护沿用发键前本轮基线，确认后只处理匹配会话，旧轮次取消后不继续操作。
+- 结果和保护：有 PCM、正常松键但未确认微信开麦时为 `host_unconfirmed`，日志和设置提示不再声称启动失败，也不冒称宿主成功；无 PCM、真实发送失败和松键失败仍分别保留，音频结束/清理回调两种先后顺序结果一致。确认发布与新代次切换串行。静音基线也在发键前取得；仅本轮确认后、短启动窗口内，恢复原先未静音的本进程同端点同实例播放会话一次。原本静音、会话替换、身份歧义、未确认、已松手、旧轮次或欠松清理开始后都不恢复；不改系统总静音或其它进程。
+- 首轮验证（2026-10-10，补修前历史结果）：固定主线 `.venv` Python 3.12.10，UTF-8、`-B`、`PYTHONPATH=src`，禁用真实输入，Qt offscreen。基础模拟按住 15 秒后松开、未知状态不重按、欠松仅重试 UP 先通过。随后按控制、共享结果、应用接线、谷歌按住/开关/豆包/清理、实时采集、原生播放会话、状态读写、设置提示、诊断与导出执行受影响检查，去重 **629 项，628 通过，1 项仅适用于非 Windows 而跳过**；代码后续边界调整只重跑直接受影响的 103 项及两种设备提示，未重跑无关全套。最终边界、消费者与导出批次使用 `-W error::ResourceWarning`。首轮临时入口因关闭日志及从 stdin 启动子进程不适配既有测试而失败，已改回标准 unittest；新增测试夹具的关闭/引用错误已修正。这些结果没有覆盖上述两个遗漏，不能代替补修后的验证。
+- 补修验证（2026-10-10 22:28 +08:00）：相同解释器及隔离设置，先通过 20 项定向检查，再对微信控制、共享结果、应用接线、谷歌运行/语音/微信开关/豆包/结束恢复运行 549 项，548 通过、1 项非 Windows 条件跳过，启用资源泄漏告警为错误。回归覆盖 4/8.5/12 秒才出现采集、慢原生查询、15 秒始终未知、采集等待及静音等待中快速松开再按、旧原生读取仍阻塞、取消后迟到结果；真实线程及 Event 验证正常交接，新轮次重取基线且恢复静音，旧轮次不操作。真实微信控制器接入谷歌宿主模拟，4/8.5 秒 ready、9.1 秒拒绝迟到确认且只松键一次；未发送真实系统按键。内存中恢复两处旧逻辑后，新测试分别抓到 3 个慢启动和 2 个交接失败，无额外执行错误，证实回归能检出原缺陷。更新后的真实日志导出 ZIP 保留最终 host_unconfirmed 和普通日志，无重按或虚假失败；持续未知观察由结束取消，不再伪造一个 3 秒超时确认。源码 dry-run、5 个本轮代码/测试文件语法及差异检查通过。复用未变的原生采集、播放身份保护、提示与状态序列化结果，不重复全量测试；并行任务后续改动不据此宣称通过。
+- 首轮本机原生与导出（历史验证）：隔离子进程只读执行微信 PID 筛选和 Core Audio 采集枚举，返回 3 个候选进程、0 个采集会话、查询正常；未发送真实按键、开麦或改变静音。实际导出的临时 ZIP 已核对普通日志 `Voice runtime unconfirmed`、完整 trace 的 `unknown` 与 `host_unconfirmed`、无恢复/重按事件，未知确认不触发失败报告。模拟覆盖确认成功、读失败、基线超时、短按取消、线程启动失败、旧轮次、清理失败及日志刷新导出；沿用已通过的采集/会话原生接口选择与异常资源清理测试。源码 `--dry-run`、修改文件语法检查与 diff 检查通过。
+- 人工边界与交付：尚未用用户的小米遥控器和微信完成持续录音验收。后续含本修复的程序需在原反馈环境按住连续说话 10–15 秒再松开，检查中途不结束、文字上屏及松手结束；再核对短按后重开、停止服务/断连清理和原先手动静音不被解除。谷歌微信按住入口做正常启动/松手回归，原开关入口按既有条目验收。此轮只修改源码与相关记录，未构建/打包/发布或更改版本；**现有 `.87` 和已制作的 `.88` ZIP 都不含本次修复**。
+
+## 1.0.88 本地测试包（2026-10-10，Chatterfly 兼容待实测）
+
+- 来源：正式主目录 `main` 的 `cbef482f9a4c68bedbdfdffbf5aded12fbfc8888`，加本次 `VERSION` 和四个测试文件修正；内置版本 `1.0.88-candidate.88`。认证 GitHub API 核实 latest 仍为 `v1.0.87`（发布源 `27c9076`），远端 `main` 为 `b879af8`；本地已含其后八笔提交，没有用旧工作区或新增分支。包包含现有 Chatterfly 自动读取、检查信号过滤和模拟按键兼容，以及 `.87` 后普通按键扫描码与小米设备发现诊断改动；此次不新增运行功能修复。
+- 本次基础流程：实际冻结程序须能报告正确版本、完成全部模块导入、加载 Qt 运行库及核对主 QML 资源、完成无提权的助手自检并正常退出；用户侧在完全退出旧版后完整解压、识别 `.88`，选择 Chatterfly 并刷新得到完整快捷键，再用实际遥控器确认开始、结束、声音及文字上屏。失败时保留原配置和日志，不把自动读取当成手动录入已修复。为遵守用户持续的后台无干扰要求，本轮没有执行会争用在用实例的实际设置窗口启动或版本切换；这些及真实语音流程保留人工待测。
+- 环境：当前工作区固定 `.venv` Python 3.12.10，16 项锁定依赖逐项匹配且 `pip check` 通过；UTF-8、`QT_QPA_PLATFORM=offscreen`、`RC003_DISABLE_LIVE_INPUT=1`、`RC003_ALLOW_LIVE_INPUT_TESTS=0`。源码导入与 Qt 资源检查先通过。使用正式构建脚本的本地适配副本，保留许可、公开边界、固定资源校验、原生编译与产物检查，取消会停止在用开发程序的步骤、不升级或安装依赖，输出到独立 `.build/local88/dist`。未修改正式构建入口。
+- 唯一完整原生测试轮运行 4004 项、8 项条件跳过，耗时 517.174 秒；四个测试方法产生 5 次失败与 2 次子例报错：真实辅助进程测试将其它进程查询不完整误定为失败；驱动布局和新宿主测试漏隔离现有受保护的 Gadget 状态；语音页三种样式仍断言 Chatterfly 刷新按钮隐藏。仅修正这四处测试：保留真实自建辅助进程的发现、退出及脱敏验证，区分完整/部分采集；布局测试隔离连接层，新宿主明确无待完成注入；两种设备的界面断言改为刷新入口可见。没有放宽产品权限或修改业务代码。
+- 最终在相同原生模块上复验这四个测试模块，共 41 项全部通过，包括 Basic、Fusion、FluentWinUI3 的真实离屏 QML 选择流程；其它完整测试成功结果复用，不重跑全量。完整轮与复验日志均无资源泄漏告警。重新核对 101 个原生模块的源码、二进制哈希及实际导入来源后继续冻结；两份 EXE 归档、主程序 `--dry-run`、`--qt-runtime-check`、助手 `--self-check` 和元数据检查通过。实际主 EXE `--version` 输出 `1.0.88-candidate.88`、退出码 0、无错误输出；不将这些自检写成实际设置窗口或真实宿主成功。
+- 构建输入 336 个文件，指纹 `8F84CA4AD6D2C005254A08B30D75EC491CA242146994A3E7F794DD1963EA2FCE`；产物 2201 个文件，指纹 `B5BABCD5A8705B77420C41C1BAAFD48C64059D9E7EF2F725E7A7ACDF085B6ADA`。包装复用同一产物已通过的冻结自检，沿用正式包装脚本的来源、暂存一致性、许可、ZIP 路径及内容校验，且先验证临时清理路径。源产物到暂存只核对一次，没有重复启动复制版或重复解压。
+- 桌面未签名 ZIP：`%USERPROFILE%\Desktop\MoteDeck-1.0.88-candidate.88-本地测试.zip`，158114428 字节，2226 个文件，唯一顶层目录 `MoteDeck win版 1.0.88-candidate.88`。ZIP SHA-256 `D9804B6159DAFDD5CB87CDDB0B63A29F7FDBE48EE7D07CB5FB4A0C04E8E37F45`；主 EXE SHA-256 `40C3C58091F5CE44A33F98BF5013A96C024619C009177221B0AE0D826B63E6F0`。构建与包装最终退出码均为 0；未覆盖旧包、签名、上传或发布。
+- 状态：检查点待实测。`CHECK-CHATTERFLY-001` 的遥控气泡、音频和上屏仍未验收；`CHECK-HOTKEY-EDIT-001` 手动录入漏 `0` 仍未修复，不要求用户靠反复录入替代开发侧定位。普通按键、设备发现、其它宿主与长期使用的原人工状态保持。临时适配脚本、日志、原生构建与证据位于仓库忽略的 `.build/local88/`，仅由本次打包和开发核对使用，不进 Git、不进程序包，不再需要复用证据时可删除该任务目录；它不是新的源码入口。
+
+## CHECK-KEY-SCAN-001 — Issue #12 / PR #14 普通按键扫描码（2026-10-08，检查点待实测）
+
+- 来源：认证 GitHub API 核实正式主目录与远端 `main` 均为 `08d2390`，latest 为 `v1.0.87`；接入 HZDavy 的 PR #14，原提交 `2dc5218`，保留贡献者提交历史。该 PR 原有 149 项输入相关检查通过，但隔离构造输入后发现 Home、End、Insert、Delete、菜单、小键盘除号及 PrintScreen 共 7 个物理键身份检查失败；例如除号生成 `0x35` 而非 `E0 35`，原生反向映射得到普通斜杠 VK。该核验未发送真实键盘事件，不冒充宿主实测。
+- 修复：普通键补扫描码；沿用既有物理键表固定导航区、菜单、除号及 PrintScreen 的身份，动态映射改用保留前缀的 `MapVirtualKeyW(vk, 4)` 并拆出 E0 标记。E1、未知或失败的映射保留虚拟键回退；9 个已命名多媒体/浏览器键保持旧路径。数字小键盘与小数点保留虚拟键字段和发送模式，同时附上扫描码，避免改为纯扫描码后随 NumLock 变成导航动作。专用语音发送器及配置格式未调整。
+- 环境：正式工作区 `.venv`，Python 3.12.10，`PYTHONPATH=src`、UTF-8、`RC003_DISABLE_LIVE_INPUT=1`、`-B -W error::ResourceWarning`。受影响范围去重 657 项，其中 1 项仅适用于非 Windows 而跳过，其余通过。输入 ABI、原生映射及批量松键 155 项先通过；应用接线、Chatterfly、谷歌微信/搜狗/语音、导航诊断、设置流、诊断脚本及键名/快捷键 501 项首轮仅有旧 F9 无扫描码断言失败，1 项跳过。更新该断言并增加普通键上下沿验证后，最终针对 ABI 和诊断脚本 42 项通过；其余有效结果复用，未重复全量测试。
+- 原生核验：直接调用 Windows 映射 API，覆盖字母、Esc、空格、回车、符号、F24 及带 E0 的原始 VK；固定身份、数字小键盘、所有已命名多媒体键、映射异常及 E1 回退均检查按下/松开。源码 `python -B -m ovb_rc003 --dry-run`、差异空白检查及公开边界扫描（658 个文件）通过；未启用系统按键注入或操作真实设备。
+- 人工待测：对应新程序制作后，用遥控器在 Folia/Chromium 核验字母、Esc、空格及组合键的 `event.code` 与实际动作；回归 Home/End/Insert/Delete、菜单、PrintScreen、小键盘除号和 NumLock 两种状态下的数字键，再检查音量、媒体、语音快捷键和松开清理。作者对原 PR 的 Folia 自测不代替补齐修复后的验收。
+- 交付边界：本轮为源码接入，未构建、打包或发布，`VERSION` 仍为 `1.0.87`；已发布的 `.87` 不包含本次修复。CI 保持停用。临时审查脚本与运行输出位于 `%TEMP%\remote-mic-pr14-review-0809465f02d344bca4c2701e2ba2a92b`，不入 Git、不发布，不是第二个开发入口；不再需要时可清理。
+
+## 1.0.87 正式发布（2026-10-03，已发布，人工项目待实测）
+
+- 用户授权打包并更新 GitHub 正式版；正式主目录 `main` 的干净构建/tag 来源为 `27c90764b551dfb3c2cae3a6d11f642b0ff0fff7`（历史整理前为 `1c5ca77`，代码树相同），内置版本 `1.0.87`，保留 `c6278d5` 导航修复和 `fea60f6` 审计修复。未创建产品分支、源码工作区或旧版备份入口。日期采用本次用户环境 Asia/Shanghai。
+- 固定 `.venv` Python 3.12.10，PyInstaller 6.21.0、hooks-contrib 2026.6、Cython 3.2.8、PySide6-Essentials/shiboken6 6.11.1。源码 `--version`、`--dry-run`、`--qt-runtime-check` 先通过；唯一完整检查入口 `build/build-candidate.ps1` 退出 0。原生测试运行 3936 项，8 项按环境条件跳过，其余通过，耗时 406.190 秒，无资源泄漏告警；不再独立重复完整 unittest。
+- 公开边界扫描 656 个文件、固定第三方资源与许可、101 个原生模块的来源及实际导入、两份 EXE 内部归档、内置版本与 EXE 资源、主程序 dry-run/Qt runtime、助手 self-check 和构建前后输入指纹通过。334 个构建输入指纹为 `B2D5972744E47C4DDD4F664F9AA2C69DC1E87CDB1492296D8A84AE8E692E3209`。
+- 包装前优先验证实际新 EXE：普通权限、空临时用户数据、禁用真实输入；窗口可见且标题 `MoteDeck win版 1.0.87`。重复启动退出 0，原进程继续运行；退出请求和主进程退出均为 0。再启动实际旧 `.86`，通过 `.87` 既有确认窗口完成切换，旧版退出、新版窗口出现并正常退出，测试配置 SHA-256 前后一致。未操作真实用户配置、遥控器或驱动；该检查只确认这些基础流程，不代替视觉或真实按键验收。
+- 桌面 ZIP：`%USERPROFILE%\Desktop\RemoteMicRC003-1.0.87-portable-unsigned.zip`，157946681 字节，SHA-256 `D93691D37E6F6683229097EA63D544BDF16684D72991DB65109DDBE3AB911B82`；主 EXE SHA-256 `520229794ED35F35AD38F37909B5693C48269DDCD15C4FCE0C0BED86EE758BA7`，签名状态 `NotSigned`。复用冻结入口检查，以任务临时等价包装步骤保留来源、复制、许可、结构及最终指纹门禁；完整解压一次，2226 个文件与暂存目录逐一哈希一致，没有重复冻结或完整测试。
+- 发布前认证 GitHub API 核实 latest 仍为 `v1.0.86`、远端 `main` 为 `e73134d`；`v1.0.87` 未占用。Qt/PySide 6.11.1 项目控制的对应源码附件大小与 digest 符合既有记录；Issues 开启，源码构建工作流仍停用；main 未保护、rulesets 为空、私密漏洞报告及安全自动修复关闭。本轮不改变上述仓库设置。
+- 历史门禁：此前 `check-release-readiness.py --enforce` 检出未上传历史中的一处本机路径，当前源码已脱敏。用户在收到具体说明后明确要求“继续更新github版本”；据此仅脱敏相关未上传历史，并调整其后提交的父引用，保留作者、消息、当前代码树及全部已发布祖先，原提交可由原有 reflog 找回，不创建备份分支、不强推。整理前后当前树及构建来源树完全一致，原完整检查与产物结果继续有效；整理后正式历史发布门禁通过。
+- GitHub API 核实：`v1.0.87` 于 `2026-10-03T03:09:24Z` 发布，`draft=false`、`prerelease=false`，latest 为 `.87`，tag 指向上述 `27c9076`。上传草稿的两个附件名称、长度及服务端 SHA-256 与本地 ZIP/清单一致后才公开；ZIP 为 157946681 字节、清单为 110 字节，清单 SHA-256 `EC94C55F20BA2D14AAFC79577F3BCA4214A2773874255F8CB7D18EE44A8E3C7B`。`main` 已常规快进推送，主页正式下载为 `.87`，历史 tag 与附件未改。
+- 发布后从公开 URL 下载完整 ZIP，长度及 SHA-256 与上传包一致；公开 `SHA256SUMS.txt` 的长度、摘要与内容也一致。不重复解压相同哈希的包，也不重复冻结或完整测试。实际旧 `.86`、新 `.87` 的原生更新模块使用本次认证 GitHub API 的真实第一页记录回放：`.86` 选择正式 `.87`，`.87` 判为当前版本，均解析公开清单并与 ZIP 摘要一致。实际匿名 API 请求在本机均返回 HTTP 403 rate limit exceeded，程序正确提示 GitHub 限流；因此不把回放写成匿名联网发现通过，直接公开下载已另验通过。首轮探针尝试从外置命名空间读 `__version__` 失败，按冻结布局改读实际 VERSION 后继续；仅为开发侧探针修正，未修改程序或发布包。
+- 人工状态：导航实际确认/右键、宿主软件和显示缩放、真实 44.1k 音频、输入法文字上屏、久置/休眠、长期运行、异机及杀软兼容仍按现有条目实测。Issue #12 普通扫描码问题未处理；原微信反馈电脑不重新加入已取消的验收。
+- 临时证据归属：`%TEMP%\remote-mic-release-1.0.87-27f53d75d8ea406690f514a05e7ae001` 保存构建完整输出、依赖版本、实际 EXE 流程、包装和历史脱敏方案；不入 Git、不发布、不作为第二个源码入口。必要事实保存在本条，临时证据不再需要时可清理。
+
+## CHECK-FORMAL-AUDIT-20261002 正式主线审计问题修复（检查点待音频实测）
+
+- 核验日期与来源：2026-10-02，正式主目录 `main` 的 `8f84716` 基线；固定使用该目录 `.venv` 的 Python 3.12.10。前轮逐段、函数和场景审计的原始范围及疑点记录为 `%TEMP%\remote-mic-formal86-audit-20261002-bx44yva1`；本轮只修复其已核实四项，不重建旧版入口。
+- 原问题核实：在内存中读取该正式基线实现，新增音频回归证实 662000／661500 的累计差异；30 个候选条目遮住后一页正式版时，原更新检查只请求第一页并返回 `no_release`；全为空文件时，原日志导出返回 `exported` 并替换既有目标。导出危险路径原保护段允许祖先及后代，属于可信误删路径；未对真实仓库执行删除。
+- 目录安全验证：实际 Windows PowerShell 脚本在隔离仓库中拒绝仓库本身、祖先、存在或不存在的后代、磁盘根、目标链接、链接父目录、覆盖树内部链接、DOS 短名称别名和经目录链接访问的外部源码。哨兵与源目录均保留；磁盘根测试不带 `-Force`。实际主目录向临时独立目录导出，清单、六个源码、测试、许可与截图完整；无 `-Force` 保留已有导出，加 `-Force` 可正确替换。最终该模块 7 项通过，PowerShell 5.1 兼容语法解析通过。
+- 音频验证：实际帧长度 240×1000 的 44.1k 输出为 661500，帧输出交替为 661／662；44.1k、22.05k、8k、96k 的整段与不均匀分块 PCM 完全相同，边界插值、双声道、单采样降采样及重开流状态通过。原 16k／48k、流清理、计时与语音播放调用链测试保持通过。初次新回归发现 96k 浮点半采样舍入随分块变化，修为整数加权插值后通过；未据模拟结果宣称真实声音通过。
+- 更新验证：后续页正式版、候选版比较、最新包不完整、发布 ID 跨页重叠、不同发布同版本、数字仓库路径、恶意或不连续链接、分页上限、累计大小、剩余超时、畸形 JSON 与响应关闭均通过。认证 API 的真实列表共 7 条、48470 字节，修复实现正确返回当前正式 `1.0.86`；公开匿名接口当时限流，原 `rate_limited` 提示保持有效，未将其记为代码失败或绕过限流。分页依据为 GitHub 官方说明：https://docs.github.com/en/rest/using-the-rest-api/using-pagination-in-the-rest-api 。
+- 日志验证：仅空日志不会创建 ZIP 或替换已有 ZIP，源日志不变；空日志伴读取／刷新失败或截断后无完整行时明确失败；空文件与有效内容共同导出的实际 ZIP、文件数量及 `schema_version=1` 清单一致。已有轮转、取消、异常、隐私边界和日志包分析相关测试保持通过。
+- 顺序与结果：源码 `--version` 为 `1.0.86`，`--dry-run`、`--qt-runtime-check` 退出 0；集中四模块定向检查 109 项通过，调用链／界面／日志消费者 796 项运行、1 项按环境跳过、其余通过；最终导出安全补充 7 项通过。冻结后一次完整源码检查运行 3923 项、7 项按环境跳过、无失败，耗时 449.144 秒，`ResourceWarning` 按错误处理。定向与全量存在覆盖重叠，不相加为独立验证数量；最终冻结的八个代码及测试文件哈希前后一致。
+- 证据归属：本轮结果、基线复现、冻结哈希及完整输出集中保存在 `%TEMP%\remote-mic-main-audit-fix-20261002-uhgqyua1`，是任务临时验证证据，不入 Git、不发布、不含另一套可运行源码入口；不再需要时可清理。必要结论保存在本条与维护记录，不依赖临时目录作为正式状态来源。
+- 交付与人工边界：未制作或更新 EXE／ZIP，未改版本、上传或发布。本机现有正式 EXE SHA-256 再核验仍为 `A1B5E31C1B64613C5F08E699633766A6045B71B264311B064B767200C8936F7C`，不包含上述源码修复。真实 44.1k 端点的遥控器语音连续性及实际时长仍需后续新包实测；其它遥控器、输入法上屏、久置及已登记人工项目保留各自状态，用户取消的反馈电脑不重新加入验收。本条不改变下列 `.86` 正式发布的历史状态。
+
+## 1.0.86 正式发布（2026-10-01，按用户要求转正）
+
+- 用户明确要求将 `.86` 作为正式版，并保持递增序号的一条更新主线。正式内置版本为 `1.0.86`，功能代码不变；沿用 GitHub `main`，不创建新分支，旧测试版 tag 与附件保留。原反馈电脑验收已取消，用户要求转正不等于其它未完成的真机项目自动通过。
+- 当前发布工作区自己的 Python 3.12.10 按固定依赖安装；复用 `.86` 原生模块及完整自检结果，101 个业务模块源哈希、原生哈希和实际导入来源核对通过，正式版本与更新相关 50 项定向检查通过，无资源告警。仅更新 VERSION、发布说明及 README 构建输入，重新冻结两份 EXE，不重复原生编译或完整测试。
+- 干净构建来源为 `5f23c3bca1cbd13b269b6f317241a32b4f110b6c`，334 个构建输入指纹 `BCB59A1B3B156DA19DBAE7082EC9690247E975F33D82B689472E9D13BE2C62A2`。新虚拟环境首次自动取到 PyInstaller hooks 2026.8，发现与原测试包的 2026.7 不同后固定回原版本，并清除打包缓存重新冻结；其它固定运行依赖一致，pip 自身版本差异不进入程序。首次产物未分发，不重跑业务完整自检。
+- 正式冻结门禁通过：101 个原生模块与两份 EXE 归档一致，内置 VERSION、唯一根 EXE、主程序及助手元数据正式版标记正确；主程序 dry-run／Qt runtime、助手 self-check、前后构建输入及产物来源通过。实际 EXE 以独立空数据目录且禁用真实输入启动，窗口标题 `MoteDeck win版 1.0.86`、设备页显示正常；重复启动进程正常退出，退出请求及主进程结束通过。语音功能的本机验证复用前述同功能测试包证据。
+- 正式 ZIP 为 `RemoteMicRC003-1.0.86-portable-unsigned.zip`，157133027 字节，SHA-256 `8201899599D530C78B15E326A48326A5A3F15D785B44B6DD723A27A4EDF8DE6E`；主 EXE SHA-256 `A1B5E31C1B64613C5F08E699633766A6045B71B264311B064B767200C8936F7C`。构建到暂存 2202 个文件（含构建来源文件）核对一次，补齐许可及使用说明后完整解压一次，2226 个文件逐一哈希一致。完整自检、原生编译与冻结入口检查不在包装时重复运行。
+- GitHub API 核实 `v1.0.86` 已公开，`draft=false`、`prerelease=false`，latest 为 `v1.0.86`，tag 对应上述构建提交；附件名称、大小与 digest 一致，主页正式下载为 `.86`。使用实际公开发布列表与本次上传的校验文件，当前原生更新模块从 `.72`、`.86-candidate.86` 均选择正式 `.86`，当前正式 `.86` 判为无需升级；另用已发布 `v1.0.72` 的实际更新模块核对同一列表和清单，也可识别 `.86` 正式包。
+- 公开完整下载复核未完成：本机 curl 首次在约 32.6 MiB 后出现 Schannel 连接关闭；续传分段再遇超时和连接关闭，保留已收数据后共取得 134951040／157133027 字节；改用 Python TLS 时又遇 `UNEXPECTED_EOF_WHILE_READING`。停止继续尝试，不将部分文件记为下载校验通过；本地全包校验及 GitHub API 的完整附件 SHA-256／长度一致已经通过，尚缺实际下载完整文件的独立核验。网络故障不改写版本、tag、附件或重跑构建；恢复稳定网络后可以从已验证发布信息和保留的下载证据续接，不重复软件自检。更新主线与正式发布状态不因此改记为测试版，但不宣称发布验收全部通过。
+- 更新主线：正式发布及后续开发的权威来源为 GitHub `main`，本轮没有创建 Git 分支；独立发布目录是执行工作区，不是另一条产品线。旧本地开发历史保留用于追溯，不再从旧的 `8803a74` 开发 HEAD 继续形成并行主线或直接推送；下一次分发修改按第 87 个序号接续。历史开发及 Dependabot 分支没有因本轮发布被删除或新增。
+- 临时构建、包装与续传脚本及证据保存在 `%TEMP%\RemoteMic-release-86-20261001`，原生缓存归当前工作区的忽略构建目录；不入 Git、不随程序包，不形成第二套权威构建入口。正式脚本门禁保留，临时目录在不再需要证据时可清理；发布说明保留未签名及其它尚未完成的真机验收边界。
+
+## 1.0.86 GitHub 公开测试版（2026-10-01，真机项目仍待实测）
+
+- 验收范围调整（2026-10-01）：用户明确告知原微信久置反馈电脑存在环境问题，要求不再跟进该电脑；取消在该电脑的验收要求，不将其作为正式发布阻塞。本次归因来源为用户反馈，不冒充开发侧已复现环境根因；已确认的源码保护修复及其它项目的实际验收状态保留。
+- GitHub API 核实：`v1.0.86-candidate.86` 已公开，`draft=false`、`prerelease=true`；tag 对应干净提交 `bb654e3df25ac2817ce8de8d9b1cfe436c87abfa`。发布页为 https://github.com/ZSTDJan/windows-remote-mic-app/releases/tag/v1.0.86-candidate.86 。远端 `latest` 仍为 `v1.0.72`，稳定版及历史附件不改。
+- 干净源码提交通过公开边界、第三方许可及完整 Git 历史发布检查。334 个构建输入与已验产物指纹一致；其中一个文件在补丁导出后换行变为 LF，核对仅有换行差异后恢复构建时 CRLF 字节，Git 内容不变。包内构建指纹及 EXE 哈希沿用下节；本轮未改变程序，也未重复编译或完整测试。
+- 正式包装验证：完整解压一次，2226 个文件逐一与已验证包装暂存目录核对哈希一致；版本、根布局、主 EXE 和构建来源一致。原本地 ZIP 仅复制成公开英文附件名，不重新压缩。附件 157985081 字节，SHA-256 `EA0A02357CA52621E2FE35EFFC371AFE96652B60BB2B87D46307463919FA0D63`；GitHub API 的附件大小和 digest 相同。实际公开下载 ZIP 与校验文件核对通过：两次下载连接中断后，续传已下载部分并得到完整文件，SHA-256 及长度一致；没有将网络中断登记为程序缺陷，也没有重复解压或完整测试。
+- 发布后单独更新主页候选下载链接和使用说明的 Chatterfly 版本范围，说明提交不作为 `.86` 包的构建来源；已发布 tag 不改。实体遥控器、真实文字上屏、久置／休眠、异机与杀软兼容保留待实测，候选未声明整版验收通过。
+
+### 发布准备与远端状态
+
+- 用户授权将 `.86` 抽出为 GitHub 测试版。当前已验证源码从开发提交 `8803a74` 导出到以远端 `main` 的 `906e6b3` 为父提交的独立发布工作区，暂存树与开发提交树完全一致后才补充本节及 Changelog；避免把旧开发历史中的个人路径传到公开仓库，开发历史保持原样。运行与构建输入不修改，复用下节已验证产物；发布提交须通过公开边界、第三方许可和完整 Git 历史发布检查，再核对构建指纹及正式 ZIP。
+- 发布目标为 `v1.0.86-candidate.86` 预发行，附件使用 `RemoteMicRC003-1.0.86-candidate.86-portable-unsigned.zip` 和 `SHA256SUMS.txt`。正式 `.72` 继续保留为稳定版；主页测试版链接在发布后作为单独说明提交更新，不改变已验收 tag 的构建输入或程序内容。具体远端结果见本节上方。
+- 2026-10-01 GitHub API 核实：目标仓库 Issues 开启，简介和 topics 已配置；源码构建工作流 `windows-rc003-ci` 为 `disabled_manually`。main 未保护，rulesets 为空，私密漏洞报告与 Dependabot 安全更新关闭；本轮不改变这些设置，也不重新启用云端构建。Qt/PySide 6.11.1 项目控制的对应源码附件仍在，API 提供的大小及 SHA-256 与 `THIRD_PARTY_SOURCE.md` 一致，复用原公开下载验证记录。
+
+## 1.0.86 本地测试包（2026-10-01，豆包 0.9.1.22 适配待遥控器实测）
+
+- 来源：本地 `main` 基线 `cfdfb3f` 加本次豆包修复，版本 `1.0.86-candidate.86`；保留 `.85` 的 B 款微信久置修复，旧 ZIP 不覆盖。固定本工作区 `.venv` Python 3.12.10；源码 `--version`、`--dry-run` 通过。构建输入 334 个文件，指纹 `382B4AF3C2312E73BDEB4A856F30902955F2579C5551C9704C368E6C372B0F11`。
+- 本次完整检查唯一入口为 `build/build-candidate.ps1`。首次因旧 `.85` 测试记录含个人绝对路径，在完整测试前停止；改用用户目录变量后，公开边界、固定资源、许可与原生编译通过。完整 native-stage unittest 运行 3898 项，8 项条件跳过，只有 3 个方法的 4 个子进程中文输出读取情况报错：子进程 UTF-8 输出被父进程按 GBK 解码，导致 `stdout=None`。隔离复现相同解码异常后，仅在两个测试文件中固定父子进程 UTF-8；同一原生模块下复测这 3 个方法通过，无资源告警。其余完整结果复用，没有再次运行整套测试，也没有修改业务代码来规避失败。
+- 复用原生阶段的继续构建入口位于本任务临时目录；重新核对当前源文件、101 个原生模块哈希与实际导入来源后，保留原入口全部后续门禁，完成冻结、两份 EXE 内部归档检查、主程序 `--dry-run`／`--qt-runtime-check`、HID 助手 `--self-check`、元数据与构建前后指纹核对，退出码 0。实际冻结程序以独立空数据目录、禁用真实输入监听启动，窗口标题 `MoteDeck win版 1.0.86-candidate.86`，设备页及语音页可显示；退出请求返回 0，主进程退出。最初用 `Start-Process -WindowStyle Hidden` 的测试启动没有可见窗口，正常窗口方式重启后显示正常；不把隐藏启动参数造成的现象登记为用户启动缺陷。
+- 本轮使用等价本地包装步骤，复用构建已通过的冻结检查；源码到暂存目录只做一次哈希一致性核对，补齐许可和说明，检查 ZIP 可打开、唯一顶层目录、三项根布局、VERSION、关键文件、文件数量及长度。原 `package-local-test.ps1` 仍强制重复冻结入口检查，未在本轮改造该脚本。临时包装脚本首次缺 UTF-8 BOM，Windows PowerShell 5.1 读取中文输出路径出错，尚未生成 ZIP；补 BOM 后复用已验证暂存目录，仅继续压缩与包装检查通过。临时脚本、探针、输出及暂存目录不入 Git、不入程序包；开发机可在不再需要证据时清理本任务临时目录。
+- 桌面未签名 ZIP：`%USERPROFILE%\Desktop\MoteDeck-豆包新版适配-1.0.86-candidate.86-本地测试.zip`，157985081 字节，SHA-256 `EA0A02357CA52621E2FE35EFFC371AFE96652B60BB2B87D46307463919FA0D63`；主 EXE SHA-256 `6A34EEC15DC80AD914529F6C37C9B3F56305AD4A3757F490370D6E861DDFCBFA`。当时未签名、上传或发布；随后同一包的 GitHub 测试版发布见上节。
+- 实机豆包证据集中在 `TEST-VOICE-010` 的“0.9.1.22 续接核验”。用户验收时完全退出旧版，将 `.86` 解压到新目录并确认版号；在豆包 0.9.1.22 下用实际遥控器检查按住／松手、开关模式及刚开始即结束，确认录音、文字上屏和无串键；外部改快捷键后刷新、其它宿主、休眠恢复与长时间久置仍按原队列实测。原 B 款微信久置项及其它输入法、设备的人工状态不改记为通过。
+
+## 1.0.85 本地测试包（2026-09-29，B 款微信语音久置修复待真机实测）
+
+- 来源：本地 `main` 修复提交 `3552db2`，分发版本递增为 `1.0.85-candidate.85`；上一版 `.84` ZIP 不含此次修复。固定本工作区 `.venv` Python 3.12.10，源码 `--version`、`--dry-run` 通过；构建输入 334 个文件，指纹 `CC59656F6DE10EDBCD1DA136F1EA0E4AB7FE431FCE622004B84CA7E222F4A337`。
+- `build/build-candidate.ps1` 作为唯一完整检查入口通过：公开边界、固定第三方资源、原生编译、完整 unittest 与资源告警门禁、101 个冻结原生模块和两份 EXE 归档，以及冻结主程序 `--dry-run`／`--qt-runtime-check` 和 HID 助手 `--self-check` 均通过。以独立空数据目录、禁用真实输入监听启动实际冻结设置窗口，读到标题 `MoteDeck win版 1.0.85-candidate.85`；退出请求返回 0，主进程退出。
+- 桌面未签名 ZIP：`%USERPROFILE%\Desktop\MoteDeck-B款微信语音修复-1.0.85-candidate.85-本地测试.zip`，161039831 字节，SHA-256 `D2C075D54F12341BFD34273D2CFD4820C9273798BEF8D79A8B564EE901B3D41B`；主 EXE SHA-256 `D13BD7E898EE06A4EBDBD1BB728B08F6015A4A4CC97FB56BD0A140987FB4970F`。打包脚本核对来源、版本和 ZIP 结构；压缩包可打开，唯一顶层目录与包内 VERSION 均为 `.85`。未签名、上传或发布。
+- 人工待测：在原反馈电脑完全退出旧版后，将 `.85` 解压到新目录，确认窗口版本；用同一 B 款和微信久置后按住／松开语音键，核对语音窗口出现、录音及结束，再核对实体左 Win 真正按住时仍拒发、松开后恢复。`.84` 原有 Chatterfly、A 款开关语音和其它 B 款接入人工项仍按各自条目验收；本机自动检查不等于这些真机结果。
+
+## 1.0.84 本地测试包（2026-09-29，整合功能待真机实测）
+
+- 来源：整合主线提交 `0fa1e7c`，仅将分发版本递增为 `1.0.84-candidate.84`，产品业务代码未再修改。固定本工作区 `.venv` Python 3.12.10；源码 `--version`、`--dry-run`、`--qt-runtime-check` 通过。构建输入 334 个文件的指纹为 `81E3613CB4CB674CB6150265405B24CD8382602DAAABCE2008BE01D52786AAA2`。
+- `build/build-candidate.ps1` 完整运行 3876 项测试，3868 项通过、8 项按条件跳过；公开边界、资源告警、101 个原生模块与两份 EXE 归档、冻结主程序 `--dry-run`／`--qt-runtime-check` 和 HID 助手 `--self-check` 通过。独立空数据目录、禁用真实输入监听下启动冻结设置窗口，标题为 `MoteDeck win版 1.0.84-candidate.84`，退出请求及主进程均返回 0。首次探测误把 Windows 的 `Default IME` 辅助窗口当成设置窗口，过早退出请求返回 19；改按程序标题识别后同一流程通过，测试进程已清理。
+- 桌面未签名 ZIP：`MoteDeck-整合测试-1.0.84-candidate.84-本地测试.zip`，157957072 字节，SHA-256 `E3C6E6E4834CB2CADF0354BE3372F255F9F9BFFF5E10C395F73FD95DDDB57FE2`；主 EXE SHA-256 `47C962AEC8E1392A2F522D25DF8ECAD33F6F1DE7B011DA4EADEA799DE22D7F58`。打包脚本核对来源、版本、压缩包结构及关键文件；压缩包可打开，顶层目录和包内版本文件为 `.84`。未签名、上传或发布。
+- 人工待测：完全退出旧版，把 `.84` 解压到新文件夹并确认窗口版本；按 `CHECK-CHATTERFLY-001` 用实体遥控器核对两种模式、语音浮窗及文字上屏，再按 `CHECK-REMOTE-WETYPE-TOGGLE-001` 核对 A 款微信／搜狗开关行为，按 `CHECK-REMOTE-B-GADGET-FALLBACK-001` 核对 B 款接入和语音。自动检查不代替目标电脑、遥控器和输入法实测。
+
+## CHECK-REMOTE-WETYPE-IDLE-LWIN-001 — B 款久置后微信语音键无响应（2026-10-01，修复已发布，原反馈电脑取消验收）
+
+- 当前范围：用户在 2026-10-01 告知原反馈电脑问题由其环境导致，并要求不再跟进；该电脑的回测取消，不作为发布条件。此项不改记为真机通过，也不撤销已验源码修复。下述日志、机制与检查结果保留为历史证据，其它正常环境的按键冲突保护仍按实际验证结果判断。
+
+- 来源：用户 `MoteDeck日志-20260929-163459.zip`，SHA-256 `88f08b540cdf454bc2099f22202d41bf339feb8d23b495ed035f432a4fc89ba3`。2026-09-29 用 `audit_log_bundle.py` 按反馈时间 16:05～16:35 核对：ZIP 实际 11 个成员全部读取，清单内文件长度一致，`incomplete=false`、快照稳定，无截断或读取中变化；诊断报告有 `before_limited`/`dropped_after`，已与完整应用日志和轮转诊断流交叉核对。清单中未采到的 `hid-helper.log.1` 不涉及本轮语音按键链路。
+- 本轮关联 `.82` 两段运行：`d1cd376e6216`（13:02:09～16:14:06，正常退出）和 `491886f81cfe`（16:14:21～16:35:01 导出时仍运行）。同次启动的设备选择与就绪记录将前一段绑定到 B 款 `18d1:9450:011b`。13:12:48～52 微信语音成功；16:13:55 唯一故障尝试在发键前因左 Win 键被判占用而拒绝，`raw_down=true`、`windows_down=false`、PCM 为 0。B 款微信路径没有启动应用的语音低层钩子，故 `hook_down=false` 不能当作钩子确认松键。16:14 重启后，同版 16:15:03～07 的发键、松键、微信麦克风确认和 29 帧 PCM 均成功。16:30 前后只有运行心跳，没有新的按键尝试；故障当时其它键正常来自用户反馈，日志未记录同期普通键实测。
+- 可信故障机制：Raw Input 保留了一条旧的左 Win 按下记录，微信语音的按键前检查因此一直拒发；重启清空记录后恢复。日志没有拍到那次按下来源和漏收松键的瞬间，不把具体漏事件原因写成已证实。修复只在 B 款实际使用的微信 Raw-only 路径尝试校正：要求跟踪器健康、单键盘且无重叠持有、旧记录超过 2 秒；在可访问且前后稳定的同一桌面上间隔 50 毫秒两次确认 Windows 状态显示已松开，按 Raw 代际与事件修订号条件清除。钩子活跃、Windows 状态显示按住、多键盘、桌面变化、查询失败或新事件到来时继续拒发；清除后仍逐键复核，Ctrl 已发而 Win 状态变化时补发 Ctrl 松键。2 秒门槛超过 Windows 低层钩子允许的最长 1 秒延迟；但第三方钩子若直接吞掉实体按键，Windows 状态不能单独证明物理松开，此种环境仍是人工实测边界。[Windows 低层钩子时序](https://learn.microsoft.com/en-us/windows/win32/winmsg/lowlevelkeyboardproc)。
+- 验证：固定主线工作区 `.venv` Python 3.12.10、`PYTHONPATH=src`，受影响的输入、Raw、微信控制、遥控器语音与应用接线共 453 项通过，启用资源泄漏告警为错误；源码 `--dry-run`、相关文件 `compileall` 与差异检查通过。本机原生桌面/权限及左 Win 松开状态查询返回有效结果；在禁止真实系统按键发送的隔离回放中，旧 Raw 记录被校正，微信快捷键 DOWN/UP 成对完成。该源码阶段未构建、打包或发布；现有 `.82/.83/.84` ZIP 均不含本修复，后续 `.85` ZIP 已包含，完整自检和打包结果见本文顶部。自动检查不代替反馈电脑久置后的真机验收。
+- 原人工计划（原反馈电脑部分已取消）：后续含本修复的测试版曾计划在同一 B 款电脑上久置后按住、松开微信语音键，确认窗口出现、能录音和正常结束；此电脑不再要求回测。其它正常环境的实体键盘左 Win 冲突保护检查仍保留，不要求用户为开发侧已经可模拟的故障分支重复收集日志。
+
+## CHECK-REMOTE-WETYPE-TOGGLE-001 — A 款微信开关语音与退出（2026-09-29，检查点待实测）
+
+- 来源：用户 `MoteDeck日志-20260929-151733.zip`（SHA-256 `9611E4209471222D648C4117851FD62FF7379241A9A7E63048729DF793ABB1A1`）与 `MoteDeck日志-20260929-153233.zip`（SHA-256 `0A5953EB521BBBDA969DBE1559BCD50C6417BE5D7327696DB58904B0736C0AA3`）。第一包 7 个成员、导出程序为 `1.0.72`；第二包 8 个成员、导出程序为 `1.0.82-candidate.82`，多一份诊断流轮转备份。两包清单与成员对应，包含文件无截断或读取期间变化，刷新成功；第二包快照稳定。诊断报告为限量采样，存在 `before_limited` 和 `droppedAfter`，结论使用完整应用日志及轮转诊断流交叉核对，未把采样缺失解释成事件未发生。
+- 用户未给测试时间，候选主范围按最近连续相关运行取 15:15:50～15:32:37，仍属推定：完整核对 `.72` 的 `eda02f5302834373855d2dde4d6799bd`、`c69c026dba6a4b808cf65952d1798a46`、`4dbba2c21c204c4e8bcbef410880e325` 和 `.82` 的 `44b1e6eb45b140109cf48a8626af87c4` 四段诊断会话（含无语音且正常退出的一段），关联各自启动、首次失败、按住成功、重试、停止及导出边界。三轮相关开关失败分别为 15:16:33、15:20:40、15:31:45；最后一轮从 15:31:18 启动到导出时序号 1～604 连续，导出时仍未正常退出。为查前因，另回查同启动 15:02 的按住成功，以及 09:34 的相同失败；后者实际为 `.81`，不能归到第一包的导出版本 `.72`。旧历史不混作本次实测。
+- 确定证据：最新 `.82` 运行 `556801d784f9`、已选设备 `e7a6408fd913`，同次启动此前的设备上下文为支持的 A 款 `18d1:9450:0110`，PnP 正常；15:31:32 的按住模式已有宿主录音确认和 PCM，正常结束。15:31:45 改用 `ralt` 开关快捷键，输入法切换成功，但 DOWN 在原生按键提交前因 `physicalizer_unavailable` 拒绝（marker=0、unbound）；随后 407 次 UP 同样失败。15:31:52 停止时线程已退出、writer/playback 均不存在，`closed=False`；15:31:57 与 15:32:23 停止超时。当前故障由软件路径解释，不是型号不匹配的证据；宿主录音与 PCM 不能单独证明识别文字已上屏。
+- 根因与修复：遥控器启动绕过通用右 Alt 跟踪组件，开关入口又没有按实际 `marked_keybd_event` 通道准备它。现在微信和共用发送器的搜狗在每次显式开关前复用应用已有按需初始化/恢复入口，不用微信按住后端判断开关发送需求。若底层抛出 `Win32InputUnavailableError`，说明当前 DOWN 未发出且此前已发的键已释放，清除虚假的松键责任；底层对部分发送且回收失败会提升为 `InputCleanupIncompleteError`，该情况继续保留责任并阻止不安全重开。没有增加自动 DOWN 重试或强制退出。
+- 接续来源：在已经完成 `.83` 本地包的 `remote-b-011b-test-worktree` 继续修复，保留 `ea8b0a7` 的 B 款备用连接及现有 `.83` 构建改动；该阶段未另建 `.82` 分支，未更新 VERSION、编译或覆盖既有 ZIP。已生成的 `.83` 包不含本条修复；后续 `.84` 本地包已包含，见本文顶部。
+- 自动验证：固定本工作区 `.venv` Python 3.12.10、`PYTHONPATH=src`、禁用真实按键注入。修复前定向 7 项得到 6 个失败和 1 个新接口缺失错误，覆盖原生发送前拒绝、错误 UP 债务及初始化漏接；修复后 `tests.test_wetype_toggle`、`test_sogou_voice`、`test_voice`、`test_doubao_voice`、`test_stop_recovery`、`test_voice_key_physicalizer`、`test_win32_input_batching` 与 `test_app_wiring.InputLifecycleTests` 共 374 项通过，并启用 `-W error::ResourceWarning`。覆盖初始化成功/失败、每次显式按键重新检查、取消、故障后停止并重新开始、部分组合键回收成功/失败、仍有真实松键责任时继续阻断，以及原按住模式和停止链路。源码 `--dry-run`、最终差异和 `git diff --check` 通过。
+- Windows 原生验证：独立 Python 进程两轮真实安装/停止键盘跟踪钩子，组件就绪后可创建并取消 DOWN/UP 确认票据，停止后拒绝新 DOWN，无遗留线程；全程未发送系统按键。该结果证明本机组件可启停，不代替真实 A 款和微信对快捷键的接收。
+- 2026-09-29 审核遗漏补修：基于 `cba895f`，确认实体键盘持有快捷键中的任一键时，`send_voice_key_combo_tap` 在任何 DOWN 前抛出 `PhysicalKeyInUseError`，但开关发送器仍建立待松键责任，导致实体键保持按下时停止反复失败。该错误现与确认无遗留 DOWN 的失败一样清除责任，不发送多余 UP；发送后的普通异常和 `InputCleanupIncompleteError` 仍沿用原安全清理。新增 3 个测试在修复前出现 5 处失败（单独右 Alt、组合修饰键、组合主键，以及微信/搜狗停止），修复后确认零注入、重复清理成功、用户松键后可再次启动。固定 `.venv` Python 3.12.10，`tests.test_wetype_toggle`、`test_sogou_voice`、`test_win32_input_batching`、`test_voice`、`test_stop_recovery` 共 254 项通过，启用资源泄漏告警为错误；源码 `--dry-run`、差异复核和 `git diff --check` 通过。此前未变的原生跟踪启停结果复用，未重跑无关全套检查，未编译或打包。
+- 人工待测：后续包含本修复的程序中，使用同一 A 款与微信 `ralt` 开关快捷键，确认按一次开始、再按一次结束，连续重开以及停止服务/完全退出；同时确认原按住模式可用。增加实体键盘按住同一键时启动被拒绝、服务仍可停止、松键后可重新开始的场景。本次未更改用户配置，也未声称已在反馈电脑完成验收。
+
+## CHECK-REMOTE-B-GADGET-FALLBACK-001 — `.82` 接入失败回退（2026-09-29，已入 `.84` 本地包待实测）
+
+- 来源：用户 `MoteDeck日志-20260929-132145.zip`，SHA-256 `C65F5153DCAC43A7D5F5A25152B265A028372325AC3297EF6D90948370E6DAFD`；`export-info.json` 确认版本 `1.0.82-candidate.82`、导出时间 13:21:49、快照完整且文件未截断。只取本轮 13:21:25～13:21:38：同一 WUDFHost PID 49396 五次在 `attach/ProcessNotRespondingError` 失败；所选宿主、驱动布局和符号识别均已通过，未到按键就绪或语音连接。完整的进程模块采样未见已载入 Frida agent；现有日志仍不能证明该用户机器具体是文件读取权限、注入阶段还是安全软件拒绝。
+- 源码处理：原有 `frida.attach` 成功路径继续使用；仅遇到该固定异常时，已提权的谷歌接收进程才从受保护目录将校验过哈希的独立 Frida Gadget 载入已选 WUDFHost，并用本机随机端口、受保护令牌连接。先核对宿主身份、当前选择、模块、监听端口归属和同宿主的小米设备；同一宿主已有/可能仍在载入 Gadget 时拒绝重复注入。谷歌和小米两条注入路径共用互斥锁，超时注入标记按 PID 和进程创建时间保留；停止请求到达后不开始新的载入，远程清理有取消截止。没有重启蓝牙、强制结束 WUDFHost 或改变普通按键/语音解析。
+- 隔离原生验证：只用本机新建的受限 `ping.exe` 子进程，先得到 `direct=rejected`，在同一个仍存活的 PID 上用项目原生注入函数加载固定 Gadget，认证连接后脚本 RPC 返回该 PID，结果 `same_pid_gadget_rpc=success`。另外独立 Gadget Listen 子进程两次连接/RPC 成功，错误监听 PID 在 Frida 连接前被拒绝。临时子进程与 Public Documents 中的 `RemoteMicSamePid-*` 测试目录均已清理；可重建的一次性夹具放在已忽略的 `.build/log-audit/gadget-same-pid-fixture.py`，不进入程序包。
+- 最终受影响检查：本工作树 `.venv` Python 3.12.10、`PYTHONPATH=src`，Google 接收/启动/管道、Gadget 与权限、小米宿主防冲突、冻结导入清单等 299 项通过；源码 `--dry-run` 与 `git diff --check` 通过。未运行真实 WUDFHost 注入、未编译冻结程序、未制作 ZIP；原 `.82` 包不含此修复。
+- 人工待测：若后续明确制作本地测试包，先在上述失败电脑确认能越过 `attach`，再分别确认普通按键与语音；同时在已成功的 B 款电脑确认直接路径不回退。若宿主共载小米设备、已有不确定的载入或监听端口冲突，预期会明确失败并保留诊断，不以自动重启蓝牙或重复注入处理。
+
+## 1.0.83 本地测试包（2026-09-29，B 款备用连接待异机实测）
+
+- 来源：备用接入源码检查点 `ea8b0a7`，本轮仅将 `VERSION` 递增至 `1.0.83-candidate.83` 并修正三个既有测试文件与新增接线不符的测试约定；未再改产品接入代码。构建输入指纹 `378820834EFB01ED199448DF9350A4D95713FEFA8593583B761160AE3BD73F78`；固定使用本工作树 `.venv` Python 3.12.10。
+- 首次构建完成固定资产、公开边界和 101 个业务模块的原生编译；完整原生测试运行 3827 项，8 项按条件跳过，其余出现 4 个测试错误、1 个测试失败，不能记为完整通过。一个旧按键监听替身缺少新的停止方法，另一个直连测试未隔离新增的回退查询；隐私静态检查把 Gadget 固定本机监听地址误判为用户设备地址。只修正三个测试文件；原生阶段相关 47 项重跑通过，完整日志无资源泄漏告警，公开边界复查通过（594 个文件）。业务源码未变，复用已编译的 101 个模块继续封装，没有重复运行全套测试。
+- 冻结产物核验：101 个原生模块及两个 EXE 归档通过；内置版本和 EXE 版本元数据均为 `.83`，主 EXE 的 `--dry-run`、`--qt-runtime-check` 与权限助手 `--self-check` 返回 0。以独立空数据目录、关闭真实输入监听启动设置窗口，标题为 `MoteDeck win版 1.0.83-candidate.83`；程序自身退出请求及主进程均返回 0，未动用实体遥控器和现有用户配置。
+- 桌面未签名 ZIP：`MoteDeck-B款备用连接-1.0.83-candidate.83-本地测试.zip`，157878443 字节，SHA-256 `F488C4A1C15D902ED8BA9A551163BA996A3B6912ACCCAF09D3A38D1A79A0935F`；主 EXE SHA-256 `2655E2B6E5739E00CE3B148641AC72AF8CC8CFE0C7B680DD2FB4D95C13B3F842`。项目本地打包脚本核对来源、目录、版本及 ZIP 内容后生成，旧 `.82` ZIP 未覆盖；未签名、上传或发布。
+- 人工目标：完全退出旧版，把 `.83` 解压到新文件夹并确认窗口版本；先在此前反复提示重启服务的电脑启动一次，记录大致时间并导出日志。若能运行，分别检查普通按键和语音；另在曾经成功的 B 款电脑确认原连接路径正常。自动检查不能代替异机实测。
+
+## 1.0.82 本地测试包（2026-09-29，待异机实测）
+
+- 来源：接入助手诊断提交 `8849ba8`，本次只将 `VERSION` 递增至 `1.0.82-candidate.82`，未再改接入逻辑。开始构建前，本工作树 `.venv` Python 3.12.10 的源码 `--version`、`--dry-run` 和产品命名入口通过。`build/build-candidate.ps1` 一次完成公开边界、固定依赖核验、原生编译、完整原生测试及资源泄漏扫描，冻结 100 个业务模块，主 EXE 的 `--dry-run`、`--qt-runtime-check` 和内部助手 `--self-check` 均通过。构建输入指纹为 `315A0DD34A8F23432317B63A60FE2FC0BDDD991C6FB0ABCA3627CD9C392FB293`；冻结版内置版本与 EXE 版本元数据均为 `.82`。
+- 基础流程：无旧版进程运行，以独立 `LOCALAPPDATA` 启动冻结版设置页；按测试进程 PID 枚举到标题含“MoteDeck”的顶层窗口，再由冻结程序 `--request-exit` 正常退出，主进程及退出请求进程均返回 0。此前 PowerShell 的 `MainWindowHandle` 在隐藏启动模式返回 0，不能据此判定窗口未创建；测试进程已清理。未连接实体遥控器，也未使用用户现有配置。
+- 本地未签名 ZIP：桌面 `MoteDeck-B款接入助手诊断-1.0.82-candidate.82-本地测试.zip`，157631864 字节，SHA-256 `EF593D10002E292AADBE07B07BC8D8055AFC4F1207D0D6F5D6BC5DC7EF2FF185`；主 EXE SHA-256 `AA4D00907EB3E71E19D2EC36063E3D1FA1C7B199E0E41ED7F861FD7A6BC95B11`。项目本地打包脚本核对构建来源、版本、目录布局和 ZIP 内容后原子生成该包；`.81` 包未覆盖。本包只供接入失败用户测试，未上传或发布。
+- 人工目标：先完全退出旧版，解压 `.82` ZIP 到新文件夹并运行，确认窗口版本；对原已选遥控器启动服务一次，记录大致时间并导出日志。如本次服务能运行，再分别确认普通按键与语音；不能用本机自动检查替代这台电脑的实测。
+
+## 1.0.81 本地测试包（2026-09-29，待实测）
+
+- 来源：日志完整性修复提交 `5854baa`；仅将 `VERSION` 递增至 `1.0.81-candidate.81`，并为新增的接入诊断模块补齐冻结构建显式导入。源码业务逻辑与上次 490 项受影响检查的状态相同。公开边界首次挡下历史记录中的两处本机绝对路径，已改成不含本机身份的描述，复查通过（586 个文件）。
+- `build/build-candidate.ps1` 的原生编译完成。首次完整原生阶段运行 3802 项，3793 通过、8 条件跳过、1 项失败：打包清单缺少上述模块；失败不计为通过。补清单后在同一编译阶段定向检查 14 项通过，并确认该模块为 `.cp312-win_amd64.pyd`。编译源码未变，按失败步骤续做 PyInstaller、原生归档与冻结入口验证；100 个原生模块及两个 EXE 归档核验通过，主程序 `--dry-run`、`--qt-runtime-check`、助手 `--self-check` 均返回 0。构建输入指纹为 `A48FAD7FA75B2D1E1B653514FB4284F05DA966CA1C99BB98B48AE03C58C13955`，成品来源及可执行文件版本元数据检查通过。
+- 冻结主程序使用隔离数据目录、禁用真实输入监听，实际打开设置窗口后由程序自身退出请求正常退出，两次进程均返回 0。屏幕外 Qt 平台没有原生窗口，退出请求检查返回 19；改用真实窗口后同一功能通过，前一次隔离测试进程已按确认的 PID 清理。这不涉及遥控器实测。
+- 本地未签名 ZIP：桌面 `MoteDeck-B款接入与日志修复-1.0.81-candidate.81-本地测试.zip`，157579251 字节，SHA-256 `E456674DAD5956F20618910DC904CAE3CBB8C7BBD1962ECF954E2F40039690E7`；主 EXE SHA-256 `7BEE2902E7D5A92A69D61EDF08714F78E5399D3A31D506F1C192A6C09EE09612`。项目本地打包脚本核对构建来源、版本、ZIP 结构和包内每个文件与已验产物的长度、SHA-256 一致；旧 `.80` 包保持原样。本包未签名、未上传或发布。
+- 人工目标：完全退出旧版，将新 ZIP 解压到新目录并核对窗口为 `.81`；异机用户选择原遥控器启动服务，不论成功或失败，记录测试大致时间并从设备页导出日志。可顺便点击“打开日志位置”核对入口；按键和语音仍须在真实遥控器上分别确认，不用自动检查结果替代。
+
+## 26-0929-1：B 款 .81 接入失败核对与诊断修正（2026-09-29）
+
+- 来源基线 `2e1e39c`。核对 `MoteDeck日志-20260929-095912.zip`，SHA-256 `55eda5075030f09b84705aa5260cd862daef503786971a27472cffb880a410b0`。按用户上午 10 点前后的反馈选取 09:40—10:10（+08:00）；实际为 `.81` 的 09:52:15—09:53:07 三次完整启动，另有 09:58:58 状态写入异常，09:59:14 导出。完整读 `app.log` 本轮 361 行及前置边界；9 月 23 日 `.63/.64` 的 11 次运行仅用于区分历史。全部 3 个 ZIP 成员核对，导出无截断、快照稳定；无诊断流，报告 3 个事件窗口的 165/140/1 个事件逐条与应用日志匹配，前两个有限采样窗口已用完整应用日志补足。临时索引与详细分析在已忽略的 `.build/log-audit/20260929-095912-*`，不是新台账。
+- 运行编号 `a025040a2ffa`、`e52c916f8380`、`fff3292e796c`。启动前设备绑定缺失，工具保留未知；同轮失败时的环境记录和选中接口均指向 `91beba29b2b5`、`18d1:9450:011b`，三次宿主选择均唯一、PID 3232。第一次下载失败（返回 35/HTTP 0），第二次下载、校验和驱动解析成功，第三次有效缓存解析成功。后两次接入耗时 10594/6469 毫秒，均为 `TransportError`；固定原文 `the connection is closed` 的 SHA-256 与日志完全一致。按键、音频累计为零，尚未执行 HID 脚本或语音查询。该错误与前一用户 `.80` 的 `ProcessNotRespondingError` 分开处理。
+- 控制进程已提权，诊断前置 `OpenProcess` 两次返回 5；后续占位信息被旧代码误标成功。上游固定版的架构查询先于原生注入中的调试权限启用，前置失败可转辅助进程；此为待核实路径，不作为本用户根因。开发机用两个独立管理员进程、各自创建的隔离目标对照：只修改测试子进程 DACL，禁用当前测试进程的调试权限后查询返回 5，**原接入仍成功执行 RPC（359 毫秒）**；先启用既有调试权限后查询与接入均成功（125 毫秒）。两次均恢复目标 DACL、回收子进程，未操作真实蓝牙宿主。因此不能据此前置拒绝直接改接入方式，也未复现用户的连接关闭。
+- 已修正确定的诊断问题：没有句柄或目标令牌时记录 `unavailable`；本机 API 异常记录 `failed`；限量扫描、局部查询失败等记录 `partial`，整阶段 `query_complete=0`；只有取得完整查询结果才标成功。单纯权限判定为拒绝、文件格式损坏属于已取得的结果，不混为采集失败。固定断连消息归为 `connection_closed`。管理员 helper 实际采用 `ProgramFiles/Frida/<SHA1>/frida-agent.dll`，旧扫描错误套用临时目录的 `frida-*/x86_64` 结构；现分别扫描两种布局、记录不含路径的来源类别，保持截止时间、数量限制和重解析点保护。内部协议递增至 23，接收、权限、按键和语音逻辑不变。
+- 最终源码检查：`tests.test_attach_evidence`、`test_channel`、`test_observation`、`test_hid_startup`、`test_startup_diagnostics`、`test_symbol_diagnostics`、`test_stop_recovery`、`test_log_bundle_scope` 共 **96 项通过**；使用本工作区 `.venv` Python 3.12.10。包括真实隔离进程访问拒绝/恢复、原生组件拒绝/损坏/恢复/退出、超时与取消、IPC 和 ZIP 导出。`git diff --check` 通过。
+- 修正后再次运行管理员隔离接入，前置查询仍返回 5、实际接入及 RPC 成功（360 毫秒）；阶段正确记录不完整，并发现管理员 helper 的实际候选文件。其 SHA-256 `6a5d09f9469bc0a262497617440d4a1494042e4f51feff78f22fdae952f2dd48` 与用户记录的候选组件相同；这证明同内容组件能在本机工作，不证明用户实际加载路径或目标访问权限。此次真实诊断记录经协议 23 与 ZIP 导出逐项一致。三次隔离实验输出及脚本留在已忽略的 `.build/log-audit/privilege-order-*`，不属于程序交付；无残留测试子进程或 Frida helper。
+- 当前结论：日志误标和管理员组件目录漏查已修复；用户接入断连的底层关闭原因仍未坐实。没有修改接入机制、递增程序版本、构建或发新测试包，也没有要求用户重复采集。后续接入修复须有能够解释该断连的证据，不能把本次日志修正宣称为遥控器故障已修复。
+- 技术核对来源：[固定版 helper 路由](https://github.com/frida/frida-core/blob/17.15.3/src/windows/frida-helper-process.vala)、[管理员组件目录](https://github.com/frida/frida-core/blob/17.15.3/src/windows/frida-helper-backend.vala)、[错误转换](https://github.com/frida/frida-core/blob/17.15.3/lib/base/session.vala)。
+
+### 接入助手断连的隔离复现（2026-09-29 续查）
+
+- 基线 `778ab8f`，沿用上述已完整核对的三次用户运行；本轮只运行开发机隔离实验，未修改产品接入、日志、权限或设备行为。固定 Frida 17.15.3 的 `HelperManager.inject_library_file` 先调用服务助手的 `can_handle_target`，再调用其注入接口；两者的通信异常经 `throw_dbus_error` 转为 `TransportError`。`ServiceConnection` 没有在该服务断开后重建代理的分支；上层 manager 自身断开有另一套处理，不能混为同一种恢复机制。新增来源：[固定版 Windows helper 服务](https://github.com/frida/frida-core/blob/17.15.3/src/windows/frida-helper-service.vala)。
+- 服务断开实验：管理员测试进程创建自己的目标子进程，仅修改该目标的 DACL，使普通查询返回 5；原路径接入并执行 RPC 成功（422 毫秒）。用独立测试 TEMP 的完整可执行路径核验助手归属后，仅终止该测试的 x64 服务助手，另一个测试目标的接入立即返回 `TransportError: the connection is closed`，与用户错误原文相同。另一次独立实验重复故障后，原地重试仍返回相同错误（16 毫秒）；启用测试进程已有调试权限后，经直接接入执行 RPC 成功（94 毫秒），先前已建立的会话仍能执行 RPC。这是确定的失效服务连接复现，不是用户电脑退出原因的证明。
+- 管理进程断开对照：首次接入/RPC 成功（343 毫秒），终止同一独立测试目录所属的 manager 后，下一次接入返回不同正文的 `TransportError: unable to access process with pid …`（109 毫秒）。该人为终止实验遗留的两个服务助手，按完整路径再次确认属于唯一测试目录后回收；不将此现象直接套用到用户故障，也不采用强杀 manager 作为产品恢复方案。
+- 修复副作用对照：新建两个受限令牌测试目标及独立 TEMP，测试目录只允许本测试用户、管理员和 SYSTEM 读取。调试权限未提前启用时，既有助手路径接入/RPC 成功（375 毫秒）；提前启用后，对另一个新目标的直接接入改从临时目录加载组件，返回 `ProcessNotRespondingError`（16 毫秒）。仅为本测试目录增加受限令牌包含的 LocalService 读取/执行权限后，相同目标接入/RPC 成功（203 毫秒）。因此“提前启用调试权限、绕过助手”不是可直接采用的单行修复，会把一部分原本成功的目标改成组件读取失败；没有把测试目录授权操作移入产品。
+- 证据边界：用户两次错误发生在各自新接收进程的首次接入，耗时 10594/6469 毫秒；本机故障是人为终止服务后第二次接入立即失败，触发条件和时序不同。现有用户材料能确定准备/驱动解析成功及接入断连，未记录 Frida 内部 manager/服务助手的存活时间、退出码和对应退出原因；应用自己的接收子进程退出 0 不代表这些内部助手正常。前置目标查询拒绝仍不能推出目标退出、组件拒读或某个安全软件阻止。恢复已死代理只能处理本机注入故障，不能解释用户在新进程中反复失败，故不增加盲目重试或宣称根因已修复。
+- 已完成四组隔离实验：服务终止、manager 终止、原地重试/直接接入恢复、受限目标的两条接入路径对照。原始 JSON 与开发脚本保存在已忽略的 `.build/log-audit/helper-*`、`restricted-route-*`，由本任务产生，仅供本机调查，可整体按临时调查数据处理，不进入 Git 或程序包。所有目标均为本任务创建的子进程，测试使用的句柄已关闭，最终查询无 Frida helper 残留；未操作真实蓝牙设备或 WUDFHost。正式记录核对及 `git diff --check` 通过；产品源码未变，复用前述 96 项结果，未编译或制作 ZIP。用户实际断连原因与可交付修复仍未确认。
+
+### 首次接入助手生存期补证（2026-09-29，源码检查点待实测）
+
+- 同一开发机隔离实验中，人为终止本测试的服务助手后，原 Frida 管理器再次接入立即报固定“连接已关闭”；新建并持有独立管理器 234 毫秒内接入另一个自有目标并执行 RPC 成功，原会话仍可调用，资源均正常回收。用户两次是全新接收进程的首次接入，分别耗时 10594/6469 毫秒；此恢复只证明旧代理故障可处理，不能解释该用户反复首次失败。自动重试可能再增加同等级等待，故不放入产品。实验结果保存在已忽略的 `.build/log-audit/helper-fresh-manager.json`，不属于交付文件。
+- 直接绕过助手的隔离路径在给测试目标补充组件读取权限后能够工作，但 Frida 17.15.3 会自行给临时组件目录增加 `ALL APPLICATION PACKAGES` 写入 ACE；仅设置受保护父目录不能保证生成组件的权限符合预期。用户目标的实际令牌与组件加载路径仍未取得，不将此路径作为当前产品修复。固定版来源：[Windows 注入目录](https://github.com/frida/frida-core/blob/17.15.3/src/windows/winjector.vala)、[目录 ACL](https://github.com/frida/frida-core/blob/17.15.3/src/windows/access-helpers.c)。该 ACE 是否构成实际低权限写入未在隔离进程中确认，不在此作确定结论。
+- 本轮源码只给接入期间的 Frida 管理助手和服务助手增加只读进程采样：管理助手按当前接收进程的子进程识别，服务助手兼容管理助手直接启动及 Windows 服务进程启动两条路径，再按可执行路径和创建时间关联；依据是 [Frida 17.15.3 的服务启动源码](https://github.com/frida/frida-core/blob/17.15.3/src/windows/frida-helper-service-glue.c)。持有最多 8 个已观察进程句柄，计划采样上限 30 秒，单次卡住的系统调用无法强制中断；分别记录是否观察到、PID/创建时间、结束时存活状态和退出码。结果只含固定数字，不导出路径；采样延迟、访问拒绝和容量上限明确标不完整，未观察到不等于助手没有启动。接入失败仍保留原 Frida 异常，不自动重试、不重启蓝牙或服务。新增固定日志字段使内部管道协议从 23 到 24。
+- 本工作树 `.venv` Python 3.12.10 的遥控器 **419 项**及停止诊断 **14 项**测试通过；包含自有进程生命周期、真实隔离 Frida 接入、IPC 与日志 ZIP 导出。原生测试原先把开发机已有的 Frida 组件算入固定预期，现只核对本次测试临时目录，接入诊断模块 19 项通过。`py_compile` 与 `git diff --check` 通过。没有真实 B 款或用户故障电脑，仍不能坐实先关闭的是哪层，也未构建客户端、打包或要求用户操作；现有 `.81` ZIP 不含协议 23 或本轮协议 24 的源码变更。
+
+## CHECK-REMOTE-LOG-COVERAGE-001 — 日志完整读取与接入证据（源码检查点待实测）
+
+核验日期：2026-09-29；源码基线 `1311826`；使用本工作区 `.venv` Python 3.12.10。
+本条按实施顺序保留证据；当前修正及协议 22 见下方“审计问题修正”，前两轮数量与协议为当时结果。
+
+### 完整读取与历史复盘
+
+- 开发机只读核对了以下 13 份 ZIP 的全部成员、轮转应用日志、诊断流、报告及清单：`20260927-130305`、`142640`、`162338`、`185802`；`20260928-100351`、`101510`、`153127`、`163650`、`194736`、`205825`、`211024`、`212854`、`225527`。均位于用户 Downloads，文件名统一为 `MoteDeck日志-<上述时间>.zip`。全部成员/行已核对，诊断报告多处有 `dropped_after`，对应完整应用日志仍在包内，不能仅读报告后声称无信息。索引保存在工作区已忽略的 `.build/log-audit/history-audit.json`；它是可由只读脚本重建的临时索引，不是新台账。
+- 历史计数按诊断相关实现提交而非用户测试次数：`e606690`、`19f5737`、`6048a79`、`78ee834`、`f2be6fa`、`e64c971`、`e730462`、`b75f524` 共 8 笔，进入 `.74/.75/.77/.78/.79/.80` 六个交付版本。首次 B 设备 `352c296c2ee2` 的六份回传依次为 `.73/.74/.75/.77/.78/.79`；另两台失败设备 `97aec94fd283`、`c9820a1f4668` 与 A 设备分别分析。
+- `.75` 诊断把 `IO_STATUS_BLOCK.Information == 3` 错当成有效报告的必要条件，漏读了成功复制的内容；后续已改。`.77` 的所选 22 条两字节报告全被拒收，`.78` 恢复普通按键；`.78` 语音特征访问失败，`.79` 按实际 UUID 接入后首位 B 用户语音成功。这些是不同阶段的事实，不能以最终成功掩盖中间的软件/诊断错误。
+- 最新 `MoteDeck日志-20260928-225527.zip` SHA-256 `589A6C56BF77280FBBF4B07B18EABAC1AE09A6D4EAD6C5FE607B1EFE082C672D`，导出 `.80`。22:54～22:55 的 8 次启动全部在 `attach/ProcessNotRespondingError` 失败，同一 HostPid 49396；前序驱动、PDB、符号和构造函数布局均完成，地址偏移 24。没有进入普通按键/语音接收；工作进程退出码均为 0。原字段没有原生错误码，第一次系统补采 25 秒后仅保留 registry 快照，第二次导出时还未完成。不能再用型号未放行、符号下载失败或语音权限解释这 8 次失败。
+
+### 缺口、修改与能力边界
+
+| 环节 | 本轮核实与处理 | 验证落点 |
+| --- | --- | --- |
+| 读取已有资料 | 按全包、版本、设备和完整运行建立索引；无运行编号的旧错误也单独索引。时间相邻只作关联线索，避免把旧日志、只创建了接收器的运行与实际启动混算 | `audit_log_bundle.py`，轮转/跨版本/损坏 JSON/报告截断用例及 13 包复核 |
+| 驱动定位 | `.80` 已有驱动/PDB 缓存、下载、符号、布局细节，本轮复用 | `test_symbol_diagnostics`、`test_hid_driver_layout` |
+| 进程接入 | 跨 attach 持有同一只读进程句柄；记录存活/退出码/创建时间、系统进程身份、目标令牌、加载策略和前后模块快照；失败字段不改变接入结果 | `AttachEvidence` 与真实受限测试子进程 |
+| 组件与异常 | 扫描有界候选组件，记录 PE/架构/文件摘要、实际目标令牌的文件及父目录 DACL 决定；区分原异常分类/上下文，未知文字只保留指纹；每项失败有阶段与代码 | 原生权限拒绝、仅测试 DLL 损坏、同进程恢复及退出四个场景 |
+| 按键与语音 | 沿用输入来源/格式/交付计数、实时与缓存查询、语音连接/订阅、音频与控制计数；验证有按键但无语音、查询超时/拒绝/取消不混淆 | 谷歌受影响检查与最终 ZIP 中的分类、计数 |
+| 系统补采 | registry/events/drivers/PnP 分别 3/5/5/8 秒截止；各项立即记录开始、完成、耗时和失败，慢查询不吞掉后续来源 | 真实隐藏 PowerShell 故意超时后被回收，下一项完成且导出保留 |
+| 传输与退出 | 新元数据使用固定白名单和原管道上限，协议 21；无效记录有拒收计数，节流/队列满/关闭未完成有记录，原停止与清理错误保持区分 | 原生结果经 `Observation → Channel → app.log → export_logs`；停止/取消、溢出及导出检查 |
+
+权限证据仅表示候选文件的 DACL 判断，不代表该路径已被证明是本次加载路径；父目录检查还受穿越权限影响，不能单独判根因。Frida 17.15.3 的上游 Windows helper 未向 Python 暴露远端 LoadLibrary 失败的原始退出码；保留这项边界，不能把父进程的晚到 GetLastError 当成它。原生测试能够区分权限拒绝、文件损坏、成功和进程退出，不等于已坐实远端用户属于其中哪一种。
+技术核对来源：[Frida host session](https://github.com/frida/frida-core/blob/17.15.3/src/host-session-service.vala)、[Windows helper](https://github.com/frida/frida-core/blob/17.15.3/src/windows/frida-helper-backend.vala)、[AccessCheck](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-accesscheck)。
+
+### 本机验证结果与交付边界
+
+- 440 项受影响用例完成：谷歌相关 407 项，日志导出、诊断证据/流及程序诊断 33 项。一次组合运行使用 stdin 启动 unittest，Windows multiprocessing 无法重新载入 `<stdin>`，导致既有 `NativePipeTests.test_real_local_pipe_and_os_peer_without_elevation` 启动失败；已用 `python -B -m unittest tests.test_runtime.NativePipeTests.test_real_local_pipe_and_os_peer_without_elevation -v` 单独重跑通过，未修改产品来迁就测试启动方式。其余 439 项原结果复用。
+- 新原生夹具只创建和回收自己的受限 ping 子进程与临时目录；目标自身仍存活但组件无读取权限时，真实 Frida 报 `ProcessNotRespondingError`；授权本测试目录后再制造损坏的 DLL 头，日志能与权限拒绝区分；恢复原文件后同进程可接入并完成脚本往返，随后结束自己的进程，日志显示已退出。Python 临时目录的 OWNER RIGHTS 与普通用户 TEMP 不同，夹具显式为测试目录加入当前用户 ACE，避免将夹具权限结构误当产品故障。
+- 新组件纳入现有 native inventory/import closure；源码 AST、`python -B -m ovb_rc003 --dry-run` 与 diff 检查通过。规则入口写入项目父目录 `AGENTS.md` 第 8.1 节；核对脚本为开发维护入口，用户不需要运行。
+- 本轮没有构建或交付新的 EXE/ZIP，已有 `.80` 包不含这些修改。真实 B 设备的最终启动恢复仍未验收；不得把本轮日志验证写成故障已修复，也不得在上述开发侧检查未完成时安排用户复测。
+
+### 本次反馈范围控制（2026-09-29 补充，已完成）
+
+- 来源基线 `3a2a1a3`。用户指出限量日志仍混有大量历史信息，要求优先定位本次测试。项目父目录 `AGENTS.md` 第 8.1 节已明确“整包核对材料完整性”和“完整分析本次相关过程”的区别；旧信息只按前因、修复对比或缺口回查，不机械重读。父目录规则仍独立保存，不复制为仓库中的第二份规则。
+- 开发机核对工具默认输出 `focus` 与历史计数摘要，完整历史索引通过 `--all-history` 查看；支持时间窗口、完整程序版本和设备短编号。自动候选按版本、设备线索及 30 分钟运行间隔划分，始终标明推定；用户时间窗口优先，完整保留重叠运行及跨轮转的启动、异常续行、退出和补采上下文。无匹配、无法绑定设备、启动边界缺失、上下文含其它运行或无法定位的诊断行明确提示，不改选旧故障冒充本次结果。具体使用以模块 README 的只读核对入口为准。
+- 最终代码的 `python -B -m unittest tests.test_log_bundle_scope tests.test_attach_evidence.BundleAuditTests -q` 通过 12 项。覆盖同版本不同时间、跨版本、连续重试、设备切换/未知/重叠、跨轮转与时区换算、窗口落在运行中途、只有启动没有接收运行、空时间窗口、旧错误隔离、损坏诊断流及实际 CLI 默认/历史输出。自检补齐了双端空窗口误回查旧启动、宽时间窗口错误引用旧版启动上下文两处边界。
+- 对本条上方列出的 13 份实际 ZIP 运行最终工具。与上轮索引逐项比较 ZIP 摘要、文件清单及完整运行索引，均保持一致；各包默认候选运行数依原顺序为 `1/7/2/1/1/2/1/2/24/1/10/7/8`。这里只验证定位结果，不将旧日志的推定设备关联升级为已确认身份。
+- `.80` 包共 81 个历史运行编号，默认候选范围 `2026-09-28 22:54:10.353～22:55:16.480`，保留本次 8 次接入失败；显式指定当日 22:00～23:00、`.80` 和设备 `97aec94fd283` 后仍为同 8 次，首次 attach 失败均保留。`.76` 的 `101510` 包共 22 个历史运行编号，默认只定位 10:09～10:15 的两次运行，未将同版本 07:33～07:37 的两次旧记录混入。
+- 核验摘要保存于已忽略的 `.build/log-audit/scope-audit.json`，用途和清理方式沿用 README 的开发机临时索引约定。此前接入诊断的 440 项结果属于前一轮验证，本次未修改产品采集、设备接入、协议或构建输入，未重复运行。未构建、未打包，用户启动故障的状态沿用上方记录。
+
+### 审计问题修正（2026-09-29，源码检查点待实测）
+
+- 基线 `83f468d`。原 `.80` 日志指定 22:55～23:00、版本 `1.0.80-candidate.80`、设备 `97aec94fd283` 时仅保留 3 次运行，漏掉同轮前 5 次；这是工具筛选缺陷。现保留用户原窗口，同时展开与其相交运行所属的完整候选轮次，分别输出 `window_overlapping_runs` 和 `round_expansion_runs`，明确提示扩大依据仍是推定。版本/设备切换及超过 30 分钟的间隔继续隔开。
+- 合成双设备日志复现了旧关联条件 `context_time <= run_start + 1` 把运行开始 0.5 秒后的另一设备记录绑到本次运行，进而被设备筛选误排除。现只用开始前的记录，并排除同版本上次程序启动的旧记录；仅在程序启动边界允许 1 毫秒的文本/诊断时间精度差异。缺时区或无可用记录时保留未绑定运行并提示，不猜本机时区，也不将上下文关联升级为身份认证。
+- 原生诊断同步执行文件读取、摘要及权限查询，存在阻塞启动线程并拖延退出的可信路径；没有据此断定原用户故障就是此原因。现 `BoundedAttachEvidence` 由独立守护线程执行，接入前/后分别最多等待 250/750 毫秒，额外等待预算合计 1 秒。超时取消后续查询、抑制晚到结果；每进程只允许一个采样线程，未退出时重试记录 `busy`，不叠加采样线程。创建、使用和关闭进程/令牌句柄均归采样线程，调用方不跨线程关闭仍在使用的句柄。
+- Windows 中已进入的原生调用不能由 Python 强制取消；超时后的线程在调用返回后清理，始终阻塞时随所属 worker 进程退出。原 Frida attach 调用本身的截止/清理行为沿用既有机制，此次只限制新增诊断的等待。异常分类与异常链由调用线程保留，不依赖采样完成；`sample_phase/sample_outcome/query_complete` 记录完成、失败、超时或占用，协议递增 22。`finished` 仅表示采样阶段执行结束，各项查询是否成功仍读取自己的结果。
+- 定向检查：`python -B -m unittest tests.test_log_bundle_scope tests.test_attach_evidence` 24 项通过，包含同轮双侧重试、不同轮/设备/版本隔离、未来与旧启动设备记录、原生前后查询阻塞、原接入错误与返回值保留、超时后无晚到记录、同进程不积累线程、句柄所有权、线程启动失败，以及超时证据经管道进入最终导出 ZIP。既有真实受限测试进程的权限拒绝、DLL 损坏、恢复接入/脚本往返与退出四场景在新线程路径下再次通过。
+- 受影响链路检查：`python -B -m unittest tests.test_hid_startup tests.test_hid_primary tests.test_channel tests.test_observation tests.test_runtime tests.test_stop_recovery tests.test_startup_diagnostics tests.test_frida_hid_tap_runtime` 119 项通过；`tests.test_native_build.NativeInventoryTests` 2 项通过，共 145 项。源码 `python -B -m ovb_rc003 --dry-run`、改动逐项复核及 `git diff --check` 通过；未重新运行无关完整测试。
+- 对上述 13 包再核对全部成员与默认范围，各包默认候选数量仍为 `1/7/2/1/1/2/1/2/24/1/10/7/8`。`.80` 显式 22:55～23:00 现为 8 次，其中 3 次与原窗口相交、另补回 5 次；不会并入其余 73 个历史运行。可重建临时结果保存在已忽略的 `.build/log-audit/scope-correction-audit.json`，生命周期沿用 README。父目录 `AGENTS.md` 第 8.1 节同步明确窗口外同轮重试与设备时间约束。
+- 未编译独立程序、未制作或替换 ZIP，现有 `.80` 包不含上述修改。此检查点修复的是日志范围与诊断阻塞风险，不能写成异机启动失败根因已经解决。
+
+### 日志完整性修复与目录入口（2026-09-29）
+
+- 来源：`b2533de` 后按用户要求逐段审计日志采集、排队、故障报告、轮转、导出、界面反馈和开发机核对入口。首轮只读检查运行 423 项、2 项跳过；临时目录复现 4 个确定问题，用户随后授权修复并增加目录入口。
+- 设备筛选：09:58 的已知设备、10:00 的其它设备、10:01 重启后归属未知的运行，原实现错误返回 09:58。现按组内每个运行筛选，保留 10:01 的未知运行并提示未确认归属；确实只匹配旧运行时明确提示范围较旧。不跨其它已知设备、版本或间隔边界拼接轮次。
+- 导出完整性：读完 `app.log` 后发生轮转，原实现把同一文件重复收进 `app.log` / `.1` 并漏掉新文件。现比较整次收集前后文件身份、长度、修改时间和新增/消失，最多重读一次；第二次仍变化时保留现有快照并标记 `snapshot_stable=false`、`incomplete=true`。读取期间变化、截断、不可读和刷新失败也进入界面提示与开发机核对限制；内部文件身份不写进 ZIP。沿用单文件 8 MiB 上限、取消清理与原子替换目标 ZIP，不锁住运行中的日志写入。
+- 队列末次丢失：容量 1 的真实写入线程暂停时连续拒收 3 条，队列恢复后不再发送业务记录，原实现刷新成功却不保存丢失数。现刷新屏障本身携带丢失记录，不另占一个队列位置；满队列不能入队时保留计数，成功交接后只记一次。诊断 trace 和共享故障报告同根因路径均覆盖，丢失后不再把刷新状态当成完整；写盘失败/关闭/轮转恢复仍沿用有界机制。
+- 用户基础流程：真实 QML 在隔离子进程中加载“设备”页，点击“导出日志”导出临时日志，再点击相邻“打开日志位置”；仅模拟 Explorer 调用，目录解析与控制器走真实实现。验证目录未生成、成功打开、失败提示、诊断关闭、导出进行中，以及正反 Tab 顺序；640×480 / 720×560 的同样式链接、行内位置、开关对齐及页面无横向溢出通过。未创建实际 Explorer 窗口，不把该模拟写成真实设备测试。
+- 最终受影响检查：使用本工作树 `.venv\Scripts\python.exe`（Python 3.12.10），`PYTHONUTF8=1`、`PYTHONPATH=src`。日志及诊断模块 `test_logging_setup_location / test_logging_efficiency / test_logging_recovery / test_log_export / test_diagnostic_trace / test_diagnostic_evidence / test_program_diagnostics / test_shutdown_diagnostics / test_privacy_contract / test_windows_diagnostics / test_input_environment_diagnostics / test_hid_injection_diagnostics / test_hid_tap_diagnostics / test_voice_response_diagnostics / test_voice_interaction_diagnostics_windows / test_element_navigation_diagnostics / test_environment / test_startup_diagnostics / test_symbol_diagnostics / test_hid_diagnostics / test_attach_evidence / test_log_bundle_scope / test_observation`，加设置控制器 5 项入口检查及 `SettingsShellSourceContractTests / ThreePageSettingsSourceContractTests`，共运行 488 项、2 项条件跳过；两项实际 QML 子进程检查 `test_application_update_dialog_fits_and_restores_focus / test_three_page_shell_fits_compact_viewports_without_horizontal_overflow` 均通过。去重共 490 项，488 通过、2 跳过。源码 `--dry-run` 与最终 diff 检查通过。
+- 既有 13 包再次完整读取，SHA-256、全部成员清单、原有限制、默认范围与上轮索引一致；默认候选数仍为 `1/7/2/1/1/2/1/2/24/1/10/7/8`，`.80` 指定 22:55～23:00、版本及设备后的范围仍为 8 次。可重建结果位于仓库已忽略的 `.build/log-audit/log-integrity-fix-audit.json`，沿用 README 临时证据边界。
+- 本轮未编译或制作 ZIP，源码仍为 `.80`；历史 `.80` 包不包含这些改动。本轮检查确认日志缺陷与界面入口修复，异机启动故障与实体遥控器仍按原实测队列判断。
+
+## CHECK-REMOTE-HID-STARTUP-001 — 异机按键接收启动诊断（本地测试包待实测）
+
+- 2026-09-29 更新：`.80` 已回传，8 次接入失败及本轮补充结论见 `CHECK-REMOTE-LOG-COVERAGE-001`；以下保留交付时的历史口径。
+
+- 2026-09-28 来源：用户 `MoteDeck日志-20260928-211024.zip`，SHA-256 `8E01C97D62D5627187E5E39D5B872B96C31B80473E6BBDE276CE0F7086FAB31C`，导出版本 `.79`。仅取 21:01～21:02 的 10 次新运行：均在 `hid_primary_start` 后、`HidTap.start` 内异常退出，均未到按键 ready 或语音查询。随后 `tap_start_wait/cleanup_failed` 是重新等待同一失败任务产生的误报，工作进程实际退出码全部为 0。本包没有原始启动异常，不能据此确定进程接入、驱动定位或监听加载哪一步失败。
+- 失败设备短编号 `97aec94fd283` 的 5 个已选接口均为 `18d1:9450:011b`；成功设备 `352c296c2ee2` 的同一历史来源也为此标识。相同三元组不证明所有硬件批次/固件相同，旧快捷快照还遗漏了 VID 来源前缀。两机系统构建分别为 22631/26200，属于待解释差异，不作为驱动故障根因。失败包的慢速系统查询均超时，未提供更细设备属性。
+- 已确认并修正：启动异常没有细分证据；同一异常被记为清理失败；真实 `tap.close() == False` 未使 worker 最终退出结果失败。`HidTap` 现在把导入组件、查找已选宿主、驱动布局、生成监听、接入进程、创建/加载监听和复核来源各阶段通过有界队列交给 worker；仅事件循环写管道。日志含开始/完成/失败、耗时、允许的异常类型、异常原因链类型与数字错误码、宿主 PID、脚本错误行号；不保存异常正文、原始设备地址、路径或音频。真实启动清理失败保留失败状态。
+- 首轮管道版本 19 增加 `hid_startup`，当时单独最多 32 条待发送记录；后续源码扩展为下述版本 20。正常接入的型号清单、所选地址过滤、按键解析和语音连接方式沿用 `.79`；没有增加自动重启或权限操作。
+- 只读环境日志增加固定磁盘 HID 驱动的 SHA-256、文件版本、架构和已知布局标记，先于慢速系统查询保存；该文件指纹不冒充进程内已加载模块。保留完整 PnP 型号片段（不带地址/序列号），查询 Windows 已公开的型号、固件版本及固件修订属性；缺失用 `unavailable`，不把 PnP REV 当作实际硬件版本，也不新增 BLE/GATT 读取。属性名称核对微软 [devpkey.h](https://github.com/microsoft/win32metadata/blob/main/generation/WinSDK/RecompiledIdlHeaders/shared/devpkey.h)，核验日期 2026-09-28。系统查询分阶段输出，超时保留最后完整快照并标记 `partial`；原异常退出事件查询仍使用原有原子结果规则。
+- 2026-09-28 当前工作树 Python 3.12.10：谷歌相关 385 项、停止诊断与日志导出 22 项，共 407 项通过；源码 `--dry-run` 与 diff 检查通过。实际执行固定 PowerShell 查询的合成环境，验证设备型号、固件缺失、隐私过滤；模拟驱动定位/进程接入/监听创建与加载失败、脚本异常、真实清理失败、超时部分结果、原始错误不泄露及管道上限。
+- 首轮检查点仅源码修改，当时未编译或打包；既有 `.79` ZIP 不含本条修改。人工待测：在失败用户机器运行后核对第一条失败的 `hid_startup`、驱动指纹和设备属性，再决定兼容修复；同时复测已成功 B 款的普通按键与语音。该用户启动失败的底层原因尚未坐实，本检查点不宣称已恢复功能。
+
+### 2026-09-28 新增用户核实与启动链日志补全（源码检查点当时未打包）
+
+- 来源：用户 `MoteDeck日志-20260928-212854.zip`，SHA-256 `BA9930CCAF5F004393CD77F59B6D82FEBFA95E1DBB95FF16B52B722CA9821282`，导出时间 `2026-09-28T21:29:02.163188+08:00`，导出版本 `.79`。设备短编号 `c9820a1f4668`，PnP 标识 `18d1:9450:011b`，系统构建 18363。21:23:02～21:28:16 的 7 次启动均为 `hid_symbol_unavailable`，其中 6 次有明确的用户重启记录；已通过所选宿主查找，停在驱动布局识别，尚未接入监听进程或查询语音。不能把它与上一个用户的通用 `hid_capture_failed` 合并为同一根因。
+- 该用户较早的 `MoteDeck日志-20260928-194736.zip` 是 `.72` 导出、24 次 `hid_source_unconfirmed`；本次新包证明其已运行 `.79`。早包的型号限制与新包的驱动识别失败分别保留，不用旧包版本覆盖新包事实。新包有 4 次系统环境慢查询超时；启动失败具体落在下载、符号解析还是指令识别，仍需新日志区分。
+- 对已有 `e730462` 启动诊断逐步推演后，补全如下同一条链路。沿用既有下载地址、超时、大小限制、布局识别条件与错误出口；仅为 curl 增加 HTTP 状态输出。没有扩大型号清单、改变按键/语音数据处理或加入蓝牙重启。
+
+| 环节 | 新增可判断的证据 |
+| --- | --- |
+| 所选设备与宿主查找 | 注册表节点数、硬件匹配数、所选设备匹配数、缺失容器属性、无效地址/PID、唯一宿主候选数及固定失败原因；不输出地址或容器标识 |
+| 驱动读取与符号身份 | 实际读取文件的大小、SHA-256、已知布局命中；调试项数量、公开 PDB 构建标识及格式拒绝原因 |
+| 缓存与下载 | 缓存存在/大小/格式/摘要；目录创建、下载、文件检查、落盘、临时文件清理各自耗时和失败；curl 退出码、HTTP 状态、下载大小与摘要 |
+| 系统符号解析 | 库加载、初始化、模块加载、枚举、匹配、清理；失败的数字系统错误码、两类目标函数匹配数和文件内相对位置；清理 API 的返回值及错误码单独保留，维持原非致命行为 |
+| 布局校验与监听安装 | 架构、相对位置是否在唯一可执行段、构造函数最多 64 字节磁盘代码及解析偏移；进程内模块是否存在、路径是否符合固定预期、模块大小/指针宽度、监听安装结果 |
+| 等待与退出 | 设备打开、启动线程、监听就绪分别超时的阶段/耗时；worker 原始错误类型、数字码及所处阶段；启动失败清理和正常退出清理的错误分别保留 |
+| 传输与导出 | 固定原因和有界字段校验，拒绝任意文本；队列满时保留最近记录并明确丢失数量；复用既有管道、`app.log` 和导出入口 |
+
+- 管道版本 20 为 `hid_startup` 增加 `reason/details`，每条仍受 2048 字节限制；独立队列最多 128 条，出队时可额外有 1 条溢出计数。通常完整启动链未触及上限。详细字段最多 12 项，PDB 构建标识、函数相对位置、磁盘构造代码仅用于公开系统驱动兼容分析，不采集进程内任意内存、异常正文、私有路径、设备地址或音频。启动线程的上下文在退出时恢复，周期来源复查不重复刷启动细节；拒绝的元数据和日志回调异常不改变接入结果。
+- 2026-09-28 本轮最终检查：固定 Python 3.12.10 的全部谷歌相关 400 项、停止诊断与日志导出 22 项，共 422 项通过；源码 `--dry-run`、逐项 diff 复核与 `git diff --check` 通过。合成测试覆盖下载网络错误/404/超时、缓存命中/落盘失败、符号 API 失败/缺失目标、架构/相对位置/指令拒绝、真实 JS 的模块缺失/路径不符/安装失败、三个等待超时、清理错误、队列溢出、元数据拒绝和失败回调。未知驱动整链证据经管道编解码、日志和临时日志 ZIP 导出保持完整；正常 A/B 按键解析与既有语音检查通过。
+- 上述源码检查点当时未编译、未制作程序 ZIP；后续按用户打包指令完成如下 `.80` 本地测试包。人工待测继续覆盖两位启动失败用户和已经成功的 B 款；源码检查通过不表示已解除各台电脑的实际启动原因。
+- 2026-09-28 `.80` 本地打包：工作树起始为干净提交 `b75f524`，只递增共享 `VERSION` 到 `1.0.80-candidate.80`，源码业务逻辑未再变化。固定 Python 3.12.10 完成原生编译及一轮完整测试，首次 3769 项中独立 Frida Gadget 子进程退出超时 1 项、8 项跳过；清理该次遗留的测试进程后，同一原生编译环境定向重跑该项通过。随后完整构建重跑 3769 项通过、8 项跳过，99 个原生模块及两个 EXE 检查通过，冻结主程序 `--dry-run`、`--qt-runtime-check` 和权限助手 `--self-check` 通过。首次失败不计为通过结果。
+- 本地未签名 ZIP：桌面的 `MoteDeck-B款启动链诊断-1.0.80-candidate.80-本地测试.zip`，157444165 字节，SHA-256 `E3C1ECF6F318B646D9350953D25B0678C5F7754FD47F7E2D17BE08D3625CA6D8`；冻结主 EXE SHA-256 `1B56D56238BD45AD51C87B4D4CC7106331060A236026412FCD9C39AD232CA38C`。项目本地包装脚本的来源指纹、复制和 ZIP 结构检查通过，另核 ZIP 可打开、仅一层版本目录、内置 `VERSION` 为 `.80` 且主 EXE 存在。此包用于用户测试，不是正式候选或发布。人工验收目标：两位失败用户重试启动并导出日志；已成功的 B 款复测普通按键及语音。
+
+## CHECK-REMOTE-B-VOICE-SESSION-001 — B 款语音接口与连接保持（普通按键与微信按住说话已实测）
+
+- 2026-09-28 只读核验用户 `MoteDeck日志-20260928-163650.zip`，SHA-256 `C0D3B8253B6087448EFEF964C1549CBE6A5CA9E04FCB9904F82AD6DE31AF2C4E`，导出版本 `.78`。运行 `e82e6e78d1e3` 有 17 次普通按下与对应松开，34 条报告全部接受并交付，拒绝与回调失败均为 0；用户反馈普通按键可用、语音键无反应。
+- 16:34:50.240 与重启后 16:36:42.407 的实时服务查询分别在 968/453 ms 成功，均显示已连接并枚举 8 项服务；ATVV 服务 `ab5e0001-5a21-4f05-bc7d-af01f617b664` 从句柄 `0x50` 开始，随后特征查询立即返回状态 3（`GattCommunicationStatus.AccessDenied`），未取得任何特征。当前日志没有证明拒绝访问的具体原因。另一次退出的 `0xC0000005` 保留为未定原因，本轮不把它归因于语音连接，也不扩展修复范围。
+- 已确认软件缺陷：原 `SelectedDevice.open_voice` 强制特征声明句柄为 A 款的 `0x39/0x3b/0x3e`，早于 B 款语音服务的 `0x50`，即使特征查询成功也会拒绝该布局。直接 WinRT 路径现按完整 UUID 选择唯一 TX/AUDIO/CONTROL，并核对各自写入/通知属性及句柄；通知绑定返回的特征对象，以其实际声明句柄路由，不猜测 ATT 值句柄。旧原始 ATT 捕获路径继续使用其已验证的 A 款固定布局。
+- 对照固定上游 [vibe-mote voice.py](https://github.com/Tilkmilk/vibe-mote/blob/fb30e479694524962512b5bba6afc76cd0a04778/voice.py) 与其使用的 [Bleak 3.0.2 WinRT 实现](https://github.com/hbldh/bleak/blob/v3.0.2/bleak/backends/winrt/client.py)：上游通过 UUID 识别语音接口，Bleak 建立 `GattSession` 并设 `maintain_connection=True`，保留服务对象直到断开。本项目直接路径现先建立所选设备的会话（上限 5 秒），枚举服务（既有上限 10 秒）后等待会话活跃（上限 5 秒），再查特征并订阅。该差异是连接调整依据，尚不证明它就是用户机器返回 `AccessDenied` 的原因。
+- 会话仅绑定已选设备，维持连接按[微软接口合同](https://learn.microsoft.com/en-us/uwp/api/windows.devices.bluetooth.genericattributeprofile.gattsession.maintainconnection)执行。服务与会话由 `SelectedDevice` 持有；发现失败、能力协商失败、取消及正常停止均清理，部分订阅失败也退订已经尝试的接口。服务或会话关闭失败时保留其引用供最终清理再次尝试，同时保留失败状态并禁止重开；初次会话/连接超时只沿用普通按键活动触发的一次补试，不新增循环重连、权限申请或蓝牙适配器重启。
+- 管道版本 18 新增有界 `voice_link`，记录创建/活跃/特征查询/就绪/失败/清理阶段的设备与服务访问状态、服务位置、共享方式、会话状态、保持连接状态、耗时及错误码；读取不可用用 `-1` 标记。每次打开的查询和连接记录合计最多 16 项，复用原 `voice_query` 分块、`app.log` 和导出入口。直接 WinRT 通知按实际音频/控制类别计数，协商后的缓存重放不重复计数；不写设备地址、任意异常正文或音频内容。
+- 2026-09-28 固定 Python 3.12.10：谷歌相关 376 项检查、日志导出与布局 22 项检查通过，共 398 项；源码 `--dry-run` 和 `git diff --check` 通过。覆盖不同接口位置的发现与通知到录音入口、会话建立次序、访问失败记录、会话等待超时、取消、部分订阅失败、协商失败清理、禁止脏状态重开及计数去重。测试中的 `0x51/0x53/0x56` 是模拟特征位置，不冒充尚未读取到的 B 款真实特征。
+- 上述源码检查点当时未打包，已交付 `.78` EXE/ZIP 不含本轮修改。人工待测：B 款能否查到特征、协商成功、语音按下/松开、收到音频并实际出声或上屏；A 款普通按键与语音回归；服务停止、退出及再次启动。自动检查不代替上述设备结果。
+- 2026-09-28 后续按用户指令递增为 `1.0.79-candidate.79` 并构建本地测试包。首次完整构建的 3745 项检查仅 `test_hid_gadget_lifecycle` 因测试子进程未关闭 stdin，退出等待超时并占用测试临时 DLL；修正测试收尾后单项通过，重跑正式构建的 3745 项中 3737 项通过、8 项按条件跳过。原生模块及两个 EXE 归档核验共 99 项；冻结主程序 `--dry-run`、`--qt-runtime-check` 和 HID 助手 `--self-check` 通过。以隔离空数据目录、禁用真实输入监听启动设置窗口，标题为 `MoteDeck win版 1.0.79-candidate.79`，退出请求及主进程均以 0 退出。
+- 未签名本地 ZIP：桌面 `MoteDeck-B款语音接口与连接诊断-1.0.79-candidate.79-本地测试.zip`，157378297 字节，SHA-256 `8949DBFC4000BFFC845C5427179F15223FBDCFAC2D53B95785D5AA83D08067D7`；主 EXE SHA-256 `5E4A4735C57C4A2FB2BDED3E2B0FF27488B0E4FB2E2E6FB416D6A59CC2549C7D`。打包脚本核对构建来源、许可证、便携目录、ZIP 可打开及包内版本；构建输入指纹 `AE244105E62971D7ED0F8BB72E081C196BEADB6BA8AFC0E2885E25FDA873ECB5`。本包未上传或发布，B 款及旧 A 款语音仍待实体遥控器确认。用户测试时先完全退出旧版，解压到新目录并核对 `.79`，选择 B 款启动服务，按语音键尝试说话，再导出日志反馈。
+- 后续实测（以上待测文字保留交付时状态）：用户 `.79` 回传 `MoteDeck日志-20260928-205825.zip`，SHA-256 `EE7CB272BCCAC08817C4DEEB5299C3B95F693EC5B8241DBA9A722B46E26F657A`，确认语音可用。20:56～20:58 的运行 `08604576b0cb` 实际语音特征为 `0x51/0x53/0x56`，初次连接失败后左键活动触发的一次补试成功。两轮微信按住说话均收到音频、解码、输出到虚拟麦克风并确认宿主录音，松键正常结束；收到的 177 包全部被软件接受处理，普通按键 18 次按下和对应松开全部交付。本次运行无新的错误记录；长录音、开关型、休眠恢复及旧 A 款回归仍待测。另一用户同硬件标识启动失败见 `CHECK-REMOTE-HID-STARTUP-001`，两机结果分别保留。
+
+## CHECK-REMOTE-B-CONSUMER-VOICE-001 — B 款按键格式与语音查询（普通按键已实测，语音续查）
+
+- 2026-09-28 核验用户 `MoteDeck日志-20260928-153127.zip`（SHA-256 `57A220FD1E07BC7D29589C32A03CEC2008FFF36925A789A9F1BCB05C84BA05D9`）：运行版本 `.77`、接收运行 `fb4ae65e0b17`。最后一次采样 3098 次回调中 22 次匹配所选地址；这 22 次缓冲区长度均为 2，全部被 `size !== 8` 拒绝，接受及交付均为 0。本地执行原注入脚本复现相同拒收；同宿主下游复制还观测到 22 份 Consumer 报告，但这些独立计数不冒充逐包来源证明。
+- 按键修正：只对所选地址读取 2/8 字节报告；2 字节按小端 Consumer usage 解析，14 个已知普通按键转换成既有内部按键码，零值沿用松开逻辑，未知值拒绝。映射核对上游固定提交 [keys.py](https://github.com/Tilkmilk/vibe-mote/blob/fb30e479694524962512b5bba6afc76cd0a04778/keys.py) 的 `USAGE_TO_KEY`；保留 A 款 8 字节路径和来源过滤，不改 Windows 原始缓冲区。
+- 语音日志仍停在服务查询约 5 秒后失败，实际根因未定。[微软 GATT 说明](https://learn.microsoft.com/en-us/windows/apps/develop/devices-sensors/gatt-client) 说明连接/查询等待时间可变，无其它排队请求时不可达设备通常约 7 秒超时。源码将服务查询上限改为 10 秒，枚举所选设备的实时服务并按既有 UUID 选语音服务；记录连接前后状态、耗时、系统/协议错误、服务及特征 UUID、句柄、属性。初次连接失败时最多补查一次缓存服务/特征，仅作诊断，缓存结果不启用语音。
+- 仅初次服务查询超时或返回不可达时，在观察到所选遥控器的已识别普通按键活动后，异步补试一次；活动发生于首次查询期间也可触发。缺少服务、布局不符、权限失败及能力协商失败不触发此补试。补试期间普通按键和停止请求继续处理，失败后不循环查询，不开关蓝牙适配器。设备布局和音频格式兼容性仍按实机结果判断。
+- 新 `voice_query` 记录经管道版本 17 传回现有 `app.log` 和导出入口：每次查询至多记录 32 个接口、每条最多 8 个，保留总数/偏移供判断截断；不记录地址、任意异常文字或音频。逐行复核 diff、`git diff --check`、源码 `--dry-run` 通过；固定 Python 3.12.10 的谷歌相关 366 项及布局/日志导出 22 项检查通过，共 388 项。覆盖真实注入脚本的两种格式、14 键/松开/未知值/其它设备，语音状态和错误、缓存与实时区分、接口差异、消息长度、只补试一次以及停止取消。
+- 前述源码检查点阶段尚未打包，已有 `.77` ZIP 不含该修复。B 款应先测试普通按键，再试麦克风并导出日志；旧 A 款按键和语音回归仍需真机确认。
+- 2026-09-28 后续按用户指令从该源码制作 `1.0.78-candidate.78` 本地测试包。固定 Python 3.12.10 原生构建成功，3735 项自动检查中 3727 项通过、8 项按条件跳过；99 个原生模块、两份 EXE 内部归档、冻结主程序 `--dry-run` 与 `--qt-runtime-check`、HID 助手 `--self-check` 通过。以隔离空数据目录、关闭真实输入监听启动冻结设置窗口，标题显示 `MoteDeck win版 1.0.78-candidate.78`，退出请求和主进程均以 0 退出。
+- 未签名本地 ZIP：桌面 `MoteDeck-B款按键修复与语音诊断-1.0.78-candidate.78-本地测试.zip`，157343307 字节，SHA-256 `014A480182D4961B57AB39A49D8D276D47E8E55C3A2345B292830540902F9BCD`；主 EXE SHA-256 `EBEF94F35C8AB27248ACB20468C509BD806CDD52CF930CFF2BF28C4FDF7440B7`。包装核对构建来源、许可证、便携目录和 ZIP 内版本。本包未上传或发布；B 款普通按键和语音、旧 A 款回归仍待真机验证。
+- 后续用户回传 `.78` 已确认 B 款普通按键恢复，语音仍不可用；当前结果与续查见 `CHECK-REMOTE-B-VOICE-SESSION-001`，前述待测文字保留当次交付状态。
+
+## CHECK-REMOTE-B-077 — B 款合并诊断本地测试包（检查点待实测）
+
+- 2026-09-28 从整合提交 `f931701` 的源码构建 `1.0.77-candidate.77`，首次将 A 款新版驱动地址识别、B 款 3 字节输出诊断修正及停止/异常退出日志放入同一可运行测试包。B 款普通按键和语音仍待用户实机验证。
+- Python 3.12.10 原生构建完成：3724 项自动检查中 3716 项通过、8 项按条件跳过；99 个原生模块、两份 EXE 内部归档、主程序 `--dry-run`、`--qt-runtime-check` 和 HID 助手 `--self-check` 通过。以隔离空数据目录、关闭真实输入监听启动冻结 EXE 的设置窗口，标题显示 `MoteDeck win版 1.0.77-candidate.77`；退出请求与主进程均以 0 退出。
+- 未签名本地 ZIP：桌面 `MoteDeck-B款合并诊断-1.0.77-candidate.77-本地测试.zip`，157311101 字节，SHA-256 `BE8E2EA575CAF08CA5D41E63295F2A01354DBC2BA8DFA38A094BE991D8212D1E`。主 EXE SHA-256 为 `4B1AC2747E698FEED305EF1E0AECA94892A38D0D8F64CE7F7B1A1F10349B8A45`；打包脚本核对构建来源、许可证、便携目录及 ZIP 内版本。本包未上传或发布。
+- 用户测试：完全退出旧版，将 ZIP 解压到新目录，确认窗口版本为 `.77`；选择 B 款并启动服务，开启诊断日志，分别多按方向上、方向右、确定和语音键。无论有无反应，等待至少 3 秒后导出日志，并提供各键的大致按下时间。日志中的 `copy_read_three` 与按键计数需要结合所选地址判断；同宿主未归属计数不直接认定为 B 款输入。
+
+## CHECK-REMOTE-INTEGRATION-076 — A/B 按键与日志源码整合（检查点待实测）
+
+- 2026-09-28 将 A 款新版驱动地址识别和停止/异常退出日志，与 B 款私有驱动输出诊断修正合入同一源码。此前 `.75` 和 `.76` ZIP 各自只包含部分改动；本检查点不代表已有合并版可运行产物。
+- 合并后的按键注入脚本同时保留驱动地址偏移选择、所选设备过滤和只读 3 字节诊断；停止日志沿用 A 款分支的清理过程记录。真机效果仍分别按下述 A、B 检查点判断。
+- 合并源码的 12 个受影响测试模块共 258 项通过，覆盖新旧驱动布局、B 款 3 字节诊断、接收、停止、异常退出和日志导出。设置页 19 项检查首次有 1 项窗口关闭耗时 7.19 秒，超过该项 5 秒门槛；只重跑这一项为 0.86 秒且通过，未为此修改代码。`git diff --check` 通过；未编译或打包合并版。
+
+## CHECK-REMOTE-COPY-075 — B 款驱动输出位置只读诊断（检查点待实测）
+
+- 2026-09-27 回传的 `.74` B 款日志中，31 秒内原 HID 回调有 1941 次，但按当前所选地址规则匹配为 0，接受的按键报告为 0。回调总量可能来自同宿主其它设备，不能据此判定 B 款是否发出了按键；上游 `vibe-mote` 实际从 `NtDeviceIoControlFile` 的 `0x80018483` 输出读取 3 字节 Consumer Control 报告，故本版增加该位置的诊断。
+- `.75` 在当前所选设备的 HID 宿主中，统计该 IOCTL 的调用、成功、失败、待完成、输出容量和 `IO_STATUS_BLOCK.Information`，原实现误把后者当作报告实际长度，导致下述真机数据被漏读。原回调和输入处理不变。该宿主可能承载其它设备，因此新记录标记 `selected_host_unattributed`，不能单凭出现计数断言 B 款来源；日志不包含原始报文或地址。
+- 2026-09-28 本地 Python 3.12.10：逐行核对改动和 `git diff --check` 通过；19 项定向检查通过，覆盖两处钩子互不干扰、长度和按键计数、异常回退及诊断字段校验。原生构建的 3705 项自动检查完成，3697 项通过、8 项按条件跳过；99 个原生模块、两份 EXE 内部归档、主程序 `--dry-run`、Qt 运行环境及 HID 助手 `--self-check` 均通过。
+- 已生成未签名本地 ZIP：桌面 `MoteDeck-B款按键诊断-1.0.75-candidate.75-本地测试.zip`，157252972 字节，SHA-256 `5A26036674FCCBECDA13DA1F2E4E81EF82D60C438BC28EA626457F23D58AF8F9`；包内版本、便携目录和文件由现有本地打包脚本核对。公开正式版仍为 `1.0.72`，本包未上传或发布。
+- `.75` 原测试步骤：完全退出旧版，解压到新目录并确认窗口版本；开启诊断日志，选择 B 款、启动服务，依次多按方向上、方向右和确定，等待至少 3 秒后导出日志。回传结果与该诊断实现的问题见下节。
+
+### 2026-09-28 回传核实与源码修正（未打包，检查点待实测）
+
+- 来源：用户提供的 `MoteDeck日志-20260928-100351.zip`，包内版本 `1.0.75-candidate.75`，当次运行 `7ef5a4d3792f`。约 78 秒内原回调 4922 次，所选地址匹配和接受报告均为 0；新增位置调用及成功均为 4924 次，其中缓冲区长度为 3 的调用 66 次，但 `Information` 全为 0，旧诊断一次也未读取这 66 个缓冲区。66 次不能解释为 B 款按了 66 次键，也不能证明这些缓冲区属于 B 款。
+- 已确认诊断缺陷：`Information` 含义随请求变化，不能直接当作这个私有 UMDF 复制请求中的报告长度；现有项目技术记录 `MAINTENANCE.md` 的 `0x80018483` 调查和 `vibe-mote` 的 `tap.js` 均指向按调用成功与 3 字节缓冲区长度观察该位置。旧测试默认把 `Information` 填为 3，未覆盖本次真机条件，原自动检查通过不代表这项假设成立。
+- 修正 `installCopyObservation`：成功同步返回且缓冲区长度为 3 时读取并分类；不再用状态块中的长度挡住读取，继续跳过待完成、失败、空指针和不可读缓冲区。统计字段改为 `copy_buffer_lengths` 和 `copy_read_three`，分别表示缓冲区长度与成功读取 3 字节的次数，避免再次误称实际返回长度；内部生产者、校验器及测试同步更新。
+- 逐行检查改动与 `git diff --check` 通过；Python 3.12.10 的 `test_hid_diagnostics`、`test_hid_primary`、`test_observation`、`test_channel` 共 37 项定向检查通过。执行实际注入脚本的合成测试覆盖 `Information=0` 时的方向键/确定/松开、失败与待完成不读取、读取异常、统计上限，以及诊断不会送出按键动作。
+- 当前仅修正源码，未重建 EXE、未制作新 ZIP，前述 `.75` ZIP 仍含旧诊断。B 款真实按键来源尚未确认；当次语音服务查询也超时，不能从诊断修正推导按键或语音已可用。原所选设备筛选和实际输入路径保持不变，真机读取及完整功能仍待后续测试。
+- 同日核实上游 `vibe-mote` 主分支 `fb30e479694524962512b5bba6afc76cd0a04778`：`VoiceRole._maybe_unstick` 默认启用，连接失败且扫描未找到设备累计 3 次后尝试整适配器开关恢复，同一对象 600 秒内不重复；`unstick_bluetooth` 关闭所枚举的首个蓝牙适配器约 3 秒后再开启，会连带断开其上的鼠标等设备。该条件不验证 HID 活动或适配器确已卡死，不能将其当作遥控器必需机制。本次未把此恢复方式加入MoteDeck。
+
+## CHECK-REMOTE-A-076 — A 款新版驱动地址布局修复（普通按键通过，其它人工项待测）
+
+- 2026-09-28 核验来源：用户 .74 导出 `MoteDeck日志-20260927-162338` 与随后提供的驱动
+  SHA-256；匹配微软原始 DLL 和 PDB 后确认地址偏移变化。驱动文件版本文字仍显示
+  `10.0.26100.1`，因此不用该文字或操作系统版本猜布局。
+  用户对应的 [微软 DLL](https://msdl.microsoft.com/download/symbols/microsoft.bluetooth.profiles.hidovergatt.dll/D68C8CF439000/microsoft.bluetooth.profiles.hidovergatt.dll)
+  SHA-256 为 `372c3628e3366c18152199eb8fb554d27bb4f02d1356b1f514f711328df4a8d6`；
+  [匹配 PDB](https://msdl.microsoft.com/download/symbols/Microsoft.Bluetooth.Profiles.HidOverGatt.pdb/BE2FD718B8949B6DE9022A4741666D851/Microsoft.Bluetooth.Profiles.HidOverGatt.pdb)
+  确认回调 RVA `0x157FC`、构造函数 RVA `0x1096C`、地址存储指令位于 `0x10998`，偏移 `+8`。
+- 对微软库的 26100.1150、5074、7019、8115、8521 样本，实际解析符号及构造函数均得到 `+24`；
+  26100.8737、9278 均得到 `+8`。本机旧摘要
+  `8a18571ddfa447bd590354ccdf7800b815a098806359ab195d395158f9d07cc5` 的快速路径仍为
+  RVA `0x12FCC` / `+24`。七份下载样本均另外强制走了实际 PDB 路径，不只检查摘要表。
+- 源码相关自动检查 350 项通过：包含新旧布局、未知布局拒绝、架构/代码区边界、实际注入模板的
+  新旧地址槽、其他设备不读取报文、按下和松开顺序。模拟对象现在按真实偏移读取；
+  固定 `+24` 配新版 `+8` 可复现原故障，修复后同一输入被接收。
+- 本地 Python 3.12 原生编译 99 个业务模块，350 项相关检查累计通过。首轮有一项真实管道测试
+  因临时运行脚本缺少 Windows 多进程入口保护失败；修正临时脚本后定向重跑该项通过，未改产品
+  代码或放宽断言。其余 349 项成功结果复用。原生模块上再次实际解析上述七份微软 DLL/PDB 成功。
+- 冻结主程序及助手的原生来源与归档检查、主程序 `--dry-run`、`--qt-runtime-check`、助手
+  `--self-check`、Windows 版本资源均通过。另以普通权限、独立空测试数据目录实际启动冻结 EXE，
+  已创建标题为 `MoteDeck win版 1.0.76-candidate.76` 的 QML 窗口；`--request-exit` 和主进程均以 0
+  退出，标准错误日志为空。该检查关闭真实输入监听，未验证实体遥控器。
+- 已交付未签名本地 ZIP `MoteDeck-A款按键修复-1.0.76-candidate.76-本地测试.zip`，
+  大小 157259280 字节，SHA-256
+  `EE88860A23A301AA6770F336AE578070971FA9F28A272DB55A1E10769A9FD407`；
+  主 EXE SHA-256 `C662D7715FDE67F836DBE1B405874750033ABE0A758BE9D8BDE396F29626EC9E`。
+  来源指纹、复制后产物一致性、ZIP 目录结构与内置版本检查通过，未上传或发布。
+- 基础流程与判定：新目录完整解压后启动 .76，窗口能识别版本；选择原来的 A 款并启动服务，
+  “检测真实按键”中方向键与确定键应出现名称，再在原目标程序验证已有映射；语音键应继续可用。
+  操作失败时记录时间并用原日志导出入口保留结果。已知布局异常应停止接收，不能从其它设备补取按键。
+- 交付时的人工步骤：受影响用户完全退出旧版，解压 .76，验证普通按键及语音。
+  不需重新配对、重装或更换 Windows 驱动。后续验收状态见下一条；修复不等于未知
+  Windows 私有布局永久兼容。
+- 2026-09-28 用户回传 `MoteDeck日志-20260928-101510.zip` 并反馈“这版好了”。原 A 款在 .74
+  的运行中有 16814 次 HID 回调、0 次所选地址匹配；.76 两次主要运行分别为 54/54 和
+  45/45 次匹配，普通按键分别交付 46/46 和 28/28 个边沿，映射动作 19 次和 9 次均记录
+  发送成功。普通按键修复已由用户反馈与日志共同验证。6 次语音尝试有音频帧和完成事件，
+  日志不能证明目标输入框文字上屏；长期稳定与旧布局回归仍未验收。
+- 同份日志在 10:14 停止期间记录了 5 秒清理超时，随后接收进程以 `0xC0000005` 退出，
+  07:37 有 `0x40010004` 退出。原日志没有原生调用栈，也未明确记录停止来源与每一步的完整
+  耗时；仅凭退出码不能判定造成退出的根因。见 `CHECK-REMOTE-SHUTDOWN-001`。
+- 本任务的 `.build/build-a076.ps1`、`freeze-a076.ps1`、`check-a076-native.py`、`package-a076.ps1`、
+  包装暂存目录、静态样本核验脚本、窗口启动检查脚本、空测试数据目录、结果和日志均位于 `.build/`，
+  属临时构建/检查资料，由本任务生成和使用，不入 Git 或发布 ZIP，排查后可删除。
+
+## CHECK-REMOTE-SHUTDOWN-001 — 停止与异常退出日志（源码检查点待实测）
+
+### 2026-10-10 异机 1.0.87 日志与清理证据补强
+
+- 范围与来源：用户要求整包深入检查并追查语音接收失败、停止时崩溃，随后授权补强诊断并要求脱敏。源包 `日志-20261010-010943(1).zip`，SHA-256 `7FE6D15907E21C88A4F0DCC8248DC60815F3ACF7BF51D6F5DAEB782C0F0F2FDA`；来自另一台电脑，实际冻结版本 `1.0.87`、Windows `10.0.26100`。不能用开发机的其它崩溃记录解释该包。源码从正式主目录 `main/df08960` 接续，`src/ovb_rc003/VERSION` 仍为 `1.0.88-candidate.88`。
+- 材料核对：已用 `scripts/audit_log_bundle.py` 核对全部 7 个成员、CRC、清单和轮转。两份 app 共 1632 行、两份 trace 共 1273 条有效 JSON；清单 `incomplete=false`、`snapshot_stable=true`，刷新均成功，无复制截断或采集文件变化。缺失 `.2/.3` 在导出时已不存在，不算导出遗漏；helper 唯一记录为 10 月 1 日，未混入本轮。故障报告 3 个窗口均有数量限制，只作补充，不代替完整 app/trace。
+- 运行关联：本轮关联 A 款短编号 `59bc36bd6632`，PnP `18d1:9450:0110`，四次运行 `d42214716448 / 6fc7ae1803f6 / 10ec125e916f / 875e4ddca600`。第一轮 trace 从 00:52:32.745 起，但早期 app 已轮转，报告只补得 00:54:50.822 起的局部与停止过程，不能证明其最初语音失败码。后面三轮有完整语音初始化；其中前两轮停止并退出，最后一轮从 00:56:13 到 01:09:53 导出仍在运行，不把缺少终止记录当崩溃。
+- 已确认与缺口：后面三次均成功建立 GATT 会话、实时枚举 10 个服务及语音三特征，在 `audio_subscription` 的 CCCD 写入被拒绝，HRESULT `0x80650003`；尚未订阅控制、协商 CAPS 或收到声音。这是设备属性写入拒绝，不能直接推定安全软件、管理员权限或其它进程占用。前两轮退出码 `2` 可由既有清理失败保护解释；初次失败被保留，后续关闭可能已释放全部资源，原日志却不能区分当前再次失败与历史失败。第一轮停止时的 `0xC0000005` 是真实异常退出，最后可见完成步骤为 `observation_flush`，原包无原生栈或相关故障模块，不能认定 Python、WinRT、Frida 或驱动哪一方是根因。两个角色指向同一 OS 进程时不能算两次崩溃。
+- 现有能力核查与实现：旧代码已有异步系统事件采集，原包结果缺失不能证明从未请求采集。此次仅补 `voice_cleanup` 固定证据：回调撤销、CCCD API 加载/撤销订阅、服务关闭、维持连接释放、会话关闭、watcher 注销/停止和设备关闭，记录开始/完成、耗时、数字错误、句柄、首次清理失败及剩余所有权；区分本轮失败和历史失败。每轮最多 64 条普通操作记录、首条失败及两条摘要，超出有 `omitted`；失败资源仍按原所有权重试，历史失败标记、退出码、通知方式、重试政策及用户操作不变。两条 worker 均即时发送，避免旧 16 条初始化快照的上限和停止后不再发布快照的缺口；严格内部协议由 24 到 25，客户端与 worker 必须同分发版本。
+- 崩溃证据保留：沿用原单线程、有界、限时 Application Error 1000 查询；结果、原生查询错误码及线程启动失败、队列满、身份缺失、取消/退出未完成等原因进入现有故障报告的本轮固定键。清理摘要持续携带首次清理错误，报告保留首次失败与最后摘要，应用日志轮转或窗口尾部淘汰后仍可读取。无匹配事件不等于未崩溃；模块元数据不是原生栈，不采集 dump，不承诺下次一定能定位环境根因。
+- 隐私与验证：软件内部检测仍使用原始身份；新增记录仅允许固定枚举、数字、匿名运行编号和必要模块 basename，不持久化用户目录、地址、令牌、任意异常正文或声音。原包扫描未发现明文用户目录、邮箱或 MAC 地址；该扫描不是任意文本隐私的完整证明。固定 `.venv` Python 3.12.10、UTF-8、`-B`，最终受影响检查 **222 项通过**，含协议、两条接收路径、正常/失败/超时/取消、保留失败保护、日志异常不跳过资源释放、隐私合同、异步 writer、报告轮转与实际 ZIP 导出。早期测试夹具类位置及异步等待替身错误已修正；一次 stdin 批次不能启动 multiprocessing 子进程，不计通过，最终使用标准 `-m unittest`。未做无关全项目测试。
+- 原生与最终 ZIP：隔离子进程使用真实 WinRT adapter watcher 的四个事件 token，正常注销和停止，并加载实际 CCCD 枚举组件；没有连接用户遥控器或写 GATT。对本任务自有子进程用 `ExitProcess(0xC0000005)` 验证真实 OS 退出读取、句柄释放及无匹配事件；这是指定退出码，**没有复现访问冲突**。实际缺失 PowerShell 可执行文件产生 `FileNotFoundError`，实际限时子进程产生查询超时，并经真实异步 handler、原报告与 `export_logs` 导出。最终日志 ZIP 共 3 个成员、CRC 正常、清单完整稳定，审计 `all_members_accounted=true`、无限制标记；12 条原生清理记录全部通过协议验证。证据在 `.build/cleanup-diagnostics-20261010/`，含 `native_probe.py`、`native-evidence-final/native-log.zip`、`result.json`、`audit.json` 与本任务补丁，属于临时开发证据，不进 Git 或发布，后续集成后可清理。
+- 人工与交付边界：此前固定依赖的 8 次隔离 Frida/WinRT 生命周期实验没有复现访问冲突，不能代替异机冻结程序或该设备固件验证。该电脑的 CCCD 撤销究竟返回什么、真正故障模块/原生栈仍未知，不能写“语音和停止崩溃已修好”。这里只补源码与记录，未变更产品版本、制作程序包、推送或发布，现有 `.87/.88` ZIP 不含本改动。共享目录其它写入任务仍在进行，依并发提交门禁不操作真实 index，保存独立补丁待集成。
+
+### 2026-09-28 初始停止诊断（历史）
+
+- 2026-09-28 依据上述 `.76` 用户日志补强诊断，代码基线为 `d981d30`。停止入口记录设备切换、
+  完全退出、手动/自动重启、声音通道测试等固定原因；接收器另记是否收到主动停止请求和终止
+  消息，避免从退出码反推用户操作。
+- 清理步骤记录开始、完成/失败、耗时和最后已完成步骤。涵盖运行时、接收线程、HID 脚本卸载与
+  会话断开、语音、设备和输入释放。Cython 看不到业务 Python 栈时仍给出步骤快照及
+  `business_locations=unavailable`；不把“正在采集”当成采集成功。
+- 系统确认异常退出后记录角色、PID、十六进制退出码、终止消息和最近步骤。仅对异常码尝试在
+  Windows Application Error 1000 中查找同 PID 和时段的事件，有创建时间时还须匹配该值；
+  缺少创建时间的事件只标记较弱的 PID/时段关联。最多投影 4 条模块名、
+  版本、异常码和偏移；查询超时、无匹配、应用退出前未完成等状态明确标记。没有原生栈，
+  事件也不能单独证明软件根因。不记录本地路径、设备地址、声音、按键原始包或异常正文。
+- 2026-09-28 自检：Python 3.12.10 相关源码测试 241 项、Qt 停止/退出受影响测试 19 项通过，
+  `git diff --check` 通过。含无业务帧、停止日志写入失败、HID 卸载失败仍继续断开、系统事件
+  合成投影与无事件/超时等情形。本机只读确认 Application Error 1000 实际含
+  `ProcessId` 与 `ProcessCreationTime` 字段，未读取或记录该事件的正文和路径值。
+  按用户指令，这轮未编译、未打包、未对真机复测；原 `.76`
+  ZIP 不含本次改动，当前检查点不得记为编译版验证通过。
+
+## CHECK-REMOTE-HID-074 — 谷歌普通按键诊断日志（检查点待实测）
+
+- 2026-09-27，用户同意增强日志并继续交付本地测试 ZIP。源码从 B 款放行检查点 `406acff` 续接。
+  本次目标为观察 HID 回调、来源匹配、读取/格式过滤、worker 送出、客户端交付和检测界面接收；
+  沿用 .73 的解析、来源筛选、按键动作和界面操作。0110 与 011b 共用此接收路径。
+- 用户回传 `MoteDeck日志-20260927-130305`，包内版本为 `1.0.73-candidate.73`：
+  13:01:25 已到 `hid_primary_ready`，13:01:30 语音服务枚举超时；未见按键事件。
+  该次 ready 快照没有匹配的 Raw Input 接口，但单次快照不能判定整个测试期间连接状态。
+  核实发现原 HID 主路径没有更新 `ordinary`，故旧汇总的 0 不能单独证明设备没发送报告。
+  现有“普通按键接收正常”仅由钩子安装成功触发，这一状态含义问题另记，本次不调整界面行为。
+- `hid_flow` 在钩子加载时、随后每两秒及首个读取异常时记录有界快照：匿名回调总数、按现有
+  所选地址条件匹配/不匹配的次数、空缓冲、长度/接口/数据读取失败、长度拒绝、尾部/代码格式
+  拒绝、已送出报告及异常阶段。仅匹配所选来源后统计长度，长度分布最多 16 类，超出单独计数；
+  不读取被长度规则拒绝的正文，不保存原始报文、地址、声音或异常任意文本。
+- 诊断快照使用独立单槽，不挤占按下/松开队列；首个异常快照在终止错误之前交付。
+  `ordinary` 记录进入 worker 的报告，`hid_edges` 记录其送出的边沿；客户端每两秒和退出时
+  记录接收、成功回调、按下、取消后抑制、过期及回调失败次数，附 run/detect 模式。
+  检测界面真正接纳一次结果时记录 `gui_accepted=1`。这些记录用于判断故障阶段，不代替真机验收。
+- Python 3.12.10 定向检查通过；对实际注入脚本的合成 JavaScript 检查覆盖零回调、各过滤分支、
+  读取异常、其它来源不读正文、长度分布上限、日志发送失败及按下/松开顺序。全量原生阶段
+  3702 项自动检查完成：3694 项通过、8 项按条件跳过；实际主程序、Qt 运行环境、HID 助手、
+  99 个原生模块及两份 EXE 内部归档、版本与 Windows 资源检查均通过。
+- 首轮构建在运行完整测试前因上一测试包记录含个人绝对路径而停止；该记录改为桌面文件名后，
+  第二轮构建完成上述唯一一次全量检查。构建证据位于本地 `.build/b074-build-final.log`。
+- 已生成未签名本地 ZIP：桌面 `MoteDeck-谷歌按键日志-1.0.74-candidate.74-本地测试.zip`，
+  157253920 字节，SHA-256 `81E04F4C07C0A9838C30BE8960188CBBA2C085B56500CCB2AD07E44018163309`；
+  主 EXE SHA-256 `ECD9C8CFE0F6BF9A89560B7E6AB996F1492AEED9D93DA9D68225704DA32FF9CE`。
+  包装复用刚通过的同一 EXE 检查，使用现有来源指纹、复制一致性、许可、目录结构和 ZIP 校验函数。
+  本地 `.build/package-b074.ps1`、`package-b074-stage/` 和日志由本任务生成，仅作包装和核验，
+  不入 Git 或程序包，排查后可删除。公开正式版仍为 1.0.72，本包未上传或发布。
+- 人工一轮测试：完全退出旧版，解压新包并核对 .74；确认诊断日志开启，选择相应谷歌遥控器并
+  启动服务，方向键和确定键各按数次；再使用“检测真实按键”按一次方向键，等待至少 3 秒后
+  导出日志。没有反应也保留结果；不同设备分别提供各自日志。B 款兼容性和旧款实机回归仍待验证。
+
+## CHECK-REMOTE-B-073 — `0218D1/9450/011B` 本地测试包
+
+- 2026-09-27 用户导出 `MoteDeck日志-20260927-010513`：所选设备的 PnP 标识为
+  `Dev_VID&0218d1_PID&9450_REV&011b`，18 次接收尝试在 `hid_primary_start` 后以
+  `hid_source_unconfirmed` 失败。`1.0.72` 的 HID 宿主筛选只接受
+  `Dev_VID&0118d1_PID&9450_REV&0110`，两者不匹配。
+- 上游 [vibe-mote 的 2026-09-15 真机记录](https://github.com/Tilkmilk/vibe-mote/blob/main/README.md)
+  声称其中一只同标识兼容款语音和按键都能用；其 `keys.py` 按 VID/PID 寻找 HID 宿主，
+  没有针对 REV `011b` 的单独处理。该外部记录只用于确定本次测试方向。
+- 本测试包保留旧标识并仅增加上述 B 款完整标识；所选设备容器、唯一宿主和连接期间身份复核不放宽。
+  所选设备的语音特征句柄及 `HidButtonReceiver` 的 8 字节报文判断保持原样。
+- 2026-09-27 本地 Python 3.12：新增身份筛选定向检查 4 项通过；原生编译后完整自动检查
+  3692 项完成（8 项按条件跳过）；两份 EXE 原生模块来源、主程序 `--dry-run`、Qt 运行环境和
+  HID 助手 `--self-check` 均通过。首次完整构建因 4 条测试将本地 VERSION 误当公开正式版而中止；
+  修正为核对首页实际标记的正式版后，217 条相关检查通过，随后完整构建通过。
+- 已生成未签名本地测试 ZIP：桌面 `MoteDeck-B款-1.0.73-candidate.73-本地测试.zip`，
+  SHA-256 `32B27989548641EB0CF2AD0697CCF45B6A1F6F8B2F835338260F061FF7E3BCFB`；
+  包内版本、顶层结构、主程序与助手经打包脚本检查。公开正式版仍是 `1.0.72`，该 ZIP 未上传或发布。
+- 人工待测：旧版完全退出后，将 ZIP 完整解压到新目录；核对窗口版本；选择 B 款并启动服务；
+  分别验证普通按键映射、实际目标程序中的语音文字、停止后重启服务，以及空闲一段时间后再次使用。
+  任一环节失败时导出日志并记录发生时间；没有 B 款实机结果前保持“检查点待实测”。
+- 2026-09-27 后续回测：用户反馈状态正常但普通按键无反应，此项未通过；日志核实与后续诊断包
+  见 `CHECK-REMOTE-HID-074`，不将 .73 的型号放行写成设备兼容性已通过。
+
+## CHECK-CHATTERFLY-001 — 两种遥控器接入 Chatterfly（本地测试包待实测）
+
+### 2026-10-13 快捷键自动更新全局修复（`.91` 检查点待实测）
+
+- 用户明确授权修复快捷键更新并重新打包，随后要求同类问题全局核查；“有气泡但不上屏”明确暂缓。来源为正式 `main/dd69d95` 的 `.90`，先以定向回归复现设备切换不主动读取，再修复；没有新增开发分支、配置格式或数据路径。
+- 全局入口核查：`_save_remote_selection` 之前只恢复设备记忆值，现切换成功后发起自动校准；`VoicePage.onVisibleChanged`、程序重选与 `setRemoteRecordingPreferences` 共用的自动读取，忙时从直接跳过改为等待空闲补读；正在读取时出现录音/收尾，也等空闲重新校准。同目标请求合并，失效设备/程序/模式结果不写回，退出清理请求。首次程序选择、显式刷新、手动录入、显示信号、按设备/程序/模式落盘和 `app._reload_settings_if_changed` 运行服务重载原合同有效，未发现其它需要修改的同类遗漏。
+- 来源与失败保护：搜狗、豆包、Chatterfly 可静默读取；微信仍仅主动刷新允许打开设置，旧 none/custom 不自动读取。手动来源不被覆盖，保存前再次核查来源；读取失败保留原快捷键、来源和配置字节，不持续重试失败的输入法读取。忙时延后不改变用户的录音或输入操作。
+- 定向证据：旧代码新增复现测试失败，修复后该项通过；设备选择控制器 32 项通过，扩充全局覆盖 4 项通过，包括两种遥控器与三种静默输入法的自动/手动来源、搜狗/豆包 hold/toggle 读取、读回时开始录音和真实 QML 二级面板切换。共享忙态、重复请求、切回旧设备、手动编辑优先、读取失败与退出取消均覆盖；最终编译后完整检查及实际 EXE/ZIP 结果见本页“1.0.91 本地测试包”。证据索引在 `.build/local91/update-audit.json`，不构成新的正式入口。
+- 已完成开发侧修复与验证，真实日常设备切换仍为检查点待实测；不上屏的原诊断和证据缺口继续保留，未修改增益、音频时序、采集或识别。
+
+### 2026-10-12 晚间谷歌首轮不上屏与旧快捷键显示（只读诊断）
+
+- 来源：正式主目录 `main/25c594d`，运行源码 `.89`，PID 260876 于 20:57:45 启动。
+  用户反馈“一开始说话不上屏，有气泡”。最近五次谷歌试说为 21:00:28–21:00:59，
+  具体哪次对应哪句话仍未知；检查向前补齐同进程 20:57:53.914 的启动、两次小米试说及
+  21:00:06 的设备切换，向后包含 21:01:09.384 的观察结束。小米诊断会话 `2c7a728b…`
+  共 283 条、谷歌 `d23460b1…` 共 103 条，均从 seq 1 连续；谷歌设备短号 `cd2e24b3670c`，
+  接收运行 `7f01b1811c9b`。读取应用日志及轮转、诊断流及轮转并交叉核对，四文件快照与
+  摘要见 `.build/ui-google-20261012`；1,502 条诊断事件可解析，旧进程片段只作历史索引。
+  谷歌运行在取证时仍持续、未强行停止；其五次语音均有结束。13:42 的诊断报告过旧，
+  未用于证明晚间结果。附加环境查询有权限不足、PNP 查询部分超时，但后续注入/语音
+  订阅已成功，不能把这些采集缺口直接当作不上屏根因。
+- 谷歌先有一次 21:00:15 的麦克风按键检测，动作被检测模式抑制，不计入五次试说。
+  后续五次均由 IPC 开始、确认本轮浮窗并结束，开始到确认约 72–150 ms，未发现启动或
+  结束超时。当前目标 PID 225292 与已有组件启动日志一致；上屏结果均为 unknown，
+  前台 ChatGPT 控件无法可靠读出正文，不能以气泡或结束成功代替识别成功。
+- 按各次录音前后接收计数分段，分别收到 49/90/55/32/121 个 160 字节音频包，均进入
+  接收流程，拒绝、无处理器、发送失败计数为 0；按当前 ADPCM 每字节两采样、16 kHz
+  代码折算约 0.98/1.80/1.10/0.64/2.42 秒。后端写出 10/18/11/7/24 个至多 100 ms
+  音频块，和接收量相符；中间三次录音状态持续约 3.56/3.75/2.70 秒，却明显少于同等
+  时长音频，支持继续检查音频到达是否连续。最初两次已有 PCM 片段能量较低
+  （首轮累计 RMS 285.6，第二轮前一秒 RMS 179.5；16 位量程），后面片段更强。
+  这不证明用户声音小，也不能单凭现有记录区分遥控器静音抑制、蓝牙/Windows 接收缺口
+  或输入法识别问题；没有原始录音和识别文本，未修改增益、时序或追加日志要求用户重测。
+  Chatterfly 的明文 voiceinput/core 日志仅有启动信息，此时段运行细节为加密 xlog，
+  未将无法读取部分算作“没有错误”；Cloud 与前台 IME 明文记录无可用识别结果。
+- 旧快捷键已确认是设备保存值，不是单纯画面重绘遗漏：21:00:07 谷歌启动加载
+  `rctrl+rshift+0`，首次试说沿用；21:00:32 重新载入后为 `rshift+i`，后续四次一致。
+  `_save_remote_selection` 会恢复各设备语音设置并发送显示信号，但切换完成不会主动
+  重读输入法；`VoicePage.onVisibleChanged` 的静默读取也会在录音/服务切换忙时跳过，
+  没有空闲后补读。直接只读 Chatterfly 配置返回 `rshift+i`。录音实际 transport 为
+  `chatterfly_ipc`，所以旧显示值不阻止气泡出现，不构成此次不上屏的快捷键原因。
+  建议后续只对自动来源在切换完成且空闲后静默校准，手动来源及读取失败保留原值；
+  该建议涉及自动读取/保存时机，尚未获得功能修改确认，本次不实现。
+
+### 2026-10-12 `.89` 本机失败核对与直接控制修复
+
+- 来源为正式 `main/e5c3e63`。本机 `.89` 主进程 PID 222356 于 10:20:09 创建，
+  10:20:13.952 开始应用记录；以该次启动至 10:27:23.602 快照末尾作为本次候选范围，
+  不是以文件导出时间圈定。应用及轮转日志、完整诊断流和报告交叉读取，676 条当前 PID
+  事件可解析；运行 `497f44904511` 已完整结束，`25c425164f6e` 在快照时仍运行。
+  两次 Ctrl+Shift+0 与五次 Shift+0 尝试，共 32 个按键边沿有本进程兼容确认，
+  但七次均无 Chatterfly 浮窗确认。报告窗口有限且有丢弃标记，未将其代替完整日志。
+- 纠正下方 10 月 10 日的有限静态结论：当前 `win32kfull.sys` 的跨线程低级钩子分支
+  在 RVA `0x94d72–0x94d79` 使用线程 `+0x588` 原始事件重新投递；不是继续传递被本进程
+  修改的用户态副本。目标 Cloud `.5531/.5567` 的 injected 拒绝分支已与活动代码核对。
+  因此 `.89` 原兼容路径不能靠本进程确认或返回 0 证明 Chatterfly 接受，换成 Shift+0
+  也不能解决。没有把磁盘反汇编写成内核逐事件动态跟踪。
+- 新实现调用目标已有 `__chatterfly_VoiceInputMessageIpcWnd__`：WM_COPYDATA，dwData=1，
+  ASCII `2\n1\n` 开始／`3\n1\n` 结束，cbData=4。收发两端静态核实、实际 64→32 位
+  调用通过。目标提前 ReplyMessage(0)，所以业务成功仍由新出现的 VoiceBarWnd／
+  VoiceBubbleWnd 确认；拒绝原有录音，绑定进程创建时间、PID、IPC HWND 与代次，
+  不向替换目标补结束，不因超时重复开始／结束；清理未确认保留责任。
+- 本机目标启动日志确认 PID 225292、语音组件 `1.0.0.3670`、IME `1.0.0.5567`。
+  首次实测命令后约 125 ms 浮窗出现，结束后约 1 秒消失。随后源码及 Cython `.pyd`
+  均走真实产品小米按住、谷歌按住、谷歌开关三条路径，实际浮窗均出现并结束。
+  设备／音频 I/O 隔离，因此这证明本机宿主唤起与清理，不证明实体传声或文字上屏。
+  原生形式首轮探针读到“允许 PCM”后立即检查后续设备计数，遇到测试跨线程取样竞态；
+  改为等完整条件后通过，产品未因该探针断言修改。
+- 源码分批受影响检查通过；最终编译形式受影响检查共 394 项、1 项环境跳过，其余
+  通过，资源泄漏告警按错误处理。包括观察线程创建失败仍保留清理责任，以及正常
+  等待宿主关闭时不误报结束失败的回归。最终源码及编译形式三路真实气泡重验通过：
+  小米松手不触发重连，谷歌等待关闭期间不回传 release_failed，关闭后均释放责任。
+  未进行全项目测试或独立程序打包。
+- 协议没有录音态查询或来源所有权标识，无法完全识别同进程同浮窗瞬间手动换轮；
+  启动观察截止后才出现的未知会话也不能盲发结束。源码不改写系统热键或 Chatterfly
+  设置。实体遥控器传声、文字上屏及其它版本仍待验收。
+- 证据位于 `.build/chatterfly89-readonly-20261012` 与
+  `.build/chatterfly89-fix-20261012`：日志索引、系统转发、协议反汇编和哈希、真实气泡
+  及三路产品验证 JSON、编译记录和测试日志。它们由本任务产生，仅用于本机诊断复核，
+  不纳入 Git／发行包；本条保留正式结论，临时证据在问题验收后可按构建缓存规则清理。
+
+### 2026-10-10 20:28 开发版重开反馈（遥控结果未验证）
+
+- 用户重开开发版后提供仍缺 `0` 的截图；对应手动录入失败见 `CHECK-HOTKEY-EDIT-001`
+  本次记录。同次启动至 20:32:20.469 的应用快照没有遥控语音尝试或边沿确认，不能据
+  截图判定模拟按键兼容成功或失败。`04770c2` 的隔离检查不代表真实宿主已接受发送。
+
+- 同日 20:55 后台续查：只读核对本机磁盘 `user32.dll` 与 `win32kfull.sys` 的转发路径。
+  `NtUserCallNextHookEx` 的类型 13 分支把调用者提供的 24 字节键盘结构（包含 flags 和
+  extraInfo）复制到内核局部缓冲后再交给下一钩子。因此不能仅凭“跨进程”就断言前轮
+  修改的标记必然丢失；这只是该系统文件版本的静态证据，不等于实际内核执行、钩子顺序
+  或 Chatterfly 接受事件已验证。源码兼容修复仍待真实宿主结果，不新增模拟通过结论。
+
+### 2026-10-10 模拟按键兼容修复（源码检查点待实测）
+
+- 来源：正式 `main` 的 `4ec3033`，用户要求后台修复手动录入报错与遥控不出气泡。
+  反馈范围依据 17:07:22 开发版启动及 17:07:52／59 截图关联，不把整个轮转历史当作本轮。
+  同次 runtime `3c249de4fd8f207c`、设备短编号 `cd2e24b3670c`；运行 `587e726c8de0`
+  已补齐开始至停止的 203 条接入证据，`f1d687397b76` 快照含 549 条且尚未结束。
+  应用日志、两份详细流与报告交叉核对；报告的 `dropped_after=21` 不作为完整证据。
+- 直接阻断已确认：5 次尝试均提交了右 Ctrl、右 Shift、0 的完整六个边沿，但使用
+  `marked_keybd_event`，未启用兼容。当前 ChatterflyCloud `1.0.0.5531` 的活动注册表
+  只有一个快捷键回调，语音配置为 VK `0x30`／修饰字段 `0x1400`；回调 RVA `0xbdfbc`
+  在处理快捷键前判断 injected，非零跳到 `0xbe467` 返回。Hook RVA `0x13b23a`
+  从 `LLKHF_INJECTED` 构造此字段；这三处运行内存与磁盘一致。模块 SHA-256 为
+  `6104611729f8afae8511d23aa98ba4353260842a9c9e62b4a52740b2fa839783`。
+  这是活动代码与发送记录核对，不冒充逐事件注入跟踪；自动读取配置不能改变该过滤规则。
+- 修复使用独立的 `chatterfly_hotkey` 内部后端，沿用现有本进程按键兼容钩子，不向
+  Chatterfly 注入模块、不修改其文件或设置。每个配置键的发送票据绑定准确虚拟键、
+  边沿与钩子代次，仅匹配本程序该次发送；其它注入键及实体键不改。发送前在钩子线程
+  更新转发顺序，避免宿主后启动或重装钩子后位于本钩子之前；更新不清空实体按键状态。
+  更新失败不发送，部分已发送键按原规则回收，欠松保留且仅重试 UP。重复钩子清理未确认
+  时拒绝新票据、保留引用；松键重试可先恢复清理。小米按住、谷歌按住／开关和取消均接入。
+- 同批录入修复见 `CHECK-HOTKEY-EDIT-001` 下方新条目。固定 Python 3.12.10、
+  `PYTHONPATH=src`、UTF-8、`RC003_DISABLE_LIVE_INPUT=1`、Qt offscreen，资源警告按错误。
+  去重源码 797 项通过，覆盖真实消费者、原微信／搜狗／豆包路径、所有权、取消和停止。
+  初次整组手动停止未算通过；详细运行有 727 项逐项通过，随后自设 25 秒看门狗中止了
+  无关界面尺寸项，该项自身的子进程超时是 120 秒，不据此判产品卡死，也不记完整套件通过。
+  剩余所需项补验 60 项；Qt 后备修复后定向 37 项、清理保护后 114 项通过，重叠不重复计数。
+- 使用正式 Cython 指令在 `%TEMP%` 编译录入器、兼容钩子、发送器和快捷键会话四模块，
+  确认实际导入 `.pyd` 且编译源与最终源码一致，230 项全部通过；它们是编译形式复验，
+  不与源码数量相加。首次测试编译因临时对象路径过长失败，改为相对路径后通过，未改产品
+  构建入口。真实 `WINFUNCTYPE` 回调与结构体验证了下游过滤、原始元数据恢复、六边沿、
+  错键／错边沿／过期票据、更新失败、确认超时、实体键重叠、欠松与清理失败。
+  Hook 注册、消息投递、下游回调及发送 API 均为隔离适配器，未安装桌面钩子或发真实按键。
+- 最终 `--dry-run` 与差异检查通过。证据集中在临时调查目录的 `findings.json`、
+  `active-shortcut-readonly-proof.json`、`fix-validation.json` 和对应测试输出；不纳入 Git。
+  当前运行程序未重启，`.87` 正式包未更新；未制作 EXE／ZIP、提权、推送或发布。
+  Windows 实际跨进程钩子转发、真实宿主气泡／音频／上屏仍待方便时验收；本轮不要求用户重测。
+
+### 2026-10-10 自动读取源码检查点
+
+- 来源：正式 `main` 基线 `497007c`，本机 Chatterfly `1.0.0.5531` 的实际配置与设置窗口只读核对。
+  `LocalLow/ChatterflyPY.users/<profile>/env.ini` 的 `[Setting] YbVoiceInputHotkey=0000140B`、
+  `YbVoiceInputHotkeyActive=1` 与设置界面的“右 Ctrl、右 Shift、0”一致；不误读指令模式的
+  `YbVoiceCmdHotkey`。本机值只用于验证，不作为默认值。
+- 编码核对：该版本 `FySetting.exe` 的修饰键转换与保存实现确认低字节为扫描码，
+  `0x0200/0400/0800/1000/2000/4000/8000/10000` 分别为左右 Ctrl、Shift、Alt、Win。
+  通过系统当前键盘映射解析主键；未知标记、序列／双击、空值、关闭状态或多份账号配置拒绝采用。
+  本次不猜选最近修改的账号、不更改 Chatterfly 配置，也不修改 Windows 输入法切换设置。
+- 自动读取、来源保护、刷新失败、重开及相关语音设置 367 项受影响检查通过；语音页实际 QML
+  的 2 项检查通过并复用。环境为正式 `.venv`、Python 3.12.10、`-B -W error::ResourceWarning`、
+  `PYTHONPATH=src`、`RC003_DISABLE_LIVE_INPUT=1`。初轮 57 项中的重叠结果不重复计数。
+- 实际入口：临时配置加载真实 QML，读取本机真实 Chatterfly 配置，页面显示
+  `右 Ctrl + 右 Shift + 0`、来源为自动，刷新后持久化回读一致。原第三方文件只读，
+  正式MoteDeck快捷键未由本次诊断改写。新增实现未进入现有 `.87` 程序包；遥控器实际启停、
+  传声与文字上屏仍待该源码进入可运行产品后的人工验收。
+
+### 原接入人工队列
+
+- 2026-09-29，本机 Chatterfly `1.0.0.5516` 的实体键盘启停和语音浮窗出现／消失
+  已由用户确认；原“右 Ctrl＋右 Shift＋0”会切换 Windows 输入法，不作为建议组合。
+- 在 Chatterfly 设置中改用不与系统或目标程序冲突的“语音输入”快捷键，在MoteDeck
+  选择 Chatterfly 后手动录入相同组合，重开设置核对两种遥控器各自保存，且旧输入法
+  与旧自定义配置不被覆盖。目标程序保持可编辑输入框，输入法麦克风选 `CABLE Output`。
+- 小米按住说话后松开；谷歌分别用按住型和开关型各说一句，开关型再短按结束，
+  并核对到时停止。每轮观察语音浮窗开始和消失、声音传入、文字上屏及再次启动；
+  无浮窗、快捷键冲突或目标未运行时不得报语音成功。先在记事本验收，再按需核对
+  常用目标程序。此项不要求更改 Windows 默认输入法。
+- 此接入已进入 `.84` 本地测试包；已发布的 `1.0.72` 包和 `.83` 本地测试包均不包含。整合后的源码自动验证及 `.84` 包结果见维护记录和本文顶部，真实输入法效果仍待实测。
+
+## CHECK-HOTKEY-EDIT-001 — 快捷键录入与旧映射兼容（本地测试包待实测）
+
+### 2026-10-12 `.89` 漏 `0` 根因闭环与修复（本机通过，检查点待实测）
+
+- 来源：正式主目录 `main/e322e2d`，用户确认本机直连键盘，并于 12:55 后授权一小时内按需短测。沿用当天已圈定 `.89` 主进程 222356、接入运行 25c425164f6e。原在用进程不重启、不注入、不更改配置；最终界面仍显示右 Shift+0。
+- 现场范围为 12:55:00–13:02:00，三轮录入 capture_id=12／14／16 均完整落在范围内。完整读取两份应用日志及两份详细流，窗口内应用日志 651 行，详细流无同期事件，无解析错误；复用原启动与设备上下文，中间轮转区间未保存，不称全持续运行完整审计。`live-chain-logs/audit.json` 保存文件清单、哈希、范围及全部相关原文。退出总计含 Esc，不能用其替代每次标记的实时计数。
+- 现场对照：旧外部透传钩子最初收到两个 VK_NONAME 边沿；`.89` 开始录入成为新链头后两侧均零。再安装较新的外部透传钩子，新侧、原 `.89` 与旧侧均收到两个；移除新侧又恢复整链零，WM_NULL 唤醒无效；取消 `.89` 录入后旧侧恢复。原同一钩子可经 CallNext 执行，排除该轮持续执行锁阻塞、损坏回调或 CFG 静默拒绝的解释。
+- 本机因果复现：自有 Qt 前台进程 223672 使用原生产 `HotkeyCapture`，只切换键盘 Raw Input 登记，未登记／登记／移除／再登记／再移除时均发送两个标记，实际收到 2／0／2／0／2。独立录入进程不登记 Raw Input，前台仍登记时可完整收到并吞下六个三键边沿。原 `.89` 同时核对到前台 PID 一致、实际 `RawInputButtonListener` 活跃、ready 为真且无启动错误；这是只读对象证据，不冒充在 `.89` 内调用登记枚举或读取内核状态。
+- 静态解释来自本机 `win32kfull.sys 10.0.22621.5185`：首次派发在链头与前台键盘进程相同且有效键盘 Raw Input 登记存在时，可直接结束整条链；CallNext 不经过这段首派发检查。内部 0x10 表示键盘登记，不是公开 NOLEGACY 标志。以上有可逆实测支持，但没有读取现场内核命中状态，也不推广为所有 Windows 构建的固定实现。既有系统 Ctrl+Shift+0 占用解释 Qt 后备为什么仍漏 `0`，不是三键上限或序列化丢键。
+- 修复：设置控制器的两个页面共用 `HotkeyCapture(isolated=True)`，短命子进程承载原低级状态机；匿名继承管道有长度限制、启动限时与取消/异常清理，冻结入口先于桌面单实例及桥接初始化。源码入口直接使用当前 Python 3.12 的实际解释器，避免 `.venv` 启动器再生进程导致强制停止只杀外壳。保留左右键、小键盘、注入事件选择、Esc、Qt 后备和原保存规则；不改系统热键、配置格式、Chatterfly 设置或用户操作步骤。
+- 真实入口：`real-qml-capture-result.json` 记录源码 QML 的左右 Ctrl+Shift+0 两次完整结果与 Esc 取消；`native-qml-capture-result.json` 记录编译 QML 的右 Ctrl+右 Shift+0、右 Shift+0，以及强制结束自有录入子进程后中文提示、恢复 idle、旧值保留。前两次均卸载成功，异常退出不伪造卸载摘要。
+- 最终编译复验：真实 `RawInputButtonListener.start(None)` 开启，前台 PID 230808；语音页完整录入并临时保存 `lctrl+lshift+0`，按键页电源单击完整录入、带回编辑框并保存 `rctrl+rshift+0`。两轮各六个边沿、交付一次、卸载成功，结束无存活录入资源；`final-native-qml-capture-result.json` 及隔离目录 `config.json/key_bindings.json` 交叉核对。使用系统软件输入，不冒充人手实体键盘复验，设备/程序发现和自动读取使用替身，录入器及界面为真实编译实现。
+- 原生生命周期：最终编译模块使用真实 Windows hook/管道，正常取消 exit=0、卸载成功；自建父进程被终止后，持有的子进程句柄在约 0.016 秒内确认退出。`native-capture-lifetime-result.json` 保存实际 PID、解释器和结果。虚拟环境多层进程及 windowed 管道读线程跨线程关闭死锁在开发验证中发现后已修正，不计早期失败为通过。
+- 定向验证：固定 `.venv` Python 3.12.10、UTF-8、禁用测试中的真实输入监听。设置控制器原 307 项、源码录入/Chatterfly/入口/构建合同 166 项及真实 QML 合同 1 项通过；随后新增取消竞态与旧失败隔离 2 项通过。最终子进程与原低级录入 40 项通过，覆盖新加的直接解释器所有权与实际导出 ZIP；编译阶段验证 103 个模块，原编译定向 66 项通过，最后仅重验受新增修改影响的 18 项，全部通过。各批存在重叠，不相加成总数，不执行无关全项目测试。
+- 最终 ZIP：测试使用真实子进程、继承管道、异步日志 handler 和 `export_logs`，正常结果、取消、录入中退出、ready 前退出与启动超时均进入实际导出包；完整校验 CRC、清单、刷新标记、子进程 PID、卸载结果和故障报告分类。新增摘要不记录组合键正文；强杀子进程仅保证父侧退出故障记录，不承诺被杀进程能发出最终摘要。
+- 证据集中在 ignored `.build/chatterfly89-fix-20261012`，包括三份 live 对照、`raw-input-hook-reproduction.json`、`hook-skip-analysis/first-hook-dispatch-findings.md`、QML/原生结果和定向检查日志。探针由本任务生成、只供本机诊断，非 Git 或发布资产，验收后可随构建缓存清理。未制作新 EXE／产品 ZIP、更新版本或发布；原 `.89` 不含修复，新包实体键盘及实体遥控最终验收仍待完成。
+
+### 2026-10-12 `.89` 漏 `0` 续查（当时尚未修复）
+
+- 同次 `.89` 主进程 222356：10:22:19–21 的 capture_id=2、线程 226036，
+  native Python callback_entries/returns/errors 均为 0，Qt 只得到右 Ctrl／右 Shift；
+  10:22:45–46 的 capture_id=4、线程 179764 同样零回调，但 Qt 完整保存右 Shift+0。
+  两轮消息循环均正常退出并卸载。原日志没有完整 Qt 主键边沿或输入来源，不能据修饰键
+  的 native_vk/native_scan 判断本地键盘还是远程消息，也不能从零 Python 计数判定
+  Windows 完全没有进入原生 thunk。没有三键数量上限、0 的解析或保存丢失证据。
+- 11:10:51 本机只读 `ImmGetHotKey(0x104)` 返回成功、vk=0x30、modifiers=0xC006、
+  hkl=0xFFFFFFFFE0010411，与注册表 IME 直接切换项一致。系统确实占用 Ctrl+Shift+0，
+  与 Qt 回退漏 0 的表现吻合；尚未证明历史那次事件确由它截走，且它不能单独解释
+  主录入器所有键零回调。未删除系统热键、修改键盘布局或用户配置。
+- 临时 C 原生边界探针可区分 native 已进入而 Python 尚未进入；源码／旧编译模块、
+  独立进程／完整隐藏设置 QML 的原生产同步 hook 均收到两个保留标记。取消预先唤醒
+  消息仍通过，message_calls=1 并不表示消息泵停住；主线程处于普通 WinDLL 长调用时
+  也正常。所有实体输入只透传，不记录或吞掉；这些结果不替代原在用进程失败证据。
+- 用户确认使用本机直连键盘，并授权一次短暂操作当前 `.89`。12:17:55.324 开始的
+  capture_id=6、线程 232684 就绪后，`probe_live_capture.py` 仅发送一对带唯一标记的
+  VK_NONAME，SendInput 返回 2；12:18:13.555 退出时 callback_entries/returns/errors
+  仍全为 0，message_result=0、卸载成功。确认原在用进程也收不到专用信号；这仍是
+  Python 入口计数，不能冒充原生跳板从未进入的证据。
+- 点击停止先触发 focus_lost 取消，又开启 capture_id=8（12:18:13.574–33.771，
+  线程 234448）；该轮没有发送标记，最终用 Esc 取消。两轮均无保存，界面核对原
+  “右 Shift + 0”保留。操作实际包含这次重新开启，不能只记为第一轮正常停止。
+- 新快照完整读取两份应用日志和两份详细流，无解析失败；12:17:30–12:18:34 操作
+  范围包含全部 112 行应用记录，详细流该窗口无事件，不能用它补原生回调证据。
+  接入运行仍为 25c425164f6e，复用原快照中的启动与设备上下文；中间轮转区间未保留，
+  不称为完整持续运行审计。清单、哈希和两轮原文集中于任务 `.build` 下
+  `live-marker-logs/audit.json`，不进入产品或 Git。
+- 12:25–27 的只读现场核对：当前 `.89` 与独立探针同为 session 1、Medium 权限、
+  无 UIAccess；当前缓存的 ctypes 接口签名与 flags 正常，录入模块来自在用 `.89`
+  pyd。进程未冻结，所查动态代码、系统调用、扩展点、签名和子进程限制均未开启；
+  窗口线程位于当前 Default 输入桌面。这些只是当前状态，不能还原已退出录入线程。
+  手动录入仍未修复，未把新进程测试通过登记为成功。
+- 第二次获准现场对照为 12:35:58.935–12:36:10.611，capture_id=10、线程 212852。
+  唯一 VK_NONAME 标记仍为 SendInput=2，退出计数仍全为 0，卸载成功；Esc 取消后
+  界面保留“右 Shift + 0”。完整核对该操作范围 49 行应用记录，详细流无同期事件。
+  源快照与范围见 `live-thread-marker-logs/audit.json`。
+- 本轮使用仅线程上下文的 PSS（没有内存克隆、注入或写目标内存），标记前和标记后
+  三个取样均在 `win32u.dll+0x1584`，栈顶返回地址为 `USER32!GetMessageW+0x2a`；
+  当次录入线程在 Default 输入桌面，暂停计数为 0。排除这些采样点持续卡在 Python
+  执行锁；离散采样不能证明两点之间完全未进入任何原生跳板。完整结果集中在
+  `live-thread-marker-result.json`，栈内模块地址候选没有冒充已展开的调用栈。
+- 同进程系统回调入口、client 跳板及 User32 worker 的只读对照未见改写；CFG 开启
+  与独立 Python 不同，但对应静态拒绝分支会终止进程，不能解释现有的静默零回调。
+  查询边界、内核可能跳过的分支和系统文件哈希集中在 `hook-skip-analysis/findings.md`；
+  没有据静态分支推定本次实际命中，也没有改变系统安全设置。
+
+### 2026-10-10 20:55 启动差异与系统派发续查（仍未修复）
+
+- 来源为正式 `main` 的 `0e0fb64`，工作区无业务改动。复核上一条 `read-audit.json`
+  对应 6 个文件的 SHA256，全部未变，复用完整日志审计；同次详细流仍为连续 471 条。
+  其中是启动、设备上下文及导航扫描记录，没有按键钩子事件，不能用导航扫描正常证明
+  录入时的其它键盘钩子也收到了事件。
+- 成功窗口的原始应用日志补足了准确时间：11:05:59.880 开始录入，59.886 就绪，
+  11:06:02.310 起收到实体事件，03.937 发出 `rctrl+rshift+0`，03.943 经 QML 提交。
+  与原 `full_qml.stdout.log` 的真实边沿相符；仍保留临时配置、语音程序替身、桥接状态
+  替身以及未按正常入口启动后台服务的边界，不执行该旧脚本。
+- 正常源码入口的 17:07 录入也已收到 `0`，只是多收检查键导致校验失败；17:09 还收到过
+  `rshift+0`。所以“正常启动本身必然导致零回调”不成立，不能把临时窗口与正常入口的
+  差异直接当作根因。20:29 的零回调与前述成功收件仍需分别解释，不能反复重跑已通过的
+  启动框架模拟对照，也不回退此前已确认的检查键过滤。
+- 实时重新核实主进程仍为 PID 147136，创建时间 20:28:50。只使用查询与 VM_READ 权限，
+  对比该进程 Windows 回调表的前 128 个槽位及对应函数前 128 字节；与同机独立进程一致。
+  又对比 user32 中消息获取、探测、钩子安装、转发、卸载的 5 个导入槽及目的函数前 64
+  字节，也无差异。这次观察在录入已经结束之后，只能说明所查入口当前没有发现替换，
+  不能重建 20:29 的钩子链或排除全部外部干扰。
+- 剩余缺口收窄为失败当时的原生回调入口、Windows 派发及钩子存活证据。现有计数位于
+  Python 回调体入口，能排除该函数体内先解析或记录报错，但不是 ctypes 原生跳板入口
+  计数；不能再进一步宣称它已经区分原生调用前后所有阻断。尚无证据确定发生过原生
+  跳板阻塞、系统超时移除或上游截断，不据猜测修改业务逻辑或安排同条件盲测。
+- 新增只读证据集中在临时目录 `remote-mic-startup-readonly-2701614ff61a440b925042b991641921`
+  的 `findings.json`、`inspect_dispatch.json` 和系统／宿主静态转发摘录；文件来源、哈希及
+  验证边界在该处保存，不纳入 Git。未操作桌面、安装实时钩子、发键、注入、重启、提权
+  或改真实配置；未修改业务代码、重复自动测试、构建或发布。两项仍未获得新的真机验收。
+
+### 2026-10-10 20:29 开发版重开仍漏主键（未修复）
+
+- 截图文件写入时间为 20:29:09；结合新进程 20:28:50 创建和唯一一轮
+  20:28:58.141–20:29:00.854 录入，定位本次候选范围，不单独以图片时间界定按键。
+  正式 `main` 为 `04770c2`，设置主进程 PID 147136。只读运行内存确认录入器、设置页
+  与兼容模块加载正式源码路径，录入模块有本次新增 `VK_NONAME=252`，不是旧冻结包。
+- 两份应用日志共 1185 行（17:34:10.837–20:32:20.469），两份详细流共 1274 条，
+  末行完整、详细流全部可解析。圈定本次启动至快照结束的 411 行应用记录，与 runtime
+  `060f7d56890d4b58bed494fc99725f98` 的 471 条连续详细事件交叉核对。启动设备上下文
+  为 `cd2e24b3670c`；接入运行 `377d0b21d488` 尚未退出，不称为完整进程生命周期。
+  接入 evidence 序号还包含其它 IPC 消息，非连续不直接推定丢失；详细流本次 seq 1–471
+  无缺口。既有故障报告仍为 17:09 历史报告，不用于补足本次录入。
+- 录入安装成功、就绪后保持消息等待，退出摘要 `callback_entries=0`、
+  `callback_returns=0`、`callback_errors=0`、`result_deliveries=0`，无线程异常。
+  停止后消息等待返回 0、卸载成功。新断点证明本次没有进入 Python 录入回调，
+  不是回调内部解析、日志或校验报错；Windows 派发与上游拦截的具体原因仍未确认。
+- Qt 后备收到右 Ctrl、右 Shift 的按下与释放，20:29:00.851 提交 `rctrl+rshift`，
+  00.854 保存，没有 `vk_fc` 或主键。与 17:07 已收到 `0` 却因额外检查键校验失败不同。
+  此前检查键过滤不能关闭本次零回调问题，手动录入仍未修复。
+- 只读状态显示本进程兼容钩子尚未启动（active=false、generation=0、owner=None），
+  不能归因于前轮新增兼容钩子。本轮仅保存证据和更正状态，未修改业务代码或用户配置，
+  未操作桌面、重启、安装监听、发送测试键或注入进程；不要求用户重复同一录入。
+- 原始快照、文件 SHA256、范围与断点集中在本机临时目录
+  `remote-mic-chatterfly-retest-01f565a46cd54d89bc5494ec84d3c5ff/read-audit.json`，不纳入 Git。
+
+### 2026-10-10 后台检查键误入快捷键修复（源码检查点待实测）
+
+- 同次开发版 17:07:30.865–17:07:34.328 录入的原始结果是 `rctrl+vk_fc+rshift+0`，
+  回调 9 入 9 出、0 异常，Qt 收到同样组合；主键 `0` 已收到，多收的 `vk_fc` 与 `0`
+  被当成两个普通键，校验拒绝后界面保留旧的右 Ctrl＋右 Shift。早先快照尚未落盘，
+  后续 `app.log.1` 已找回完整记录，纠正此前“本轮原始组合缺失”的判断。
+- 中间一对事件为软件注入；Chatterfly 当前及旧版 Cloud、语音组件均有 VK_NONAME
+  (`0xFC`) 检查信号实现。现场未记录 extra_info／发出进程，不能将它精确归到某个 PID。
+  17:09 另一轮 `rshift+0` 与历史正式版零回调现场分别保留，不自动写成同一根因已解决。
+- 共用录入器透传注入的 VK_NONAME 两边沿，不记入快捷键，也不阻断宿主健康检查；
+  正常远程注入组合仍可录入。Qt 后备通道排除同一保留键，防止透传后又被页面认领。
+  语音页与按键映射沿用原保存、取消、左右修饰键及普通键校验，不增加用户步骤。
+- 原故障的内存事件回放先复现相同报错；最终实现回放实体与远程注入键均得到
+  `rctrl+rshift+0`，校验通过。Qt 控制器直接回放也通过。定向、受影响范围与编译形式
+  的去重结果集中见本页 `CHECK-CHATTERFLY-001` 新条目；没有桌面输入或重复要求用户实测。
+
+### 2026-10-10 Chatterfly 录入漏主键诊断（当时未修复）
+
+- 用户确认使用本机实体键盘。原反馈范围为 2026-10-09 20:11:30–20:11:55：一次失焦取消，
+  两次底层记录器报告就绪但无 hook 边沿日志，Qt 后备通道只记录右 Ctrl／右 Shift 并保存
+  `rctrl+rshift`。快捷键解析、显示及配置模型均能保存 `rctrl+rshift+0`，不是显示截断。
+- 2026-10-10 用户在真实 QML、临时配置的源码窗口实按相同组合，明确反馈完整显示；
+  同轮原生日志记录 `injected=False` 的右 Ctrl、右 Shift、`VK=0x30/scan=0x0B` 上下沿，
+  最终 `CAPTURED rctrl+rshift+0`。此前无法确定 `0` 去向的结论据此收窄到正式运行环境的采集差异。
+- 正式 `.87` 程序于 12:43:59–12:44:37 的无保存对照：实际设置窗口进程普通权限，录入报告
+  ready/running；在确认相关键均已松开后，仅发送一个带诊断标记的 `0` 松键，系统接受 1 项，
+  该录入未出现 hook 边沿；随后取消，原快捷键未变。停止按钮点击遇到失焦取消后再次启动，
+  最后通过点空白位置结束；此相邻交互问题仅记录，不扩大本次修改。
+- 隔离原生验证：源码与 `.87` 原生模块的完整 SettingsController 均能捕获受保护注入的 6 个
+  边沿并返回完整组合；同进程开启真实 physicalizer 后仍正常。临时最小冻结宿主分别加载
+  源码及 `.87` 原生录入模块，单个松键均进入回调，`hModule=EXE/None` 两种情况均正常。
+  临时宿主只验证原生差异，不是MoteDeck测试包或交付产物；未替换正式程序文件。
+- 本机 `ImmGetHotKey(0x104)` 确认存在 `VK=0x30`、Ctrl＋Shift、左右均适用的输入法切换绑定，
+  目标布局为 `0xE0010411`，当前已加载布局为 `0x08040804`；这说明存在冲突配置，
+  不足以证明它使低级 hook 全部无回调。尚未确定正式进程采集失效的具体原因，不能宣称手动
+  录入修复通过；自动读取的完成状态见 `CHECK-CHATTERFLY-001`。
+
+#### 同日后续核查与证据边界
+
+- 用户反馈：正式程序重启后，13:13:02–13:13:09、13:23:13–13:23:15 的实体按键录入仍漏 `0`。
+  后者的临时原生观测记录一次 hook 安装、同线程消息等待、取消时返回及卸载，未记录回调。
+  对全部 403 条卸载记录核对后，只有取消时的一条对应本次录入句柄；没有发现其它线程误卸载
+  该句柄。改用空模块句柄和同线程旁路的观测也未记录回调，但这些观测使用了进程注入，
+  存在扰动现场的边界，不能单凭它们确定 Windows 未派发回调或确定某个第三方程序为根因。
+- 诊断问题：临时冻结启动脚本的缩进错误已修正；一次注入诊断退出过程中正式进程意外退出，
+  已于 13:29:47 恢复正式程序。后续不再向用户正在使用的正式进程注入，不通过接管桌面、
+  全局发键、弹窗或重启继续排查。临时诊断程序不是产品交付，不能让用户承担其开发验证。
+- 更正无效对照：`bundled-runtime-result.log`、`bundled-runtime-sky-result.log` 和
+  `full_nav_windows.log` 的“无回调”结果中，录入器先收到用户其它输入并完成录入，之后才发送
+  诊断事件，因此不能据此归因于冻结运行时或启动方式。改为其它输入直接透传后，完整 QML、
+  真实后台框架加替代设备客户端、正式主入口的隔离对照均收到诊断事件；这些结果只证明所测
+  隔离条件正常，不等于复现或修复正式现场。后续不得重跑会吞掉用户工作输入的旧脚本。
+- 14:20:58–14:21:01 直接调用未修改的正式 `.87` EXE 既有 `--observe-shortcut` 入口，
+  记录到一个 `VK=0x30/scan=0x0B` 注入松键，正常结束且 `dropped=0`。该入口与设置录入
+  实现不同，只排除该 EXE 在所有入口均无法接收此事件；不能当作实体组合键录入验收。
+- 只读核查：正式进程实际加载发行目录的录入、设置页及 physicalizer 模块，EXE 的 PYZ
+  没有同名录入模块副本。已加载豆包 TSF 模块的直接 hook 安装点使用当前线程的
+  `WH_GETMESSAGE`，没有据此证明它截断录入的低级键盘 hook。所查系统 API 入口前 32 字节
+  与干净进程一致，这一有限检查不代表排除所有运行时干扰。Qt 后备路径允许合法的纯修饰键，
+  在仅收到 Ctrl、Shift 时会保存它们；数字键解析和持久化本身正常，不能靠禁止纯修饰键掩盖故障。
+- 材料完整性：临时原生 JSONL、隔离日志和正式 EXE 观察文件保存在本机临时诊断目录，
+  不纳入产品或 Git。原反馈的完整应用日志已被后续连续运行轮转覆盖，没有完整副本，
+  不能声称已重新完整读取这两轮运行；保留上文既有核查结论及用户反馈，并明确该缺口。
+  现存故障摘要仅含 00:40:50、00:43:00、00:57:10 三个历史窗口，无录入事件，不能补足本轮。
+  14:36 只读核对正式配置 SHA256 与诊断前记录一致；本次后台核查没有更改正式配置或运行程序。
+- 当前仍为“未修复”：缺口是未扰动正式现场下，采集已就绪后为什么没有得到完整输入的直接证据。
+  不再追加相同条件的隔离测试，不把系统输入法冲突配置、第三方模块存在或注入观测当作已确认根因。
+
+#### 15:46 用户自行复测与只读运行状态
+
+- 本轮明确范围：2026-10-10 15:46:54.072–15:46:56.510，用户自行点击正式 `.87` 的
+  “手动录入”并按实体组合键，反馈仍漏 `0`。设置主进程 PID 119668，启动时间 13:29:47；
+  本轮没有注入、暂停、重启进程、操作桌面或发送测试按键。后台服务日志关联
+  `run=e4b731cd6fa8`，本轮未从启动前设备选择记录重新确认设备短编号，不推定设备归属。
+- 原始材料及时复制到本机临时诊断目录的 `readonly-retest-1791618443036609600`：
+  `app.log` 及一份轮转共 1208 行，范围 15:34:01.187–15:47:21.577；
+  `diagnostic-trace.jsonl` 及一份轮转共 1154 行，全部可解析，四文件末行均完整。
+  已通读本次录入完整起止及相邻应用记录，并与详细流交叉核对；详细流只有元素导航事件，
+  没有本次键盘回调记录或丢弃标记。文件长度、SHA256、跨度及事件分类保存在同目录
+  `read-audit.json`。13:29 的完整启动日志已轮转，不把此快照称为完整进程生命周期日志。
+- 只读观察使用 `OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ)` 和
+  `ReadProcessMemory`；先用 SHA256 一致的 Python 3.12.10 DLL及本进程对象核对内存布局。
+  只读取录入线程状态、集合数量和接口声明，不读取工作输入内容。观察共 26 次状态记录，
+  其中活动采集 24 次，读取失败／重试为 0；观察器已结束。
+- 15:46:54.131–15:46:56.487 的全部活动样本中，采集线程 TID 127328 保持存在，
+  hook 句柄非空、回调对象保留、ready 为真、stop 为假、启动异常为空、允许注入为真；
+  tokens、pressed、预持键集合数量始终为 0。随后线程按请求结束。由此确认本轮没有
+  积累到任何按键，且没有启动失败、预持键透传或提前取消的状态证据；不能把集合数量
+  当作回调次数，也不能只凭这些字段判断系统中的 hook 仍有效。
+- 应用日志从 ready 到结束均无 hook 边沿；Qt 在 15:46:55.453、55.521 收到右 Ctrl、
+  右 Shift，15:46:56.507 收到两者释放并由后备路径提交 `rctrl+rshift`，56.510 保存。
+  主采集器没有积累按键与后备路径只取得修饰键共同解释本轮保存结果；尚未证明 `0`
+  在哪一层被截走，不能把系统输入法冲突写成本轮根因。
+- 运行现场的 `GetMessageW`、`PeekMessageW`、`SetWindowsHookExW`、`CallNextHookEx`
+  参数、返回类型、调用约定与源码相符，事件常量和键盘结构正确；相关 Python 函数没有
+  发现实例覆盖。录入与设置页使用同一正常日志器，异步日志处理器未停止、丢弃数为 0、
+  无写入失败标志。physicalizer 的 generation、owner、hook 和回调计数均为初始状态，
+  本进程中该跟踪器没有启动，不能据此归因于它抢键。
+- 只读比较上述 user32 入口、对应 win32u 系统调用入口及 ntdll 的
+  `KiUserCallbackDispatcher` 前 256 字节，与独立进程一致；动态代码和扩展点禁用策略
+  均未启用。这些有限检查没有证明存在对应改写／策略阻断，也不代表排除全部外部干扰。
+- 确定的诊断缺口：原回调在 `ctypes.cast`、`_handle_event` 及其中日志调用出错时，
+  没有单独保存回调进入次数或异常；正式进程 `sys.stderr=None`、使用默认 unraisablehook。
+  当前材料无法区分“回调未进入”和“记入按键前异常／受阻”。这只是已确认的信息缺口，
+  不是已证明发生了该异常；不按推测修改采集逻辑，也不继续让用户重复无新增证据的录入。
+- 旧 PID 106920 的 WER 转储只作诊断事故核查：13:28:14 的异常线程 120740，
+  异常码 `0xC0000409`、子码 7，异常地址位于 `frida-agent.dll+0xff96ed`。
+  所存内存没有完整采集对象，不能恢复旧失败状态或用此崩溃解释原始漏键；本轮未再注入。
+  从旧对话工具输出恢复的 65 条录入日志摘录只补充历史索引，不充当完整原日志。
+- 结束核对：正式主进程仍响应，正式配置 SHA256 与之前记录一致。本轮只保存调查记录，
+  没有业务代码修改、产品构建或发布；手动录入仍为“未修复”，自动读取源码状态保持不变。
+
+#### 回调断点记录补齐（源码检查点待实测）
+
+- 用户在 2026-10-10 明确授权补齐“回调有没有进入、内部是否报错”两个断点，要求后台
+  验证且不影响工作。本轮只修改共享录入器、定向测试及正式记录；两个消费者为语音页
+  与按键映射录入，公共调用签名、Qt 后备、纯修饰键支持和保存行为均不变。
+- 回调入口在解析结构、日志和状态锁之前计数；正常返回、异常、吞键／透传和结果交付
+  分别计数，首个异常只保留固定阶段与异常类型。没有错误输出窗口时仍可经退出摘要
+  保留证据。回调内不新增日志调用、文件写入或后台任务，不改变原 ctypes 异常传播边界。
+- 启动返回、开始超时／失败、停止超时及线程退出输出同次 `capture_id` 的状态摘要。
+  状态含消息循环阶段和实际返回值、卸载布尔结果；停止超时不获取录入状态锁，仍能看见
+  回调停在哪个阶段。记录写入本身异常会留下计数，之后成功的摘要可显示；它不能保证
+  永久日志故障或进程强制终止后的落盘。摘要替代原单条 `hook thread stopped` 日志。
+- 最终源码与受影响范围共 101 项通过：录入 24 项、日志导出／恢复／隐私合同 57 项、
+  设置控制器的两个消费入口及清理 20 项。录入覆盖完整 `rctrl+rshift+0`、透传、
+  注入与预持键兼容、零回调、取消、消息失败、解析／日志／键名／转发异常、交付异常、
+  启动与停止超时、卸载失败、日志自身失败及重启清空旧证据。
+- 使用项目当前 Cython 指令，只在系统临时目录编译该录入模块，确认加载 `.pyd` 后，
+  同一组 24 项全部通过；这些是重复的编译形式验证，不与源码项目累加为独立用例。
+  所测 `WINFUNCTYPE` 为真实 Windows ABI 回调，`sys.stderr=None`，所有 hook 注册、
+  消息队列和输入 API 均替换为隔离测试入口。没有安装全局 hook 或向桌面发键，
+  不能把 ABI 验证冒充 Windows 实际派发或用户实体键盘验收。
+- 最终 ZIP 验收使用实际异步 `EvidenceFileHandler`、故障报告和 `export_logs`：正常
+  完成、无回调退出、取消、回调异常、采集启动失败及启动超时可从导出 app.log 区分；
+  故障报告保留断点阶段，导出清单完整、ZIP CRC 通过、不含配置。停止超时另有持有
+  状态锁的定向验证，证明记录路径不等待该锁；没有要求用户运行脚本或再次录入。
+- 固定环境为本工作区 `.venv` Python 3.12.10，`-B -W error::ResourceWarning`、
+  `RC003_DISABLE_LIVE_INPUT=1`；控制器检查使用 offscreen。只生成临时编译验证模块
+  和测试日志 ZIP，不制作MoteDeck产品包，不替换正在运行的 `.87`；原漏 `0` 根因仍未确认。
+
+### 原人工队列
+
+- 两种遥控器的单击、双击、长按分别核对常用标点、方向、主键盘和小键盘键名；
+  错误录入不覆盖已保存值，旧动态修饰键和未改动映射保持原键码及发送顺序。
+  `.72` 的旧滚轮配置仍显示为 `PageUp`／`PageDown`，保存与发送保留翻页含义。
+- 语音页核对手动快捷键来源、刷新失败时旧值保留、开始／结束和再次启动。
+  自动测试不能替代实体键盘、遥控器和宿主程序效果。
+
+## CHECK-DESKTOP-072 — 1.0.72-candidate.72 翻页键、定稿图标与语音试说移除
+
+- 2026-09-24 用户实测 `.71`：方向上设置 `PageUp` 后无可见效果，同一窗口实体键盘
+  `PageUp` 有效果。诊断记录确认遥控器方向上双击映射触发，`SendInput`
+  接受两项键盘事件，但发送内容缺少翻页键的扩展键标记和物理扫描码；这只能证明
+  已发现发送格式差异，修复效果仍待用户在目标窗口实测。
+- 用户澄清图标授权指已定稿外观；`.71` 的旧图标与目标不符，`.72` 纳入两枚已定稿
+  蓝色 SVG，并由连接状态 SVG 生成程序 ICO。
+- 用户决定删去语音页“试输入／语音试说”入口，仍可按需检查虚拟声卡；真实语音文字
+  应在微信、豆包等目标程序中验证。
+- 删除试说后的设置页加载、二级弹窗、权限状态和紧凑尺寸等定向检查 16 项通过；
+  翻页键输入结构检查 15 项通过。2026-09-24 正式版 `1.0.72` 已本地构建并公开，
+  完整自动检查 3688 项中 3680 项通过、8 项按条件跳过；ZIP 解压后逐文件核对
+  2224 个文件。真实遥控器翻页、图标视觉和目标程序语音上屏在该正式包上仍待实测，
+  不因自动检查或发布而改记为通过；发布产物及来源见 `MAINTENANCE.md`。
+
+## CHECK-DESKTOP-071 — 1.0.71-candidate.71 滚轮移除与翻页兼容
+
+- 2026-09-24 用户决定停止提供滚轮向上／向下映射，以 `PageUp`／`PageDown`
+  满足翻页需求并继续公开测试版交付。新版本不再显示或发送滚轮动作；读取旧配置时
+  在内存中改为相应翻页键，原文件只在用户主动保存映射时更新。
+- 翻页键作用于当前键盘焦点，和鼠标滚轮按指针位置滚动的行为不同；如果目标程序
+  拦截模拟输入，翻页键也可能无效。真实遥控器与目标程序验收尚未完成，不写成通过。
+- 2026-09-24 定向检查：旧用户配置的三处滚轮映射在只读副本中分别转换为
+  `pageup`／`pagedown`，原文件未改；本机临时可滚动窗口经 `send_key_combo_tap`
+  注入后，PageDown 使位置从 0 增至 0.0547，PageUp 返回 0。
+- 自动定向结果：映射、设置模型和输入结构 212 项通过；应用接线 270 项通过
+  （1 项按条件跳过）；界面选项 2 项通过；构建及公开文档 265 项通过。
+  公开边界、第三方声明、发布准备门禁均通过。来源提交
+  `5e921fc535a4d5b01eadc8ac40adc5d2690d25c8` 的完整候选构建运行 3715 项检查，
+  3707 项通过、8 项按条件跳过；解压后 2224 个文件逐一核对，冻结主程序、Qt 和
+  HID 助手入口均通过。公开测试版的包大小、哈希与服务器核对见 `MAINTENANCE.md`。
+  用户随后实测方向上 `PageUp` 无可见效果；`.71` 未通过翻页验收。
+
+## CHECK-DESKTOP-070 — 1.0.70 候选本机实测与正式版准备
+
+- 2026-09-24 用户确认已在本机实际运行 `.70` 包。当前 `app.log` 的程序身份为
+  `1.0.70-candidate.70` 冻结版；小米在微信、豆包和搜狗路径有语音启动、非零
+  PCM 与松键收尾，谷歌有三轮按住、两轮再次短按结束和一轮 60 秒到时结束。
+- 小米微信与豆包输入框长度在各自测试后增长；搜狗一次检查没有文字增长。
+  用户确认界面与语音文字上屏正常；日志本身不能单独确认识别内容正确。小米首次按话筒时出现一次
+  `RC003 HID interception is not ready`，同次随后就绪并进入语音，后续未见同类
+  告警；不把该次记录写成冷启动完全无异常。
+- 用户反馈滚轮映射没有可见效果。诊断记录多次出现上下滚轮映射触发，
+  `SendInput` 每次返回 1 且方向数据正确；这只证明系统接受提交，未证明目标窗口
+  实际滚动。2026-09-24 在本机临时可滚动 Tk 窗口中调用同一
+  `send_mouse_wheel(-1)`，收到 `MouseWheel -120` 且滚动位置从 0 增至
+  0.00995；证明基础发送路径可用，尚不能代替用户目标页面的验收。
+  测试时的鼠标位置、目标窗口和实体滚轮对照仍待核实，滚轮项未通过。
+  其它电脑和长期使用未由这批日志验收。正式版本须重新核对版本与产物。
+
+## CHECK-DESKTOP-037 — candidate.44 局部编译交付准备
+
+日期：2026-09-14。状态：通过（本轮本机实测）；本机编译 ZIP 已生成，公开发布门禁未通过。
+产品与构建输入来自提交 `9f48873966aa14a43ed3073fee195909c0483269`；打包期间另一个
+任务的遥控器研究文档继续更新，不属于本包输入，也未混入本任务提交。
+
+- 仅 Cython 编译 `hid_elevation_windows` 和 `hid_helper_consumers`。主程序包含两者，
+  独立管理员助手按原依赖边界仅包含前者，并与主程序使用同一个编译文件。没有改变
+  产品功能、权限流程、用户配置或现有运行进程；没有安装或升级开发依赖。
+- 首轮完整检查发现声音诊断测试使用非包路径导入另一测试文件，导致该项及调用完整
+  测试的退出清理检查失败；修正为既有 `tests.test_qt_settings_app` 引用方式。
+  相关 18 项通过，随后通过现有退出清理门禁重新执行隔离全量检查：2989 项、8 项
+  按条件跳过，外层退出清理检查通过；没有出现资源泄漏告警。编译后权限专项
+  138 项、1 项按条件跳过。未再次重复外层全量运行。
+- 依赖锁定、第三方清单、公开边界扫描 585 个文件、源码 dry-run 通过；实际冻结
+  主程序 dry-run、Qt runtime-check 和助手 self-check 均 exit=0。主程序 65 个及
+  助手 14 个 Python 模块、全部 26 个 QML 目录文件和 6 个导航脚本与当前源码一致；
+  两个受保护模块未以 Python 字节码混回包中，实际扩展与本次编译暂存区一致。
+- 构建输入指纹在编译、封装和校验期间一致；ZIP 逐文件长度与 SHA256 校验通过。
+  完整解压后再次执行主程序 dry-run、Qt runtime-check 和助手 self-check，均 exit=0。
+  包内无此前移除的 ICU DLL，没有为了瘦身再改依赖边界。
+- 交付文件位于项目总目录 `发布准备-candidate.44/`：
+  `MoteDeck-Windows-0.2.0-candidate.44-免安装.zip`，147,731,139 字节，SHA256
+  `932D20021169803465F3F8EBDE2788FCB7B349F0FFF57E6233A03C2421E6CB91`；
+  同目录有 UTF-8 `SHA256SUMS.txt` 和本机发布前说明，均不入 Git。
+- 公开发布门禁仍因素材授权、项目托管的 Qt/PySide6 对应源码及 Git 历史隐私记录
+  返回 1；没有改写历史、推送、建 tag、创建 Release、签名或制作安装器。正式发布
+  仍须按交付规则从同一次 Windows CI 取得 ZIP 与校验文件，本包仅供本机验收准备。
+- 用户后续明确反馈“没别的问题了，测试正常”，本轮 candidate.44 本机测试通过。
+  豆包最初使用右 Alt、右 Alt＋K 时，用户确认实体键盘与遥控器均不能唤出；
+  改为右 Ctrl＋右 Alt 后恢复。18:32:17 的日志确认语音窗口出现并开麦，18:32:19
+  关麦；当前豆包配置和MoteDeck自动读取的快捷键一致。旧组合冲突与重新保存后状态
+  恢复尚未区分，不写成已定位或修复豆包根因，也不将本次现象归因于编译。
+  本轮仅补实测记录，原 ZIP、版本和哈希不变。
+- 其它真机结果沿用现有各项验收记录：MoteDeck自身窗口的移动恢复不等于所有导航行为
+  全部通过；微信元素导航按用户决定保留兼容限制。双遥控、远程输入、休眠恢复及
+  异机效果仍按各自队列验收，遥控器独立研究不代表已接入产品。
+
+本地证据：`.build/candidate44-result.json`、`candidate44-frozen-audit.json`、
+`candidate44-full-recheck-child.log`、`candidate44-import-fix-tests.log`、
+`candidate44-resume-build.log`、`candidate44-delivery.log`。首轮失败记录保留在
+`candidate44-build.log` 和 `candidate44-tests.log`，不以成功日志覆盖。临时编排和
+解压检查均位于 `.build/`；编译与封装临时目录沿用现有 build/dist 忽略边界，
+均不入 Git/ZIP，不删除旧版本产物。
+
+## CHECK-DESKTOP-036 — candidate.42 按键来源修复测试包
+
+日期：2026-09-14。状态：检查点待实测。candidate.42 本地 ZIP 已生成，同时包含
+来源入口修复和助手代际 13；已装旧助手会进入既有更新流程，将新脚本写入受保护
+运行目录。
+
+- 来源修复 106 项与助手更新/界面/构建合同 373 项通过；后者包含旧代际升级、
+  同代际复用、新代际拒绝降级、安装回退、清理和冻结助手入口。
+- 实际助手 self-check、主程序 dry-run、Qt runtime-check、快捷键观察 dry-run
+  均 exit=0；冻结目标模块、全部 QML、导航 6 个脚本与当前源码一致，构建前后来源
+  指纹和 ZIP 逐文件长度/哈希一致。人工项保持双遥控连接，已录入并选中小米，
+  无需预先删除设备或移除权限；如程序提示更新按键组件，按一次现有提示完成更新。
+- 产物来自干净提交 `46f494e1b89817da25bc104ac426c1b3b48c2507`。交付文件为
+  项目总目录中的 `MoteDeck-Windows-0.2.0-candidate.42-免安装.zip`，
+  149,925,675 字节，SHA256
+  `F138E100DAC901C08D113CD39D174EB3F0AFBB991659042F9A1F1E191BF78BF0`。
+  详细证据为 `.build/candidate42-result.json`、`candidate42-frozen-audit.json`、
+  `candidate42-frozen-checks.log` 和 `candidate42-delivery.log`，均不入 Git/ZIP。
+
+## CHECK-DESKTOP-035 — candidate.41 打包后废弃
+
+日期：2026-09-14。状态：已废弃，未交付。该包直接从 Python 源码经 PyInstaller
+冻结，未运行 Cython、签名、安装器或发布；产物自动检查虽通过，但交付前复核发现
+管理员助手代际仍为 12，已装旧助手可能继续写回旧脚本，不能用于本次验收。
+
+- 范围仅新增 `CHECK-HID-SOURCE-004` 的来源入口修复和诊断状态；沿用 candidate.40
+  的其它功能。源代码相关 106 项、dry-run、公开边界和 diff 检查已通过。
+- 产物生成后检查实际助手 self-check、主程序 dry-run、Qt runtime-check、快捷键
+  观察 dry-run、冻结模块/QML/导航源码一致性、构建来源和 ZIP 逐文件哈希。
+- 未执行人工测试，不把该包作为有效测试版本；由 candidate.42 取代。
+- 产物来自干净提交 `2e3fce4a41e8335f65d7c3d5ed728ae91bd8127f`。实际助手
+  self-check、主程序 dry-run、Qt runtime-check、快捷键观察 dry-run 均 exit=0；
+  冻结模块、全部 QML、导航 6 个脚本与当前源码一致，ZIP 逐文件长度/哈希和构建
+  前后来源指纹一致。未连接或操作真实设备，不把这些结果写成双遥控实测通过。
+- 废弃文件曾生成为项目总目录中的 `MoteDeck-Windows-0.2.0-candidate.41-免安装.zip`，
+  149,925,801 字节，SHA256
+  `0D93B4B64A192E9EDD3C721F6313D0BAC24BDE2E5B36D64B2FF014A34CBC39F6`。
+  该 ZIP 已在交付前删除，不作为测试入口；仅保留本地构建证据用于说明废弃原因。
+  详细证据为 `.build/candidate41-result.json`、`candidate41-frozen-audit.json`、
+  `candidate41-frozen-checks.log` 和 `candidate41-delivery.log`，均不入 Git/ZIP。
+
+## CHECK-HID-SOURCE-004 — 本机导入槽错位与来源入口修复
+
+日期：2026-09-14。状态：检查点待实测。用户反馈本机 .40 双遥控下仍提示来源
+待区分，移除权限无效；现场证据与根因详见 MAINTENANCE 同日“本机双遥控入口槽错位”。
+
+- 最低入口：本机已运行 .40 的日志/配置/EXE 核验；经用户明确允许临时加载只读
+  诊断，先取得旧解析器错位的现场结果，再在同一宿主只读运行修复后的 PE 解析器。
+  旧解析器错误槽 `0x36488`，新解析器取得真实槽 `0x36490` 对应的正确系统函数。
+  两次均已恢复原脚本；新解析器未接管真实设备，不能将只读 verified 当作按键通过。
+- 隔离原生回归：两函数相邻、Frida 返回前一函数槽的场景在旧实现失败、修复后通过。
+  入口/诊断定向 17 项与其它受影响检查 89 项，共 106 项通过；覆盖真实系统包装层、
+  两个模拟设备只接受选中来源、序号导入、歧义、坏头/越界/缺终止符/超长名称、未知
+  函数拒收，以及旧诊断兼容和字段隐私。没有扩大为全项目测试。
+- 固定虚拟环境 Python 3.12.10 的源码 dry-run、当前目录公开边界扫描及 diff 检查
+  通过；没有变更真实用户配置，当前运行脚本的最终哈希已与原始副本再次核对一致。
+- 人工待测：包含本批代码的新程序中，保持两只遥控器连接，确认已选小米可以稳定
+  改键且另一只不被接管；关注 source_entry_status=verified 之后的设备绑定和实际
+  按键结果。candidate.42 已纳入修复，不要求继续用旧包反复重装权限。
+- 证据与临时产物边界沿用上述维护记录。本项没有升级版本、构建或制作新 ZIP。
+
+## CHECK-DESKTOP-034 — candidate.40 工作区整理与免编译测试包
+
+日期：2026-09-14。状态：检查点待实测。candidate.40 本地免编译 ZIP 已生成；
+实际 EXE 基础入口与包装校验通过，真实设备和宿主效果仍按下列队列验收。
+
+- 范围：汇总既有微信设置快捷键读取、配置保存和后台启动；包含二级弹窗、普通
+  试输入与元素导航日志；记录豆包远程启动限制，暂不绕过其内部启动条件。
+- 源码受影响检查 737 项：首轮 735 通过、2 项失败；一项旧测试仍调用已取消的
+  试说状态方法，另一项历史包记录含本机绝对路径。按现行 UI 合同修正断言并将
+  路径改为项目相对说明，重跑这 2 项通过。合并结果 737 项通过，未重复全量运行。
+- 用户追加豆包新机修复回归核查：`cf9f9f8` 仅更换进程发现入口，保留候选模块/
+  版本验证及原按键处理；定向 111 项、实际应用接线的隔离检查 11 项，共 122 项
+  通过，未发现该修复引入新错误。与上项合并为 859 个不同检查。真实远程窗口的
+  拒绝分支尚未取得，不把“未发现回归”写成“所有机器通过”。
+- 基础使用流程：禁用真实输入的 QML 检查覆盖设备选择、设置保存、提示重启服务、
+  普通试输入和快捷键刷新；生成后核对实际 EXE 的 helper self-check、主程序
+  dry-run、Qt runtime-check 以及快捷键观察 dry-run，再校对冻结源码与 ZIP。
+- 已通过且未改变的导航 326 项与二级 UI 74 项结果按各自记录复用，不在本批
+  累加为新的实测结果。证据位于 `.build/candidate40-*.log`；本任务产生，仅供
+  本地复核，不入 Git/测试包，排查结束后可删除。首次非规范模块调用没有形成
+  可用结果，已停止本任务对应测试进程，不计入通过数。
+- 人工待测：双遥控连接、元素导航在微信/MoteDeck窗口的切换移动、输入法真实
+  唤起与文字上屏。豆包远程窗口无气泡保留为已知现象；本版未声称修复。
+- 产物来源：干净提交 `9b31b98be241327aff3df79bf73eedb9a7e7791b`，固定虚拟环境
+  Python 3.12.10 直接运行 PyInstaller，未执行 Cython、签名、安装器或发布。
+  实际 helper self-check、主程序 dry-run、Qt runtime-check、快捷键观察 dry-run
+  均 exit=0；主程序/助手目标冻结模块、全部 QML、导航 6 个脚本与当前源文件一致，
+  冻结诊断 writer 在临时目录成功写出事件报告。未操作真实设备、输入法或用户配置。
+- 交付：项目总目录中的 `MoteDeck-Windows-0.2.0-candidate.40-免安装.zip`，
+  149,924,022 字节，SHA256
+  `A0FA70D395A1B2BBDFD432FACE050FEF4821ED016C5F20D50888D7BEE67B1C5A`。
+  ZIP 全部条目与暂存目录逐项长度/哈希一致；构建前后与包装结束的来源指纹一致。
+  详细证据：`.build/candidate40-result.json`、`candidate40-frozen-audit.json`、
+  `candidate40-frozen-checks.log` 和 `candidate40-delivery.log`，均不入 Git/ZIP。
+
+## CHECK-NAVIGATION-LOG-001 — 元素导航内部记录与导出
+
+2026-10-02 追加反馈：确认及右键不响应的源码修复为检查点待实测。
+此前关闭的是开关触发和自身窗口接收问题，不代表本次点击故障已通过人工验收。
+
+- 来源：Issue #13 与用户 `MoteDeck日志-20261002-202617.zip`，SHA-256 为
+  `afeadde7b685a2b0a41d679622e65fd920909d58951dd7f6b8dd0fd92cf2eb99`。
+  本轮基线为正式主目录 `main` 的 `517bda4`；认证 GitHub API 核实 latest 仍为
+  `v1.0.86`、远端 `main` 为 `e73134d`。日志及本机正式包均为 `1.0.86`，
+  修复前导航宿主、嵌入入口及普通输入源码与正式构建提交 `5f23c3b` 相同。
+- 材料完整性：复用本轮 `audit_log_bundle.py --all-history` 的核对，ZIP 全部
+  6 个成员均已读取；应用日志及轮转备份合计 3608 行，诊断流 397 条合法 JSON。
+  导出清单为稳定快照、刷新成功、`incomplete=false`，包含文件未截断，未发现解析
+  或读取缺口；不存在的可选备份不算采集失败。助手单行日志属于前一天，不混入本轮。
+  故障报告是语音问题采样，已与完整应用日志和原始诊断流交叉核对。
+- 范围仍属推定：用户未指定测试时间，按最近连续导航操作选取
+  20:25:51.313～20:26:15.654 的两段完整诊断会话，均正常结束且 `dropped=0`；
+  后一段为 `4182b8c0f42849d2b1d519b54d3d554c`，小米设备短编号
+  `b10e73098bc4`、PID 26536、导航运行号 `110265000000`。
+  为补齐同次启动上下文，回查 16:27:12.633 启动后的全部应用日志并关联到
+  20:26:20.467，导出时该程序仍运行。整包共 3 次 `.86` 启动；另外两次仅用于
+  前因对照，不混作本轮操作。最新会话中两次扫描均为 64 节点、19 目标、读取错误
+  计数 0，12 次方向处理及 7 次确认处理均有记录；前台始终是MoteDeck自身窗口。
+  `action_result.success` 只证明映射入口接受，原记录没有确认/右键的实际鼠标发送
+  和探测异常详情，本轮也没有右键操作记录，不能据此断言全部软件均已复现。
+- 已核实缺陷：正式包内编译模块的隔离验证确认，导航与普通发送器声明的是两种
+  不同 Python `INPUT` 类型，虽然 x64 大小均为 40 字节，却共用缓存的
+  `ctypes.windll.user32.SendInput`；普通发键改写声明后，导航数组在进入 Windows
+  前抛出 `ArgumentError`。补发 UP 同样失败，保留的鼠标清理责任使后续左击、右击
+  在移动指针前被阻断，退出清理也失败。恢复匹配声明后清理及点击恢复。
+  旧 PID 15940 在 16:09:46.474、16:09:48.476 两次记录
+  `MouseInputCleanupIncompleteError`，此前有微信语音快捷键发送；这是同链路的
+  支持证据，但旧日志未保留原始原因，不将其或最新 7 次确认唯一归因于类型冲突。
+- 修复：共享导航宿主为每个运行实例持有独立 `WinDLL`/`SendInput` 声明，避免普通
+  按键、微信语音发送及其它导航实例互相覆盖；单个 `ControlFromPoint` 或父节点
+  查询异常只放弃该探测点，继续其余既有安全探测点。保留子动作避让、命中验证、
+  实体鼠标占用及欠松开保护，不增加未经命中验证的 UIA 中心点击，不改用户步骤，也不修改 Issue #12
+  的普通扫描码实现。
+- 验证：固定本工作区 `.venv` Python 3.12.10，禁用真实输入并将资源告警视为错误。
+  3 个新增回归方法对原基线得到 4 处断言失败和 1 个实际 ctypes 参数转换错误，
+  修复后全部通过。受影响范围先运行 595 项，再运行桌面嵌入/兼容入口/构建合同
+  24 项，均通过；最后补齐退出日志原始原因后直接相关 295 项通过。计入新增的
+  1 项普通日志回归，去重共 620 项通过，复测及子用例不重复相加。覆盖普通键盘、
+  微信虚拟键、普通鼠标与两个导航实例交替发送，以及左击、右击、滚动、失败补偿、
+  清理重试、子动作阻挡和原左击语义后备。原生验证使用真实 `WinDLL` 声明和
+  ctypes 本地回调替代函数地址，未向系统发送输入或移动实际鼠标。
+- 导出验收：真实 writer→落盘→正式 `export_logs`→最终临时 ZIP 解读通过；正常
+  提交、部分提交、发送前原生类型转换异常、清理待完成、探测超时异常、过期命令
+  取消及诊断关闭/重开可区分，两段会话丢弃数均为 0，ZIP 清单无不完整标记。
+  现有导出采集失败/取消/轮转/隐私检查保持通过；关闭详细诊断时，退出 worker
+  错误的原始异常类型仍保存在 `app.log`，不记录原异常正文或控件文字。
+  `submitted` 仅表示输入批次送达数量确认，不证明目标应用已完成点击效果；语义
+  后备只记录方法返回及是否可用，不提供每个底层语义方法的原生堆栈。探测超时
+  夹具只验证调用已经抛出异常后的记录，不提供尚未返回的 UIA 调用堆栈或底层取消。
+- 交付边界：源码 `--version`、`--dry-run`、`--qt-runtime-check` 与最终差异检查
+  通过，另有 8 项文档/公开边界合同检查通过。实际公开边界扫描发现维护记录中已有
+  的开发机路径，仅将该处改为“正式主目录”，保留原批次基线与结论；复核扫描
+  656 个文件通过，未改变扫描规则。没有运行全项目测试、构建、打包、推送或发布，
+  `VERSION` 仍为 `1.0.86`。
+  已有正式 EXE/ZIP 不含本修复。后续含修复的新版本只需人工确认普通发键后导航
+  确认/右键持续可用，以及原反馈宿主和显示缩放下的实际点击效果；不得将本机
+  回调验证记作真实遥控器、全部软件或异机通过。微信识别的既有取消决定保持。
+
+2026-09-14 历史结论：本次元素导航开关触发及自身窗口接收问题处理已完成。
+按用户“元素导航开关能收口即可”的范围，以已有自动回归、开关送达日志及用户
+确认 Codex 正常、MoteDeck自身窗口可移动为依据关闭本次问题。微信识别保留为已知
+兼容限制，不阻断本项；未验证的长按、点击、键盘来源和完整休眠/唤醒流程不标记
+人工通过。本轮代码及依赖清单未变，复用已有结果，不重复测试、不打包。
+
+以下为 2026-09-14 的历史阶段记录；旧待执行安排以当时关闭结论及用户取消决定
+为准，不覆盖上述 2026-10-02 的新反馈。
+
+2026-09-14 当前决定：用户要求微信问题先按现状保留，不强行解决。微信元素导航
+作为已知兼容限制暂停排查，未修复、未通过；取消讲述人/重启微信的待执行验证，
+不要求用户为此改变使用步骤。MoteDeck自身窗口移动恢复的人工结果保留，其它尚未
+验证的行为不扩写为通过。详细边界见 MAINTENANCE 的“微信元素导航按现状保留”。
+
+2026-09-14 17:36 讲述人对照：已临时启动并核实 RunningState=1，但微信当前会话
+仍为 3 节点、0 目标；结束后已核实讲述人进程不存在、RunningState=0。后续只读
+确认微信检测计数为 10，计时器已停止，故本轮未完成重新检测后的正向因果验证。
+当时拟先开讲述人再重启微信进行对照，该待执行项现已取消；不视为已修复或要求
+用户日常常驻讲述人。工具激活失败及完整证据见 MAINTENANCE 的
+“微信讲述人对照与检测停止状态”。本轮仅更新记录，不重复回归、不制作测试包。
+
+2026-09-14 17:15 复核更新：用户确认MoteDeck自身窗口已可移动；该单项人工通过，
+其余长按/点击/实体键盘来源和微信仍未通过。微信最新四次开关均送达但扫描为空。
+单进程改造前、candidate.29 来源及当前扫描代码的隔离对照均为 3 节点、0 目标，
+不能将当前故障归因于最近改动，也不能证明用户记忆中的历史成功不存在。
+只读运行标志与反汇编确认本机微信的辅助功能启用值为 0，读屏检测四项均为 0；
+实际版本、文件核对、分支和证据见 MAINTENANCE 的“微信辅助功能启用条件定位”。
+当时待验证项为临时开启讲述人，比较开启前、开启后及关闭恢复后的微信可见控件；
+本项后续结果见上方 17:36 更新。此次没有修改程序行为，不重复自动回归或制作测试包。
+
+2026-09-14 自身窗口功能修复追加：检查点待实测；微信空扫描仍未修复。
+
+- 开发版 .43 的复现日志已定位到两个断点：自身窗口有 19 个候选但发送后没有钩子
+  入口；微信三次扫描为空。进一步只读复核发现其可见区域缺少辅助功能控件，
+  大量可枚举节点来自隐藏 Chrome 窗口，不能作为当前界面修复依据。
+- 自身窗口新增受限映射直达和 Qt 键盘接收；新增 10 项检查覆盖接受后不重复注入、
+  未接受时保留原发送、自定义组合键、精确前台/进程/活动状态、原生菜单、长按松键、
+  回车防连发、修饰组合、实际 Qt 事件投递及快捷键录入优先级、真实 worker 选中项移动。
+- 固定 `.venv` Python 3.12.10，离屏 Qt，禁止真实设备输入；导航/控制/独立导出/
+  physicalizer/设置 controller 共 588 项通过，桥接接线 231 项中 230 项通过、
+  1 项按原测试条件跳过。去重共 819 项，818 通过、1 跳过，无失败。
+  证据为 `.build/navigation-local-regression.log` 和 `navigation-local-wiring.log`。
+- 人工验收：完全退出旧开发版后从当前源码重开，在MoteDeck窗口开启导航，分别测试
+  遥控器和键盘方向、长按、回车与退出；再回到 Codex 验证原路径没有双跳。
+  微信先确认“读屏优化模式”的当前状态，再验证其是否公开可见控件，不能将前述
+  自动结果记作微信已恢复。无需为本检查点制作 ZIP。
+
+2026-09-14 后续补充：状态仍为检查点待实测；本次新增记录尚未打包，现有 .42
+仍使用上一批记录，不要求用旧包重测本次诊断。
+
+- 新增按键入口/结束/异常与提前返回分支，附回调序号、扫描号、目标/前台句柄及
+  导航状态；标准控件类型与扫描筛选原因按次汇总。关联范围、脱敏及上限见架构账目
+  第 13 节，功能规则不变。
+- 固定当前 `.venv` Python 3.12.10，禁止真实输入：导航原型、控制、独立导出及
+  诊断共 275 项通过；最终调整后诊断、trace、日志导出 32 项通过，去重 290 项。
+  新增 7 项行为检查覆盖自身/其它前台窗口、所有权与提前返回、异常原样传播、
+  普通文字不记录、关闭诊断无新增窗口查询、实际筛选理由、摘要限量与未知类型脱敏。
+  原实际 writer→临时 ZIP 测试扩展验证 `key_received/key_finished/collection_filter`。
+- 模拟入口保留旧导航返回值和筛选结果；UIA 子树只遍历一次。启动早于 writer 时
+  仍有普通日志错误兜底。未向真实窗口发键、开麦、修改配对或用户配置。
+- 本批直接验证输出为 `.build/navigation-diagnostics-targeted.log`，本地排查用，不入
+  Git/交付包。人工使用包含本批源码的版本，对照MoteDeck与 Codex 的方向键，再检查
+  微信空扫描的类型/排除原因；目标是定位故障，未将两处故障写成已经修复。
+
+以下为上一批记录与当时交付边界：
+
+日期：2026-09-14。状态：检查点待实测。仅补排查能力，不将导航故障或豆包远程问题
+写成通过；本项完成时未打包，后续 candidate.40 已纳入，见 `CHECK-DESKTOP-034`。
+
+- 最低使用入口：固定 Python 3.12.10 源码 dry-run；从共享 host 提取原函数/类，
+  在模拟 UIA、窗口与按键环境执行切换→扫描→方向移动，再通过真实 DiagnosticTrace
+  writer 和正式 `export_logs` 生成临时 ZIP 并读取确认。未安装钩子、发送系统按键、
+  扫描真实窗口、开麦或写用户配置。
+- 受影响检查 316 项通过：导航原型/控制/独立源码导出、现有 trace/ZIP、桥接输入
+  生命周期与清理。新增 10 项定向检查通过；合并去重 326 项。增加日志生命周期
+  普通日志兜底和桥接注册/清理断言后仅重跑直接受影响的 11 项，结果通过。
+- 覆盖正常扫描和真实候选算法移动、空/单元素、不可命中候选、取消/过期结果、
+  扫描期间方向键忽略、UIA 属性和子节点异常、worker 初始化/命令异常、原生菜单
+  放行、已归属设备方向键、普通文字不记录；sink 抛错仍能扫描/移动。另验证诊断
+  开关、writer 替换和旧实例清理、启动早于 writer 的错误兜底及实际 ZIP 隐私字段。
+- 证据：`%TEMP%/rc003-navigation-log-20260914-093955` 的定向、回归、dry-run 记录及
+  改前文档副本；由本任务生成，供本地复核，不入 Git/发布包，排查后可删除。测试
+  自行生成的临时 ZIP 和独立源码副本由测试清理，不是交付包。
+- 人工待测：包含本批源码的版本中开启原有诊断日志，在微信和MoteDeck窗口分别触发
+  元素导航、按方向键并导出日志；判断扫描/窗口变化/移动的具体失败路径。此队列
+  不要求现在重复用旧 ZIP 测试，也不改变原已选遥控器的设备规则。
+
+## CHECK-SECONDARY-UI-001 — 二级弹窗与普通试输入
+
+日期：2026-09-14。状态：检查点待实测。本项取代旧记录中“实际说话”混合前置检查、
+历史语音状态和动态修复按钮的 UI 合同；不改变底层语音保护或声音检查工作流。
+
+- 完整入口：隔离配置加载真实 QML；添加、使用、切换、移除设备；打开并取消安装/
+  停止服务确认；打开试输入、模拟正常键入文字、清空、关闭。全程禁用真实设备输入，
+  没有执行安装、服务重启、实际开麦或改变本机输入法配置。
+- 受影响检查合并去重 74 项通过：37 项设置界面合同、3 项真实 QML 主窗/状态/布局、
+  2 项输入法控件、31 项设备选择、1 项本次二级弹窗旅程。后续只复查变化或失败项。
+  原有测试中与旧动态状态和 84 像素按钮绑定的预期已按新合同更新；小窗口下程序
+  下拉框最小宽度挤压布局的问题，经真实渲染测量后修正并重新通过。
+- 覆盖 Basic/Fusion 的 640×480、720×560 四种二级弹窗布局；主窗另覆盖
+  Basic/FluentWinUI3 的 640×480、720×500、720×560。确认弹窗最大宽 390、高度
+  低于 250；设备弹窗最大宽 520、两行名称/下拉/按钮对齐；长备注不撑宽，未支持
+  的设备仍不可添加。试输入有真实键入、清空、焦点、关闭验证；确认/取消按钮一次
+  点击只触发一次处理，不用状态码冒充文字结果。
+- 证据：`%TEMP%/rc003-secondary-ui-20260914-005328` 的测试输出、渲染截图和只读
+  二进制核实摘要；由本次任务生成，供本地复核，不入 Git/测试 ZIP，可在排查后删除。
+  `.build/secondary-ui-*` 和 `.build/inspection-libs` 是本任务临时脚本与反汇编依赖，
+  不是运行依赖、不打包；无新版本、安装包或 ZIP。
+- 人工待测：界面视觉与真实输入法在试输入窗口的兼容性。豆包远程拒绝语音启动的
+  具体分支、微信远程上屏、元素导航扫描与移动仍未关闭，不能把本项通过当作它们已修复。
+
+## CHECK-VOICE-RESPONSE-LOG-001 — 既有反馈复核与语音响应证据
+
+日期：2026-09-13—2026-09-14。状态：检查点待实测。范围为本机诊断采集与声音测试工作流记录，
+不修改按键/语音行为、UI、用户配置或现有 candidate.38 ZIP。
+
+- 完整使用入口：固定 Python 3.12.10 源码 `--dry-run` 通过；临时目录中实际启动
+  诊断 writer，生成本机只读元数据并关闭，再用正式 `export_logs` 导出 ZIP，确认
+  trace 包含新增窗口/麦克风历史字段和导出清单。全程未发送按键、安装钩子或开麦。
+- 受影响检查首轮 405 项：404 通过、1 项既有 Windows 门禁跳过；最后补充/完善
+  查询失败隔离与工作流日志测试后，定向 38 项通过；本机只读验证发现隐藏窗口
+  占满采样名额，改为每个输入法保留显示窗口、隐藏类合并后，18 项定向检查通过。
+  合并去重 410 项，409 通过、1 项跳过；复用未受影响结果，没有再跑无关全量测试。
+- 覆盖：进程名核对与重启缓存、窗口枚举上限和句柄复用、隐私历史过滤/拒绝访问、
+  剪贴板采样竞争、普通字符不记录、粘贴观察时间/数量上限和按下/松开关联、日志
+  关闭、钩子观察异常仍转交原键、状态日志异常不阻断，以及真实 Qt 控制器的模拟
+  声音测试停止/恢复工作流。原有输入法、按键和 ZIP 导出检查同时覆盖。
+- 证据：`%TEMP%/rc003-response-diagnostics-gd1vswce`；初轮和最终测试日志、验证摘要、
+  用户导出文件哈希、本机只读元数据及实际导出 ZIP。临时目录由本任务生成，仅供
+  本地验证，不入 Git/程序包，排查完成后可删除。临时汇总脚本的字段/序列化错误
+  已按测试输出和实际 ZIP 修正；未把汇总错误算作产品故障或重复运行已通过测试。
+- 仍需真实宿主验证：新增字段能否稳定区分输入法窗口变化、麦克风历史和粘贴动作；
+  不把窗口显示标志当作气泡确认，不把隐私历史当作实时开麦，主控记录不代替被控端
+  收字。既有反馈证据与排除结论统一见 MAINTENANCE“晚间反馈复核与语音响应日志”。
+
+以下为历史起始基线，日期：2026-08-20
+
+基础功能实现提交：`88ea7a90144ff078b7abc62de9dedc4290043fe2`
+
+重复启动与旧端点迁移提交：
+`b0e18b48ede974b14bc5765a9a1b82cb23b5a7e0`
+
+后台桥接通知区域控制提交：
+`dad113ce992ea34af7dc3f74ba797543c8adc77c`
+
+HID 注入权限顺序与稳定失败提交：
+`9daf49fc8fae1ecc5824fca4360ca0a6f968c55b`
+
+持续语音与桥接运行时按键检测提交：
+`ca5b69885a3796901dc36f1578cb7a754d73f140`
+
+本文只集中维护当前 RC003 修复中有复用价值的自动检查计划、结果证据和真机验收
+队列。历史发布说明不能替代本机当前构建的复测结果；本文存在某个完整测试、构建
+或候选条目，也不表示后续每项任务都要执行它。验证深度、交付级别、执行顺序和结果
+复用统一按 [`VALIDATION-AND-DELIVERY.md`](VALIDATION-AND-DELIVERY.md) 判断。
+
+## 自动检查记录
+
+下面 CHECK/TEST 条目按批次保留。较早条目中的“待测”不是自动积累的当前待办，
+必须先核对后续取代记录和现行能力；已取消的遥控器组合、开关语音、旧微信按钮控制
+不再安排实测。历史命令、包路径与版本号仅作证据，不能直接当作当前启动入口。
+
+以下 CHECK 条目记录对应批次已经执行或计划复用的证据，不负责触发流程。新任务只
+更新与本次目标直接相关、且需要长期保留的条目；不为凑齐栏目重复完整测试或构建。
+
+### CHECK-DESKTOP-033 candidate.39 语音响应日志本地测试包
+
+- 核验时间：2026-09-14 00:13；来源提交 `0576dcc` 加当前工作区既有修改，版本
+  `0.2.0-candidate.39`。固定 `.venv` Python 3.12.10，直接 PyInstaller 封装
+  Python 源码，未执行 Cython；未签名本地测试包，不是正式候选或发布。
+- 包含：`CHECK-VOICE-RESPONSE-LOG-001` 的输入法窗口、麦克风使用历史、剪贴板
+  来源和格式、粘贴候选按键、语音状态及声音测试服务恢复记录，以及 .38 已有功能。
+  不改变输入法、按键、语音、服务或界面行为。
+- 复用同一源码状态下该日志批次 410 项检查结果（409 通过、1 项既有环境跳过）。
+  实际成品的主程序 `--dry-run`、`--qt-runtime-check` 和助手 `--self-check` 返回 0；
+  冻结程序内 7 个本批关键模块与源码一致，25 个 QML 文件逐字节一致。
+- ZIP：项目总目录中的 `MoteDeck-Windows-0.2.0-candidate.39-免安装.zip`，
+  149,921,689 字节；SHA-256：
+  `408FD2C2C505F9B6D85132F0CC3DB6E70CFB6F699BCFB2BBD4740DB3817BB084`。
+  主 EXE SHA-256：
+  `97AC56C47261A5720215E6C005396D8F956C097A15F2B2BB003B966519F015E6`；
+  助手 SHA-256：
+  `ADC036369E76E710EC59080FF186440770718E5DB8775DE8857A6C3C5DBABEFD`。
+  构建输入 250 项，指纹
+  `85FB641FB3BE46127C52B77236AAABF69D34B2CDDB87331209C5D105C87CCD1A`。
+- ZIP 只有顶层目录 `RemoteMicRC003-0.2.0-candidate.39`，共 2,145 个条目；版本、
+  关键文件和 staging 逐文件一致，压缩包无 CRC 错误。旧测试包未覆盖或改写。
+- 人工范围：完全退出旧版，把 .39 解压到新文件夹。开启诊断后，分别在本地输入框
+  和远程输入框测试微信、豆包；记录大致时间并点击“导出日志”。本包用于确认故障
+  卡在窗口唤起、麦克风、剪贴板或提交按键哪一步，不能预先视为远程问题已修复。
+  状态：本地包检查通过，真机待实测。
+
+### CHECK-DESKTOP-032 candidate.38 日志增强与直接导出本地测试包
+
+- 核验时间：2026-09-13 22:55；来源提交
+  `0fef1ed8c37741c0ef18665597615a308fa67a40` 加当前工作区既有修改，版本
+  `0.2.0-candidate.38`。固定 `.venv` Python 3.12.10，直接 PyInstaller 封装
+  Python 源码，未执行 Cython；未签名本地测试包，不是正式候选或发布。
+- 包含：`CHECK-SUBMISSION-LOG-001` 的进程权限、焦点、剪贴板序号及语音结束后
+  10 秒诊断，`CHECK-LOG-EXPORT-001` 的一键导出日志 ZIP，以及 .37 已有设备来源
+  修复和当前工作区既有语音配置修改。没有增加其它本批业务修改。
+- 实际检查：主程序 `--dry-run`、`--qt-runtime-check`、助手 `--self-check`、
+  限时接收 `--dry-run` 均返回 0；冻结主程序 20 个关键模块与源码一致，其中包含
+  `input_environment_diagnostics_windows` 和 `log_export`，助手 6 个关键模块一致，
+  随包全部 QML 与当前源码逐字节一致。归档诊断 writer 的隔离报告有效。
+- ZIP：项目总目录中的 `MoteDeck-Windows-0.2.0-candidate.38-免安装.zip`，
+  149,908,951 字节；SHA-256：
+  `BCABEE3192FABA5DD629C402B17705D90DCECE6CCE2D73D7D54FFA99F9C1BACF`。
+  主 EXE SHA-256：
+  `68D4DDA7370107A251E00C9564A951576526C75388B3CA0139DC448C6B60CB16`。
+  构建输入 248 项，前后指纹保持
+  `3107C06C15AE5E3FA2C499C1F87625BA807F12C18B0E0267AA8AA5C26EDF38DE`；
+  协议 4、来源能力 1、助手代际 12 不变，Gadget 脚本摘要仍为
+  `2cee3404f53d96532f49c3dbbb565754a979778d08c0040047df95600eee57ed`。
+- 包结构实际包含 2,145 个文件，只有一个顶层目录
+  `RemoteMicRC003-0.2.0-candidate.38` 和一个根层主程序；版本、内置助手、逐文件
+  长度与 SHA-256 均和 staging 一致。证据为 `.build/candidate38-result.json`、
+  `candidate38-frozen-audit.json`、`candidate38-frozen-checks.log`、观察计划、
+  PyInstaller 日志及本批临时脚本，均不进入 ZIP/Git。
+- 人工范围：先完全退出旧版并解压到新目录；确认窗口版本 `.38`，开启诊断后分别
+  复现搜狗、微信和豆包，再点击“导出日志”保存 ZIP。双遥控来源、远程输入气泡/
+  上屏、旧组件首次升级仍分别按原检查点验收，不能由本包自动检查结果代替。
+  状态：本地包检查通过，真机待实测。
+
+### CHECK-LOG-EXPORT-001 设置页日志 ZIP 导出
+
+- 2026-09-13，来源 `2c63427` 后的本任务增量，固定 `.venv` Python 3.12.10。
+  仅修改原日志链接的操作结果；不增加设置项、不制作新程序包、不改变日志采集开关。
+- 基础流程：真实 QML 在隔离子进程中点击原位置的“导出日志”，取消返回原焦点，
+  接受保存后后台生成 ZIP，按 ZIP 实际内容检查主日志、助手日志及诊断记录；
+  同时验证空日志不会伪造文件。640×480 和 720×560 均通过，无 QML 告警，
+  与相邻更新入口的键盘导航、布局保持正常。测试保存目录固定为临时目录。
+- 自动结果：日志导出、日志位置兼容函数、设置控制器及触达页面检查 351 项通过，
+  无跳过；基础 QML 验证另 1 项覆盖上述两种尺寸。白名单排除配置/录音/未知文件、
+  轮转备份、部分不可读、超长日志、保存失败保留原文件、取消清理、链接拒绝、
+  诊断关闭后导出及重复点击均有定向覆盖。隐私与说明合同另 17 项通过，源码 dry-run
+  通过；上述自动检查共 369 项通过，无跳过，不重复完整项目测试。
+- 初轮修正：取消对话框后需在关闭返回时恢复窗口激活与焦点；测试夹具统一写字节，
+  避免 Windows 换行差异。保存对话框测试改为打开前指定临时默认路径；初轮生成的
+  两份纯夹具 ZIP 已逐项验证后移入本批临时证据，不留在用户桌面。
+- 证据：`.build/log-export-evidence.txt` 指向本机临时目录
+  `rc003-log-export-8e85cd24ad3d49b0bd2e363b92dcfdc6`，保存基线、定向日志、QML
+  截图与隔离提交差异，不入 Git/程序包，分析后可清理。
+- 人工待测：后续包含本修改的测试包，在正常 Windows 保存窗口选择位置，确认
+  导出 ZIP 可直接反馈；自动验证使用 Qt 的非原生隔离对话框，不替代原生视觉体验。
+  状态：检查点待实测。源码已进入 candidate.38 本地测试包，见 `CHECK-DESKTOP-032`。
+
+### CHECK-SUBMISSION-LOG-001 权限、剪贴板与语音结束后的观察
+
+- 核验日期：2026-09-13；来源 `0cea88f` 后的本任务源码增量，已有其它工作区修改
+  保留。原批次交付为源码检查点；现已进入 candidate.38，见 `CHECK-DESKTOP-032`。
+- 范围：开启原诊断开关后，将 observer、前台和三种已知语音进程名候选的真实
+  权限/完整性/UIAccess/会话/创建时间，以及不含内容的剪贴板序号写入同轮事件。
+  进程资料每 5 秒或前台身份变化时刷新；语音开始后 30 秒、结束后另 10 秒，
+  普通映射 2 秒。显式限时接收入口复用相同采集，查询在后台而非钩子线程。
+- 自动结果：固定 `.venv` Python 3.12.10，源码 dry-run 通过。前期程序上下文、
+  语音发现和提交判断 55 项通过；新增采集及程序诊断 20 项通过；补充主 writer
+  落盘验证后的受影响消费者 337 项中 336 通过、1 项既有环境跳过。去重共 392 项，
+  391 通过、1 跳过；复用未受后续 writer/尾段调整影响的语音发现与提交判断结果，
+  未重复全项目检查。检查包含真实自身 PID 的只读权限查询，不操作其它真实程序。
+- 边界：SID 越界、权限拒绝、部分读取、PID 名称不符、候选数量上限、关闭诊断无
+  查询、长录音结束后的采集、并发映射不覆盖、实际 JSONL 保留嵌套字段及 attempt、
+  接收线程分离均通过；原低级钩子、启动参数和无副作用 dry-run 继续通过。
+- 证据：本机临时目录 `rc003-submit-diagnostics-14af4a2c96cb45feb6b2f1ba2513b98f`，
+  由 `.build/submit-diagnostic-evidence.txt` 定位，含基线、源码入口、三批检查和
+  隔离 staged diff。证据属于本次本地检查，不入 Git/程序包，分析完成后可清理。
+- 人工待测：后续包含本修改的测试包，在同一远程输入框分别保留搜狗可上屏、微信
+  需粘贴、豆包无气泡的实际表现及操作时间，核对日志中的权限、焦点、结束后变化。
+  需要确认被控端收到何种键时，在被控端显式运行限时接收；主控端不能替代它。
+  不要求默认管理员运行；有实际权限差异时再安排单变量对照。是否出现气泡及文字
+  正确进入目标仍需用户观察，不能凭调用返回或剪贴板变化验收。状态：检查点待实测。
+
+### CHECK-DESKTOP-029 candidate.35 异机反馈修复本地测试包
+
+- 核验时间：2026-09-13 18:47；来源 `1c7d22779e47553f8486fa754c4959e64f356cee` 加已有工作区修改，
+  版本 `0.2.0-candidate.35`。沿用固定 `.venv` Python 3.12.10，直接 PyInstaller
+  封装源码，未执行 Cython；未签名本地测试包，不是正式候选或发布。
+- 包含：双遥控实际入口修复（`CHECK-HID-SOURCE-002`）、豆包服务进程漏检修复
+  （`CHECK-DOUBAO-DISCOVERY-001`）、设备下拉名称及旧组件操作指引
+  （`CHECK-DEVICE-SELECT-002`），以及 .34 已有工作区功能；未追加业务修改。
+- 基础检查：实际主程序 `--dry-run`、`--qt-runtime-check`、助手 `--self-check`
+  均返回 0；两个 EXE 内相关冻结模块逐项与当前源码一致，主程序另核对豆包和
+  设置入口，全部随包 QML 与源码逐字节一致。上述是无界面启动和依赖检查，
+  不代表实体按键、真实窗口操作、气泡及声音到达已经通过。
+- 复用 HID 最终 112 项、豆包 85 项及设备下拉实际 QML 的既有有效检查；源码
+  与相关测试未变，本次不重跑全量测试。ZIP 顶层目录、唯一主入口、内置助手、
+  VERSION、文件数量及每项长度/哈希核对通过，未重复解压和启动相同副本。
+- ZIP：项目总目录 `MoteDeck-Windows-0.2.0-candidate.35-免安装.zip`，149,871,641 字节；
+  SHA-256：`F4CB60D3A33083B64C13EB8121D5CC5334607E9C3D970A6C173D38DB296FD3BF`。
+  构建输入 241 项，前后指纹保持
+  `35D102A332B53AD7BDF9CC2D27D35E976FBEDC4A28346FC5E18170FF1122380D`；主 EXE SHA-256：
+  `5DFD96483DCAC9149F157FC63FA4F0F0628B9EECD98A0583C585794C72F199DE`。
+  Gadget 脚本 SHA-256：`9d3e0889eedb8289825c8107bc9e0e6c99bef14630a0da0419eba47a2c245676`。
+  协议 4、来源能力 1、助手代际 12 保持不变。
+- 证据：`.build/candidate35-result.json`、`candidate35-frozen-audit.json`、
+  `candidate35-frozen-checks.log`、`candidate35-pyinstaller.log` 及本次临时打包脚本；
+  基线和本轮记录另存 `%TEMP%/rc003-local-package35-99xnn2vf`。输出为
+  `dist/local-test-candidate35/RemoteMicRC003`，中间文件为
+  `build/smoke-work-candidate35`；均为本地验证产物，Git 忽略且证据脚本不入包，
+  无需复核时可清理。旧 .34 ZIP/输出保留，未改真实配置、进程、配对或驱动。
+- 人工待测：完全退出旧程序、解压新包到新目录，确认窗口为 .35；两只遥控共存，
+  只使用已登记并选中的小米，另一只先按及同键重叠不得触发本软件映射或录音。
+  豆包气泡出现/结束、声音到达与文字上屏分别验证。不把重启 Windows 作为本轮
+  常规前置步骤；旧组件迁移异常仍按实际状态处理。总体为检查点待实测。
+
+### CHECK-DEVICE-LABEL-001 未适配设备实际名称
+
+- 2026-09-13 用户明确确认显示“实际设备名称（暂不支持）”，无名称时显示
+  “未命名蓝牙设备 · 短编号（暂不支持）”。源码显示改动通过，未制作新测试包；
+  既有 .35 ZIP 仍是原显示，不能用当前源码结果代替旧包。
+- 受影响入口：配对枚举 → 临时结果传递 → 控制器列表 → 真实 QML 下拉弹出项。
+  命名、缺名兜底、支持设备正式名称、未适配禁止添加、配置不保存显示名均通过。
+  含 `<b>` 的名称原样以纯文本显示，不改变添加、使用、切换和移除流程。
+- 共享控件消费者为两组设备列表、关闭行为、输出端点和语音程序；现有通用推荐项、
+  选择显示及实际 QML 用户流程通过。`test_remote_selection` 和
+  `SelectionComboBoxBehaviorTests` 初轮 32 项中 31 通过；唯一失败是新测试的
+  设备名样本不符合原支持规则，修正样本后该项通过，未修改生产支持条件。
+- 环境：固定 .venv Python 3.12.10、PYTHONPATH=src、UTF-8；真实 QML 子进程使用
+  临时配置、offscreen 和禁用真实输入。证据 `%TEMP%/rc003-device-label-99664fb388444fc79c0193a152f77799`。
+
+### CHECK-DOUBAO-DISCOVERY-001 豆包运行进程漏检
+
+- 状态：2026-09-13 源码检查点待实测；没有构建新包，现有 candidate.34 ZIP 不含修复。
+- 基础流程：测试机实体键盘已能唤出豆包，软件选择豆包后按住遥控器语音键，应通过
+  实际服务进程发现和原版本校验，继续原有气泡唤出；松开后正常停止。版本不支持、
+  附加失败等情况仍禁止开麦。气泡、声音到达和文字上屏分别核验，不相互替代。
+- 自动结果：固定 `.venv` Python 3.12.10、`PYTHONPATH=src`、UTF-8，禁用真实输入。
+  `test_doubao_rpc.py`、`test_voice_hotkey_probe.py`、`test_voice_program_manager.py`
+  及 `test_app_wiring.py` 的豆包相关项共 85 项通过、无跳过。覆盖 Windows 能看到但
+  Frida 漏报的进程、只有守护进程、名称不匹配、多候选逐个校验、未知版本拒绝、
+  进程退出和权限拒绝、资源清理与重连，以及主程序按下/松开和诊断入口的失败处理。
+- 回归有效性：上述漏检用例在旧实现上明确失败，修改后通过。开发机只读实查也确认
+  Windows 找到的服务 PID 能进入修复后的正式流程；attach 被验证桩阻止，未真实注入。
+  自动检查和只读发现不能证明测试机气泡已经唤出，也不扩大支持的豆包版本。
+- 证据：`%TEMP%/rc003-doubao-discovery-84ff9c04940945e09a921c5c44c9d118`；
+  `regression-before.log`、`targeted.log`、`readonly-process-discovery.json`。
+- 人工待测：含修复的新程序在反馈测试机上按住、松开各一次，确认气泡出现/结束；
+  再单独确认虚拟音频与文字上屏。若仍失败，依据新日志的进程发现、版本校验或
+  实际唤出阶段定位，不要求用户为此漏检反复重启电脑或重装输入法。
+
+### CHECK-HID-SOURCE-002 实际系统调用入口与双遥控来源
+
+- 状态：2026-09-13 源码检查点待实测；修复的是 candidate.34 异机共享宿主的入口
+  兼容问题。未构建新包，既有 candidate.34 ZIP 不含修复。
+- 基础流程：软件已选择 A，A 与 B 共用宿主；A 经系统包装层仍能建立自己的来源，
+  B 的相同按键不得进入 A 的映射；来源不明继续拒收。B 先按、同键重叠、松开、
+  选择切换和句柄复用均沿用逐实体隔离；不靠移除另一只设备恢复功能。
+- 根因证据：用户实际导入槽指向 Kernel32 的包装函数，而旧脚本固定观察 KernelBase；
+  包装层改写设备所在寄存器，直接调用者也不再是 WUDFHost。两份用户资料的关联
+  和字节校验见 MAINTENANCE 对应批次。没有取得历史失败瞬间的调用栈，不将当前
+  PID 写成历史失败 PID；现有路径与原日志失败分支相符。
+- 回归：`test_hid_source_entry` 在自建隔离子进程执行真实 Win32 包装调用，以合成
+  设备身份和无效伪句柄观察来源，不拦截或修改真实设备报告。旧实现明确丢失所选
+  来源；修复后直达 KernelBase、经过 Kernel32、Windows 解析后的兼容入口均通过。
+  实际槽值与 Frida 推导地址不一致时以槽为准；缺失、越界、多义、错误目标均拒收。
+- 最终受影响检查：固定 `.venv` Python 3.12.10、`PYTHONPATH=src`、UTF-8；
+  `test_hid_source_entry`、`test_hid_device_source`、`test_hid_copy_interception`、
+  `test_hid_copy_probe`、`test_frida_hid_tap_runtime`、`test_frida_compat`、
+  `test_remote_selection`、`test_hid_gadget_lifecycle` 共 112 项通过、无跳过。
+  包含原生复制失败恢复、未知来源不重启、选择与切换、真实 QML 选择入口，以及
+  独立 Gadget 同 PID 断线恢复和两次脚本热更新。自动结果不能替代实体遥控验收。
+- 证据：`%TEMP%/rc003-iat-verification-278izdqf` 的 `cross-check.json`、
+  `regression-before.log`、`source-targeted-final.log`、`affected-final.log`；中间检查
+  揭示的开发机兼容入口差异保留在 `source-targeted.log`，不当作最终失败。
+- 人工待测：含修复的新版在反馈测试机上同时保留两只遥控器，只登记并选择小米。
+  小米按键应正常，谷歌单独先按、同键重叠和松开均不得触发或结束小米的映射与录音；
+  小米断开并重连后仍只认原选择。是否重启只按旧组件的实际迁移状态判断，不作为
+  本条验收前置要求。当前采集所见按键组件来自支持热更新的路径。
+
+### CHECK-HID-SOURCE-001 共享宿主只接收所选实体
+
+candidate.34 异机反馈的后续入口修复见 `CHECK-HID-SOURCE-002`；以下保留初版验证记录。
+
+- 状态：2026-09-13 源码检查点待实测；未制作新包，既有 candidate.33 不含设备选择及
+  本条修复。以下隔离检查不代表真实双遥控已经通过。
+- 基础流程：已选择 A、B 共用宿主；B 先按不占候选，A 可接管，B 同键和松开不干扰 A；
+  A 来源失效取消旧手势，恢复来源后同连接可重新绑定。无选择或非法选择不拦截；关闭、
+  句柄复用及切换期间返回的旧报告不能继承 A 的归属。来源不明明确显示“按键来源待区分”，
+  不反复回到“请按遥控器方向键”，也不因该状态重启服务；上述由实际 JS 和 QML 隔离验证。
+- 技术检查：真实 Frida 指令解析、Windows BCrypt 摘要与正式配置摘要一致；合成设备对象
+  覆盖接口、调用点、注册表错误和线程嵌套拒收，并从当前已核验哈希的 Windows 文件只映射
+  函数展开表、接口及 getter 验证解析。未注入按键、未写注册表或操作真实宿主。
+- 受影响检查：首批 362 项，发现 3 个测试入口仍使用前轮选择合同之前的 mock/界面预期；
+  已同步实际选择参数、登记选择的前置状态、旧组件文案及异步诊断等待。相关 25 项复查中
+  24 项通过，剩余 QML 等待修正后单项通过。来源过滤冻结后 108 项相关检查全部通过，
+  其余未受后续调整影响的助手、升级、Raw Input 检查复用首批有效结果，不累加重复项。
+  实际 Gadget 已验证同 PID 断线恢复及两次脚本热更新；旧共享宿主仍禁止强行迁移。
+- 证据：项目 `.venv` Python 3.12.10、UTF-8、Qt offscreen；系统临时目录
+  `rc003-shared-source-ohja8l2k` 的 `targeted.log`、`targeted-recheck.log`、`qml-recheck.log`
+  和 `frozen-source.log`。较早失败尝试保留，不当作最终结果。提交前独立差异验证另记同目录。
+- 提交隔离：只用 HEAD 加本轮差异运行 135 项，134 项通过；唯一环境错误为 Git 不跟踪的
+  Gadget 压缩依赖缺失，补入已核对同一 SHA-256 的本地依赖后该项通过，未扩大提交范围。
+  结果见 `isolated-checkpoint.log` 与 `isolated-gadget.log`，源码及相关 QML 基础流程通过。
+- 升级时序补充：新脚本尚在热更新时收到旧握手，不启用旧脚本，也不立即判成必须重启；
+  原注入截止时间内等待同 PID 的新脚本。成功替换、超时保留原因且不重复注入均通过。
+  最终在只含本轮差异的隔离副本执行相关 93 项，全部通过，见 `isolated-reload-final.log`。
+  中途检查和两项断言的定向复查分别保留在 `reload-race.log`、`reload-race-recheck.log`。
+- 人工待测：双实体遥控共存时，只有软件已登记且当前选中的 RC003 能触发映射和录音；
+  另一只先按、同键重叠、断开所选设备和重新连接都不串用。真实驱动中设备对象的注册表
+  访问、用户异机 Windows 指令布局及从旧非热更新组件升级仍需实机确认。没有为验证而
+  修改配对或让用户先重启；是否需要一次重启只按旧组件实际迁移结果判断。
+
+### CHECK-DEVICE-SELECT-001 按具体遥控器选择
+
+共享宿主来源限制的后续修复见 `CHECK-HID-SOURCE-001`，下文保留本批次历史证据。
+
+- 状态：2026-09-12 源码检查点待实测；既有 candidate.33 ZIP 不含此功能，未新增构建。
+- 基础流程：旧配置不自动猜设备；打开选择弹窗、添加但不启用、使用第一只、切换第二只、
+  移除当前和关闭均已通过真实 QML 隔离运行。主页面第一行高度不变，Basic 与 FluentWinUI3
+  两种样式的设备/按键/语音状态矩阵通过；名称空间不足时使用共享省略提示。
+- 自动检查：选择、配置隐私、BLE、Raw Input、HID 宿主、助手、重载、诊断及全部真实
+  生产调用点的定向检查通过；Qt 控制器与相关 QML 合同通过，平台跳过项仍不算实测。
+  覆盖设备消失不串选、同型号/重复身份拒绝猜测、共享宿主不注入、扫描失败/取消、停止
+  失败不切换、保存失败保留旧值、回退不完整不自启、切换中退出不复活和保留既有映射。
+  按键助手另在屏蔽冻结包排除模块的独立 Python 进程中读取临时选择成功，不依赖 Qt、
+  BLE 枚举、音频或语音设置归一化；源码 `--dry-run` 通过。尚未进行新增功能冻结验收。
+- 证据：本轮 `.venv` Python 3.12.10，UTF-8、Qt offscreen；系统临时目录
+  `rc003-selection-final-target-tests.txt`、`rc003-selection-ui-tests.txt`、
+  `rc003-selection-contract-tests.txt`、`rc003-selection-offscreen-recheck.txt`、
+  `rc003-selection-helper-boundary-tests.txt`，弹窗截图 `rc003-selection-dialog.png`。
+  较早失败尝试日志只作历史；最终结果按对应复查日志使用，不把重复运行数量相加。
+- 提交隔离复查：从 HEAD 加本轮差异生成临时源码副本，290 项中 287 通过、1 跳过；
+  另 2 项为旧首页/第三方说明断言，已用未修改的 HEAD 文本重现同样失败。其修正属于
+  工作区原有改动，本轮不吸收；当前工作区对应文档检查 26 项通过。证据分别在系统临时
+  目录 `rc003-selection-isolated-checkpoint-tests.txt`、`rc003-selection-head-document-baseline.txt`
+  和 `rc003-selection-document-tests.txt`。本轮独立设备选择、应用调用与构建入口检查通过。
+- 本机只读技术核实：BLE AEP、Raw Input 接口与 HID 节点的 ContainerId 摘要一致；
+  没有据此改写真实配置、重新配对或重启设备。身份关联成功不证明共享宿主内部复制句柄
+  的归属正确，用户异机的共享宿主问题仍未解除。
+- 人工待测：实体两只同存时只激活所选 RC003，另一只不触发本软件映射/录音；断开所选
+  设备不改连另一只，恢复后仍是所选设备；录音中切换先释放旧键和结束录音；停服切换
+  不自启，移除当前停止服务且 Windows 配对仍在。另一只同型号设备、重配对后身份变化、
+  正常退出再开及助手升级还需实机验证。遥控器仅用于共存，未获得按键或语音适配。
+
+### CHECK-CONFIG-FLOW-001 用户配置流程审计修复
+
+- 状态：检查点待实测；2026-09-12 当前源码，不适用于既有同名测试包。
+- 自动：新增 9 项配置流程回归通过；运行中输出保存、健康轮询保留重启入口、未运行和
+  保存失败不误报、两种保存入口、空语音快捷键下普通映射与恢复默认、无效映射拒绝、
+  语音程序后台启动/防重复/异常/退出结果，以及实际 QML 服务按钮点击均已覆盖。
+- 最终完整检查：当前工作区 `.venv` Python 3.12.10，2839 项，`OK (skipped=8)`；
+  直接启用并扫描完整进程的退出资源告警，未发现 `ResourceWarning:`。嵌套全测副本
+  使用现有保护跳过，另含真实键盘注入和平台条件跳过，不能视为真机验收。Windows
+  公开边界扫描通过。执行与旧失败的区别见 MAINTENANCE“用户配置流程审计修复”。
+- 人工队列：服务正常连接且说过一次话后，更换输出端点；两页应提示重启，点击设备页
+  的“重启服务”，下一次声音应进入新设备；模拟预检或保存失败不得改变已保存选项。
+  在语音快捷键缺失的旧配置副本中，普通改键和恢复默认应能保存，语音仍需另行配置。
+  点击启动语音程序时窗口应保持响应，成功、失败和取消反馈正确；安装音频后按实际的
+  “选推荐端点”完成配置。不同输入法和另一台电脑各按真实结果判定。
+- 没有制作新测试包；本轮保留已有未提交内容，未将不同任务的改动混合提交。
+
+### CHECK-AUDIO-001 音频端点与预检
+
+- 范围：WDM-KS 拒绝、WASAPI 优先、DirectSound 回退、真实打开失败。
+- 结果：音频定向测试 284 项通过，2 项平台相关跳过。
+- 本机补充：检测到 `CABLE Input` 的 DirectSound 与 WASAPI 视图，自动
+  选择 WASAPI，真实 `open/start/stop/close` 预检成功。
+- 旧 WDM-KS 配置迁移：设置页预选标准 CABLE Input 的 WASAPI 视图，但不
+  自动写盘；仍需用户点击保存并通过预检。
+- 状态：通过。
+
+### CHECK-HID-RELOAD-001 按键组件热重载与旧实例迁移
+
+- 状态：2026-09-12 检查点待实测，取代下项将重启 Windows 作为必做步骤的旧流程。
+- 自动：HID 211 项、Frida 63 项全部通过。真实固定 Gadget DLL 与生产脚本在隔离子进程
+  中完成断线重连、两次同 PID 热更新；设备重载仅模拟，覆盖唯一在线实例、共享/未知
+  宿主拒绝、目标变化、旧系统、命令失败/超时/3010、退出 0 但 PID 未变化，以及新宿主
+  握手后收到方向报告才恢复正常。助手 8/9 必须升级至 10；重复加载当前运行组件不再注入。
+- 实测流程：旧程序退出后打开本次修复版，按现有提示更新一次按键组件；先不重启电脑，
+  等待组件自动检查/重载后按方向键，应恢复正常接收，再试保存映射和按住话筒键说话。
+  完全退出再开及服务重启后应能重新收到按键。若无法安全迁移，应保留明确提示，不能
+  循环重启服务/设备或假报正常；共享宿主下的报告来源判定仍保持原保护边界。
+- 真机结论仍待用户反馈；自动测试不能证明那台电脑的 Windows 会重新分配驱动宿主。
+
+### CHECK-HID-UPGRADE-001 旧助手升级与驻留组件重载
+
+以下为原批次记录；新版恢复步骤按 `CHECK-HID-RELOAD-001`。
+
+- 状态：检查点待实测；2026-09-12 当前源码，不适用于已生成的 `candidate.31` ZIP。
+- 基础流程：普通权限旧版升级时，代际 8 助手进入既有授权更新入口；成功后使用代际 9，
+  取消或失败时保留原始按键。管理员直接启动沿用自身组件准备入口。已加载的协议 3
+  组件须等待系统宿主重载，设备页和语音页明确提示重启电脑，不能用重启服务冒充恢复。
+- 自动：当前工作区 `.venv` Python 3.12.10，Frida、助手维护、消费者、启动入口、运行
+  状态、两页 QML 合同及实际页面隔离测试共 352 项，351 项通过；唯一失败是本任务前
+  已有的微信模块未加入 `--dry-run` 导入入口，归属其它改动。本任务新增的旧助手拒用、
+  同宿主稳定错误、新宿主协议 4 恢复及实际 QML 页面测试均通过；助手维护入口 7 项另验
+  通过。详细边界见 `MAINTENANCE.md` 的“旧按键助手升级与驻留组件重载”。
+- 人工待测：在旧版电脑上更新助手，取消一次授权再重试；旧组件驻留时持续显示重启提示；
+  保存工作并重启 Windows 后只打开新版，按方向键应恢复“正常”，普通映射与按住说话可用。
+  另验管理员直接启动及已经使用兼容组件的电脑不反复要求更新。不得以隔离测试替代上述真机结果。
+
+### CHECK-HID-001 HID tap 状态与检测合流
+
+- 范围：状态转换、子进程注入结果、日志、Raw Input 与 tap 停止行为。
+- 结果：HID、入口、Qt 与应用定向测试 164 项通过，1 项平台相关跳过。
+- 冻结入口补充：`--rc003-hid-injector --pid 0` 稳定返回退出码 4，证明
+  隐藏入口已打包且对无效目标失败关闭；这不等同于真机注入成功。
+- 管理员诊断：启用 `SeDebugPrivilege` 前查询目标 WUDFHost 返回
+  `WinError 5`，启用后对同一 PID 查询成功。`fix4` 已按正确顺序执行。
+- 冻结真机启动：状态依次进入 `injecting`、
+  `waiting_for_gadget_connection`、`attached_waiting_for_hid_io`，最终在实体
+  按键后进入 `ready/hid_io_verified`，没有再次出现权限退出码 3。
+- 状态：通过。
+
+### CHECK-FULL-001 完整自动测试与公开边界
+
+- 范围：RC003 全部 unittest、`build/check-public-boundary.ps1`。
+- 命令：
+  `python -W error::ResourceWarning -m unittest discover -s tests -t . -p test_*.py`
+- 结果：1006 项通过，7 项安全或平台相关跳过，退出码 0。
+- 公开边界：通过，扫描 227 个文件。
+- `compileall`、`pip check` 与 `git diff --check`：通过。
+- 状态：通过。
+
+### CHECK-BUILD-001 Windows 候选构建
+
+- 命令：`build/build-candidate.ps1`。
+- 结果：依赖锁定、VB-CABLE 固定包校验、公开边界、完整测试、PyInstaller
+  冻结与构建后 smoke check 全部通过。
+- 候选：源码仓库同级
+  `RemoteMicRC003-0.1.0-candidate-20260820-fix9/RemoteMicRC003.exe`，大小
+  4,970,615 字节。
+- EXE SHA-256：
+  `DB3F49E23F2B6EEB6C51B9B0B45C5A2E1B29EEEA2E8FA97FFB999A49A3E91C28`。
+- 便携 ZIP：
+  `RemoteMicRC003-0.1.0-candidate-20260820-fix9-portable.zip`，SHA-256
+  `F24AFA07020385276297537E6B3F3F49880A305BC019460D3849778835CC778C`；
+  ZIP 内 EXE 哈希已与候选目录复核一致。
+- 冻结入口：`--dry-run=0`、`--help=0`、无效 PID 注入器入口 `=4`。
+- 状态：通过，未签名且待真机验收。
+
+### CHECK-BLE-002 WinRT 重复候选诊断
+
+- 前置：异机已删除并重新配对，Windows 设置只显示一个 RC003，但
+  2026-08-20 21:22:55 后的新日志仍报告两个名称匹配候选。
+- 自动范围：相同设备 ID（含大小写差异）与两个不同设备 ID 的计数；日志
+  不得包含原始 ID、蓝牙地址、哈希或设备路径。
+- 自动结果：BLE/身份/隐私定向测试 44 项通过；完整测试 982 项通过、7 项
+  跳过；公开边界扫描 224 个文件通过。
+- 诊断包：
+  `RemoteMicRC003-0.1.0-candidate-20260820-ble-probe1-portable.zip`，SHA-256
+  `7E7AC18FFD39BAADCD011FC4613D3018CD7A1C266033154F46C47072AF94DDA1`。
+- 操作：退出旧桥接，完整解压并运行诊断包约 20 秒；不要删除设备或重新
+  配对。回传 `app.log` 中以 `paired BLE discovery` 开头的行。
+- 判定：`unique_device_ids=1` 进入同 ID 去重修复；`=2` 进入隐藏记录或显式
+  候选选择调查。本检查点不修改原有失败关闭规则。
+- 状态：异机取证完成；两个不同设备 ID、不同容器，隐藏节点删除后被配对
+  数据库重建。
+
+### CHECK-BLE-003 多候选 ATVV 可用性解析
+
+- 前置：Windows WinRT 返回两个不同 RC003 配对记录，其中普通蓝牙界面只
+  显示当前使用的一个；删除隐藏 PnP 节点后扫描会自动重建。
+- 单候选：不得执行预探测，直接沿用原有连接路径。
+- 多候选：每个候选使用 UNCACHED 查询 ATVV 语音服务，探测完成必须关闭
+  临时 service/device；只有一个可用时选择它。
+- 失败关闭：零个可用报告无可达候选，两个可用仍报告歧义；不得按候选
+  顺序、名称语言或持久化 ID 选择。
+- 隐私：持久日志只允许候选序号、总数、可达布尔值和异常类型。
+- 自动结果：身份、BLE 合同与应用接线定向测试 40 项通过；完整测试 990 项
+  通过、7 项跳过；公开边界扫描 224 个文件通过；`compileall` 与
+  `git diff --check` 通过。
+- 真机步骤：不再修改异机配对状态；运行 `fix6`，回传包含
+  `ATVV candidate probe result`、`exactly one RC003 candidate resolved`、
+  `voice capabilities received` 的日志，再测试两种语音生命周期。
+- 候选：`RemoteMicRC003-0.1.0-candidate-20260820-fix6-portable.zip`，
+  SHA-256
+  `60DE6082BEE84824073713B4235FB8B71A3356B0B5A955368D735AFCBF1820C3`；
+  ZIP 内 EXE SHA-256
+  `A168A28514D635725D2B08BA051986FDED4F52E725BFAD23AB77477B725C27DA`。
+- 异机结果：两个名称匹配候选中恰好一个 `reachable=True`，随后完成唯一
+  候选解析、ATVV 能力读取和 HID IO 验证。
+- 状态：通过。
+
+### CHECK-BLE-004 旧候选不可取消时的硬超时
+
+- 前置：Windows 返回两个 RC003 候选，其中一个旧记录的蓝牙语音服务查询
+  可能永远不完成取消。
+- 要求：单个候选最多等待八秒；超时后继续检查下一候选，不得长期占用后台
+  桥接、F5 拦截或设置页按键检测资源。
+- 安全边界：恰好一个可达才选择；零个或多个可达仍失败关闭，不记录设备标识。
+- 自动结果：不可取消调用硬截止、首候选超时后选择第二候选、专项检测占用提示
+  等定向测试共 54 项通过；完整自动检查 1181 项通过、7 项跳过，冻结构建和
+  主程序自检通过。
+- 真机状态：等待当前多候选电脑复测专项检测结束后，立即重启桥接和真实按键
+  检测。
+
+### CHECK-BLE-005 连接阶段卡死的总截止
+
+- 真机证据：`voiceprobe3` 已按八秒截止跳过第一个旧候选，并选出第二个可用
+  候选；之后停在建立蓝牙连接，未显示连接完成提示，也未生成本次结果。
+- 影响：专项检测一直占用唯一后台位置和按键拦截，导致主程序没有通知区域
+  图标，设置页也无法检测真实按键。
+- 修复：专项核心改由可放弃的守护线程运行；寻找设备、选择候选、建立连接和
+  读取能力合计最长 32 秒。进入按键观察后另有 25 秒收尾截止。超时后主线程
+  必须停止按键拦截、释放单实例保护、写入明确结果并结束程序。
+- 自动结果：卡在启动和卡在收尾的两项确定性回归均通过；专项定向测试 14 项
+  通过；完整测试 1183 项通过、7 项按系统条件跳过；公开边界扫描 278 个文件，
+  `compileall`、`pip check`、`git diff --check` 全部通过。
+- 构建结果：提交 `fc85ddc` 的干净隔离工作树完成 PyInstaller 构建，冻结主
+  程序 `--dry-run` 与 `--help` 自检通过。本机候选目录为
+  `RemoteMicRC003-0.1.0-candidate-20260822-voiceprobe4/`，共 2072 个文件；
+  EXE 大小 5,069,292 字节，SHA-256 为
+  `7D789C84646717E1A938F015EB66D1271640A58569F102994B92324C7710B1F4`。
+- 便携 ZIP：`RemoteMicRC003-0.1.0-candidate-20260822-voiceprobe4.zip`，大小
+  124,661,703 字节，SHA-256 为
+  `CDA8D75F23C020796A7FF1DCCEF461A268550F78B6EC2015FD1E1999842F2144`。
+  完整解压后仍为单一版本顶层目录、2072 个文件，包内七项校验逐项一致。
+- 真机状态：等待同一台多候选电脑复测；超时后必须能立即启动后台桥接并恢复
+  通知区域图标与真实按键检测。
+
+### CHECK-VOICE-005 切换模式多来源手势合并
+
+- 前置：`fix6` 已证明长按可获得约 3.6 秒 `result=signal` 的非零 PCM，但
+  切换模式短按只有约 180 至 360 毫秒即关闭。
+- 根因：一次实体按下被 `AudioStarted`、legacy F5、HID 和 ATVV mic 多条
+  异步路径报告，旧局部门闩把后到来源当成第二次点击。
+- 自动范围：两种真实日志对应的乱序、释放后下一次按下关闭、HOLD 模式
+  一次 down/up 回归。
+- 自动结果：应用接线定向测试 57 项通过、1 项平台相关跳过；完整测试
+  993 项通过、7 项安全或平台相关跳过；公开边界扫描 225 个文件通过；
+  `compileall` 与 `git diff --check` 通过。
+- 候选：`RemoteMicRC003-0.1.0-candidate-20260820-fix7-portable.zip`，
+  SHA-256
+  `07D7738AF91F87B6E572172752A8C5C1C7D038E1AC33D16445B7491E86F2A312`；
+  ZIP 内 EXE SHA-256
+  `765329CA703080D0F9DDBA2E850D9A10CC3C97F0FB190129A4183A86AADA68E7`，
+  已与候选目录中的 EXE 复核一致。
+- 真机步骤：运行 `fix7`，切换模式短按一次并松开，讲话产生文字后再短按
+  一次结束。无需删除或重新配对设备。
+- 异机结果：首轮来源合并生效，部分会话达到 `result=signal`；但
+  `AudioStopped` 早于延迟物理回调，仍会过早释放门闩。后续见
+  `CHECK-VOICE-006`。
+- 状态：部分通过，未达到稳定性门槛。
+
+### CHECK-VOICE-006 物理释放双边界与 F5 钩子非阻塞
+
+- 前置：`fix7` 日志确认低层 F5 进入应用到物理处理完成可间隔约 1.5 秒，
+  `AudioStopped` 后仍有延迟 HID down；用户报告记事本偶发插入日期时间。
+- 自动范围：音频停止早于物理 up、续流 start、重复 start/stop、低层钩子在
+  语音锁被占用时的返回时间、切换关闭不重开播放端点。
+- 自动结果：应用接线定向测试 62 项通过、1 项平台相关跳过；完整测试
+  998 项通过、7 项安全或平台相关跳过；公开边界扫描 226 个文件通过；
+  `compileall` 与 `git diff --check` 通过。
+- 候选：`RemoteMicRC003-0.1.0-candidate-20260820-fix8-portable.zip`，
+  SHA-256
+  `2148F4F25C56E2117FEA9FC80A9A460BA0905CD3B09442CAD6CCB5C8260089FA`；
+  ZIP 内 EXE SHA-256
+  `E9FF471EF55CB8A7713DC934155D30D207D69278FA9550C116987E21B0EB10AB`，
+  已与候选目录中的 EXE 复核一致。
+- 真机步骤：运行 `fix8`，在记事本中连续完成至少 5 轮“短按开始、松开后
+  讲话、短按结束”，记录是否仍出现日期时间、失败轮次和大致启动延迟。
+- 异机结果：全部普通按键可在映射页识别；按住语音得到约 2.2 秒
+  `result=signal` 的 PCM 并产生可见识别文字；记事本未再插入日期时间。
+  但两种语音模式仍表现相同，后续确认是运行中配置未应用，不是本检查点的
+  F5 防漏或音频链路再次失效。
+- 状态：F5 防漏和基础语音通过；切换生命周期转入 `CHECK-VOICE-007`。
+
+### CHECK-VOICE-007 运行中语音模式与快捷键热加载
+
+- 前置：`fix8` 设置页会正确保存语音模式和快捷键，但运行中桥只热加载
+  `key_bindings.json`；用户改成 HOLD 后日志仍出现
+  `voice toggle remains active after physical release`。
+- 自动范围：空闲热应用、活跃会话延迟应用、非法配置保留最后有效值、只有
+  BLE `AudioStarted` 时也先刷新设置、启动/应用日志可观测性。
+- 定向结果：147 项通过、1 项平台相关跳过；同轮资源、隐私和快捷方式修复
+  定向测试 35 项通过。最终完整测试 1006 项通过、7 项跳过；公开边界扫描
+  227 个文件通过；候选构建和冻结入口检查通过。
+- 真机步骤：HOLD 使用实体键盘已确认支持按住语义的宿主快捷键；TOGGLE 使用
+  宿主真正的点按开关快捷键。保存后无需重启桥接，下一次按键前应记录
+  `settings voice configuration applied` 和实际模式。
+- 状态：自动验证通过，待异机验收。
+
+### CHECK-AUDIO-002 当前配置复核
+
+- 当前保存端点：`CABLE Input (VB-Audio Virtual Cable)` / `Windows WASAPI`。
+- 结果：真实 `open/start/stop/close` 预检通过。
+- 边界：本项只证明端点可打开；没有遥控器麦克风输入时，不能证明 ATVV
+  帧数、PCM 样本数或宿主语音识别已经恢复。
+- 状态：通过。
+
+### CHECK-AUDIO-003 VB-CABLE 本地回环与播放阻塞指标
+
+- 核验日期：2026-08-26。
+- 范围：显式 `CABLE Input → CABLE Output` 扫频回环、同 host API 唯一端点、
+  静音/单频反例、溢出欠载、候选格式真实双工回退、与桥接共用 Windows 互斥、
+  完整测试子进程硬超时和退出终止、直接调用时的预检/回环交叉残留清理，以及
+  正式播放的打开/写入耗时和欠载计数。
+- 自动结果：音频、Windows 诊断、隐藏子进程入口、Qt 设置/真实离屏 QML 和应用
+  接线 5 个受影响测试文件共 445 项，其中 442 项通过、3 项按平台条件跳过；完整
+  unittest 共 1304 项，其中 1297 项通过、7 项跳过；`git diff --check` 通过。
+- 边界：模拟回环只能证明算法正反例和资源合同，不能替代真实 VB-CABLE 驱动对
+  相关阈值、近似延迟和其它监听程序影响的验证。
+- 状态：自动检查通过，真实驱动见 `TEST-VOICE-008`，检查点待实测。
+
+### CHECK-KEY-002 麦克风检测与正式语音隔离
+
+- 前置：`fix10` 本机逐键检测确认 13 个按钮全部可识别；麦克风检测的
+  `AudioStarted` 比 F5/HID 回调先到。
+- 旧结果：界面正确显示 `mic`，但桥接已误开 TOGGLE 会话，随后每 60 秒
+  重开一次空音频，PCM 始终为 `frames=0`、`result=empty`。
+- 修复：`fix11` 用跨 AudioStarted、ATVV、legacy F5 和 HID 的独立检测手势
+  门闩吞掉整次测试按键；不改变正式语音状态，不开播放端点，不发送宿主
+  快捷键或设备开关麦命令。
+- 自动结果：应用接线测试 81 项通过、1 项平台相关跳过；完整测试 1093 项
+  通过、7 项跳过；公开边界扫描 229 个文件通过；`compileall`、`pip check`
+  和 `git diff --check` 通过。
+- 候选：`RemoteMicRC003-0.1.0-candidate-20260821-fix11-portable.zip`，
+  SHA-256
+  `DF9F50C4B9F11D703FA65BFE200A52FBD953B7591670FA3AEF89B6C96985127B`；
+  ZIP 内 EXE SHA-256
+  `4639AC9942C3D66525ED8EC7457F1EA7562E1B9DBD14ED5E5FD05BB2CB44ED7D`，
+  已与候选目录一致。冻结入口 `--dry-run=0`、`--help=0`、无效 HID 注入
+  PID `=4`。
+- 真机步骤：检测麦克风键一次，确认界面高亮且宿主语音不启动；等待约 1 秒
+  后再执行正常语音按键，确认检测门闩已释放。
+- 状态：自动验证通过，待 `fix11` 本机复测。
+
+### CHECK-VOICE-008 切换续开与实体松键时序
+
+- 前置：`fix11` 已确认按键检测不再误开正式语音；本机切换模式仍表现为
+  第一次短按后无声，先长按一次才可能识别。
+- 日志证据：第一次短按的 `AudioStopped` 在 15:39:44.618 到达并立即续开，
+  实体 F5 到 15:39:44.726 才 up；续流有 `AudioStarted` 但没有 PCM。长按
+  原始流得到约 3225 毫秒 PCM 和 `result=signal`。
+- 修复：`fix12` 在音频停止后进入待续开；有物理来源时等全部 up，BLE-only
+  等待 200 毫秒吸收迟到边沿。第二次点击、清理和重连取消待续开。
+- 自动结果：应用接线测试 83 项通过、1 项平台相关跳过；同轮 IPC 加固后
+  完整测试 1096 项通过、7 项跳过；公开边界扫描 231 个文件通过。
+- 真机步骤：第一次只短按并松开，随后直接讲话；必须出现识别文字和非零
+  PCM。第二次短按应结束。连续至少 5 轮并记录失败轮次与启动延迟。
+- 候选：`RemoteMicRC003-0.1.0-candidate-20260821-fix12-portable.zip`，
+  SHA-256
+  `D6B9168B728E12FD0D892BD472547007F0A8B5E835F34D35230677E76BF5CBAA`；
+  ZIP 内 EXE SHA-256
+  `7B99267D5E1385408CDBAAE36BA422FAACC43B50F16E47BF3E5EEC8176BB0926`，
+  已与候选目录一致。冻结入口 `--dry-run=0`、`--help=0`、无效 HID 注入
+  PID `=4`。
+- 状态：自动验证通过，待 `fix12` 本机复测。
+
+### CHECK-KEY-003 一次性检测并发认领
+
+- 发现：`fix12` 首次构建中，两个并发来源偶发都无法认领同一请求；独立
+  连续运行 30 次复现 3 次。
+- 根因：每个来源先读取请求 JSON 再争 claim lock，Windows 上锁胜者移动
+  文件时可能仍被败者的读取句柄阻塞。
+- 修复：先独占 claim lock，再读取、校验和移动请求；结果写入失败时尽量
+  恢复请求，供后续来源重试。
+- 自动结果：检测与应用扩展定向测试 90 项通过、1 项平台相关跳过；原场景
+  压力运行 100 次无失败；完整测试 1096 项通过、7 项跳过。
+- 状态：自动验证通过；随 `fix12` 做一次后台桥接真实按键检测回归。
+
+### CHECK-VOICE-009 切换续开后的 F5 回声
+
+- 发现：`fix13` 续发 `MIC_OPEN` 后约 61 至 62 毫秒又收到 legacy F5 down，
+  被当成第二次点击关闭；多轮会话汇总为 `frames=0 samples=0 result=empty`。
+- 修复：TOGGLE 主动续开后开启 250 毫秒有界保护，按来源成对忽略保护期内
+  的物理 down/up；窗口后的下一次点击保持原关闭语义。
+- 自动结果：应用接线测试 84 项通过、1 项平台相关跳过；完整测试 1103 项
+  通过、7 项跳过；公开边界扫描 231 个文件通过；`compileall`、`pip check`
+  和 `git diff --check` 通过。
+- 候选：`RemoteMicRC003-0.1.0-candidate-20260821-fix14-portable.zip`，
+  SHA-256
+  `59DA357C40BDA873AF7FF06F4CFFFC68D1E5EB56FEC4BE37B3CE3BAA453FCDB5`；
+  ZIP 内 EXE SHA-256
+  `E0E3A7A36D6F07A1E1893E6B2A2750240EE0C78056EE5DC6DCE331227C98D24D`，
+  已与候选目录一致。冻结入口 `--dry-run=0`、`--help=0`、无效 HID 注入
+  PID `=4`。
+- 状态：自动与冻结验证通过，待 `fix14` 本机连续短按复测。
+
+### CHECK-UI-002 统一语音主映射模型（fix15，历史）
+
+- 范围：两套语音快捷键、13 键主/次映射、旧 generic `VOICE` 迁移、保存冲突
+  校验、麦克风键普通映射和运行时热加载。
+- 预期：按键页不再出现全局语音模式选择；任一实体键的主映射可选择“开关型
+  语音”或“按住型语音”，但最多只能有一个语音主映射；语音主映射行的双击和
+  长按控件不可用，原有普通次级设置保留但暂停执行，保存层同时拒绝次级语音
+  动作。零语音映射是合法配置，不应因缺少语音快捷键或语音输出端点阻止保存。
+- 自动门槛：配置迁移、设置帮助器、Qt model/controller、QML 真实加载与保存、
+  应用接线和完整测试全部通过；不能只依赖模型层单元测试证明界面已正确禁用。
+- 自动结果：应用接线 108 项通过、1 项平台相关跳过；设置帮助器与 Qt 设置
+  定向测试 149 项通过；完整测试 1143 项通过、7 项安全或平台相关跳过，退出码
+  0。1024x720 离屏加载 `main.qml` 无 QML warning，真实输入普通组合键并直接
+  保存的交互探针通过。公开边界扫描 266 个文件通过；`compileall`、`pip check`
+  和 `git diff --check` 通过。
+- 代码与构建：检查点 `979ed49`，最终代码提交 `eaabde8`；构建时 Git HEAD
+  `8624ceb`。PyInstaller 构建通过，复制后的候选入口为 `--dry-run=0`、
+  `--help=0`、无效 HID 注入 PID `=4`。
+- 候选目录：源码仓库同级
+  `RemoteMicRC003-0.1.0-candidate-20260821-fix15/`；EXE SHA-256
+  `FE9B15C484DCF5E7DCBC2472DA3181587344AB4ABA3F942FC2C972B20475D61D`。
+- 便携 ZIP：`RemoteMicRC003-0.1.0-candidate-20260821-fix15-portable.zip`，
+  SHA-256
+  `6A24FA1023F5E4C5AC4FFCE68C43B2334286851A69CB7C87E00F1C1E60EF7DF`；ZIP 只有
+  一个版本顶层目录，内部 EXE 哈希已与候选目录复核一致。同批次校验文件为
+  `RemoteMicRC003-0.1.0-candidate-20260821-fix15-SHA256SUMS.txt`。
+- 真机边界：自动检查不能证明非麦克风键能让 RC003 固件持续发送 ATVV PCM，
+  该能力单独由 `TEST-VOICE-006` 验收。
+- 状态：自动与冻结验证通过；`TEST-UI-002`、`TEST-KEY-003`、
+  `TEST-VOICE-005` 和 `TEST-VOICE-006` 待真机复测。
+
+### CHECK-UI-003 设置框架、连接与权限信息架构
+
+- 范围：`main.qml`、`Tokens.qml`、连接页、权限页、全局状态反馈、Windows
+  设置入口反馈和真实 QML/键盘测试；不含按键矩阵、语音时序、BLE 或音频逻辑。
+- 预期：顶部四页导航稳定；连接页按设备、语音输出、后台桥接、保存/启动排序；
+  “仅保存设置”不启动进程，“保存并启动桥接”仍先保存；启动结果不冒充设备已
+  连接。权限页按责任边界分层，DJI 不显示 RC003 专属要求，也不伪造授权状态。
+- 响应式门槛：1024x720、1366x768@125%、1920x1080@150% 与
+  1024x720@150% 等效逻辑视口无横向溢出；纵向内容可滚动；Tab 到视口外命令
+  时自动滚动，末项继续 Tab 可返回顶部导航。
+- 自动结果：Qt 设置定向测试 101 项通过；UI 独立提交 `addc2b0` 的干净 detached
+  worktree 完整测试 1151 项通过、7 项安全或平台相关跳过，退出码 0。真实 QML
+  加载 0 warning，四组布局、DJI 条件显示、Fluent 对比度、实际保存和真实 Tab
+  探针通过。公开边界扫描 137 个文件通过；`compileall`、`pip check` 和
+  `git diff --check` 通过。共享工作区的 1154/7 和 267 文件结果包含同期 BLE
+  测试，不作为本 UI 独立候选的权威计数。
+- 历史包 `ui1` 的界面文件和入口检查通过，但逐文件复核发现未包含可选 Frida
+  Gadget；它只保留作 `addc2b0` 的 UI-only 证据，不再作为完整候选验收。
+- 当前候选：`RemoteMicRC003-0.1.0-candidate-20260821-ui2-portable.zip`，SHA-256
+  `5330E2E668471E60F3AE5CEC1FBCBB172D844DFE1E49C383F8A1F51FC9383B81`；
+  ZIP 内 EXE SHA-256
+  `03E21A6E28A3205E35A3C039A4BD681658BD0AB261DFD6C8DD3D944173561902`。
+  构建基线 `338d2cb` 的完整测试 1154 项通过、7 项跳过，公开边界扫描 270 个
+  文件通过。Frida Gadget 与 VB-CABLE 固定哈希均通过；ZIP/目录 2067 个文件
+  逐文件一致；六个项目 QML 和许可/说明文件与源码一致。冻结入口
+  `--dry-run=0`、`--help=0`、无效 HID 注入 PID `=4`，设置入口离屏 5 秒存活且
+  测试结束无残留进程。
+- 状态：自动、构建与冻结验证通过；使用 `ui2` 完成 `TEST-UI-003` 人工复核。
+  该合并候选包含 `a189a1c`，但语音真机结果仍须按语音条目单独验收。
+
+### CHECK-UI-004 整宽按键映射矩阵
+
+- 范围：`ButtonsPage.qml` 的 RC003 映射视图、每行编辑弹窗、真实按键选择定位
+  和直接保存；不修改映射 schema、动作执行、BLE、ATVV 或音频链路。
+- 预期：页面以“遥控器按键 / 单击 / 双击 / 长按”四列展示 13 键；无照片和
+  双列卡片残留；行分隔线不贯通容器；检测真实按键会选择并滚动到对应行。
+  编辑弹窗中的自定义组合键即使未按回车，也能在点击“保存映射”前进入 model。
+- 自动结果：矩阵/保存/真实 QML 定向 12 项通过，Qt 设置完整 102 项通过；
+  正式构建完整测试 1172 项通过、7 项安全或平台条件跳过；公开边界扫描 276 个
+  文件、PyInstaller 和冻结 `--dry-run` 通过。源码提交 `ae3529e`。
+- 人工结果：本机打开冻结 EXE，用户确认矩阵界面正确。该结果只覆盖界面布局，
+  不覆盖真实按键、语音或 On-request 专项能力。
+- 当前候选：
+  `RemoteMicRC003-0.1.0-candidate-20260822-matrix1-portable.zip`，SHA-256
+  `5232C3B6EC0885956FC15EB41833B947F56EA9512B30450262B63E7EBE74E11C`；
+  ZIP/目录均为 2072 个文件且逐项一致，EXE SHA-256 为
+  `6252F78F5BD66DF514AB0028966640A3BCB00F83FE58C06D18D73C154338B6A3`。
+- 列对齐回归：后续截图发现表头和数据行的独立 `GridLayout` 对同一列分配了
+  不同宽度。提交 `fa04037425278bc41a251a96b912dc2f59065c3a` 统一固定按键、
+  双击、长按和编辑列，只让单击列伸缩；`Basic` 与 `FluentWinUI3` 主题均在
+  `1024x720`、`683x480` 下直接比较五列的 `x/width`。矩阵定向 3 项、Qt 设置
+  完整 103 项通过；正式门禁完整测试 1176 项通过、7 项按安全或平台条件跳过，
+  公开边界扫描 277 个文件通过。
+- 最新合并候选为
+  `RemoteMicRC003-0.1.0-candidate-20260822-matrix2-portable.zip`，SHA-256
+  `A66FC9BC89D20950611A15CCF2D9342934EDDE0A55A5ACC42DBDDB1AD9839FB2`；
+  ZIP/目录均为 2072 个文件且逐项一致，EXE SHA-256 为
+  `8144ABCF86298D81E49AC641AB0FB174466695353C21A8B116B34B4687EA96B1`。
+  该包同时保留 `holdrelease2` 的物理抬起释放修复；`matrix1` 只作为首次矩阵
+  人工确认的历史证据，不应再用于本轮对齐复测。
+- 等分调整：用户复核 `matrix2` 后指出单击列独占剩余宽度会把三种手势拉成
+  不均匀间距。`63599e9` 先改为相同伸缩权重，`03dd33c` 再把三列绑定到同一个
+  可用宽度计算结果；按键列保持 118 px，编辑列保持 56 px。
+- 真实 QML 回归除继续比较表头与数据行外，还断言三列严格等宽、相邻列不重叠、
+  编辑列距列表右侧至少 8 px；覆盖 `Basic` 与 `FluentWinUI3` 的 `1024x720`、
+  `683x480`、`640x480`。矩阵定向 3 项、Qt 设置完整 103 项通过；独立完整
+  unittest 1179 项通过、7 项按安全或平台条件跳过。
+- 人工截图检查：`FluentWinUI3` 在 `1024x720` 下三列均为约 256.67 px，
+  `683x480` 下均为 143 px，`640x480` 下均为约 128.67 px；标题、数据、编辑列
+  均未发现错位、重叠或窄窗挤压。本批按用户要求不构建候选包，因此现有
+  `matrix2` 不包含 `63599e9`、`03dd33c`，只保留为上一轮打包证据。
+
+### CHECK-UI-005 紧凑设置界面与语音程序整合
+
+- 范围：四页设置界面、连接页语音程序与语音按键、十三张映射卡片、编辑弹窗、
+  映射备注、公共紧凑控件和字体；不改变 BLE、ATVV、音频或按键执行合同。
+- 功能边界：语音程序默认“不管理”；选择具体程序后随桥接尝试启动。桥接已经
+  运行时保存会补应用新选择，不重启桥接；启动异常不能影响现有桥接。映射备注
+  独立保存在 `display_notes`，不参与动作解析；语音动作下双击和长按不可执行。
+- 自动结果：配置、保存辅助层、语音程序管理、真实 QML 与 Qt 设置共 275 项通过；
+  保存前后映射卡片、热点、连线和选中状态保持稳定，编辑下拉当前项真实加粗。
+  `compileall`、公开边界扫描 273 个文件与 `git diff --check` 通过。
+- 合并树结果：合入音频、HID、桥接状态和 VB-CABLE 诊断主线后，完整 unittest
+  1321 项通过、8 项按环境条件跳过。最终收口修正语音程序独立未保存状态、统一
+  四字按钮宽度并消除诊断快捷入口文字重叠后，Qt 设置与语音程序 QML 共 167 项
+  通过，启动状态文案辅助测试 61 项通过；`compileall`、公开边界扫描 276 个文件
+  与 `git diff --check` 通过。
+- 视觉结果：`FluentWinUI3` 在 `720x464`、`640x440` 下复核连接、按键、权限、
+  诊断及编辑弹窗；无默认滚动、裁切、错连、文字重叠或保存后重排。等待 RC003
+  阶段持续显示阶段、旋转状态和计时，连接成功后保留“RC003 已连接”完成状态。
+- 交付边界：本轮未构建、未打包；真实 RC003、输入法、UU 远程、音频端点和文字
+  上屏仍由 `TEST-UI-005` 及现有真机条目验收。
+- 状态：检查点待实测。
+- 自动验证：第一阶段新增诊断测试 4 项通过；关联的隐私、日志路径、`SendInput`、元素导航和语音控制定向测试共 111 项通过；`compileall` 与 `git diff --check` 通过。完整 `test_app_wiring` 217 项中 216 项通过、1 项失败（项目既有 Python 3.14 事件循环旧行为复现测试要求返回码 0，与本次改动无关）。
+
+### CHECK-UI-001 语音设置集中与双快捷键保存
+
+- 范围：连接页、按键映射页、配置迁移、模式切换、快捷键录制、保存与恢复
+  默认。
+- 预期：连接页不再出现重复语音设置；按键页同时展示“按一下切换”和“按住
+  说话”的独立宿主快捷键；切换当前方式不会覆盖另一套值；旧配置当前快捷键
+  不变，保存重开后两套值和当前方式都保留。
+- 自动结果：配置、设置帮助器、Qt 控制器和 QML 定向测试 174 项通过；完整
+  测试 1102 项通过、7 项安全或平台相关跳过；公开边界扫描 231 个文件通过；
+  `compileall`、`pip check` 和 `git diff --check` 通过。
+- 候选：`RemoteMicRC003-0.1.0-candidate-20260821-fix13-portable.zip`，
+  SHA-256
+  `B496F8DEED84DC7D8A2B28E711931EDEC11BC169A93771F56732A6339849D4FE`；
+  ZIP 内 EXE SHA-256
+  `DB7C357419DACDC04491C50CF3BD5AFF4353467B30BE3B5E73E5C3012EC34CA6`，
+  已与候选目录一致。冻结入口 `--dry-run=0`、`--help=0`、无效 HID 注入
+  PID `=4`。
+- 状态：自动与冻结验证通过，待 `fix13` 界面人工复测。
+
+### CHECK-LAUNCH-001 重复桥接启动
+
+- 范围：设置页启动命令、隐藏来源标记、重复实例退出码、手工启动提示。
+- 预期：设置页遇到已有桥接时不弹系统模态框，立即按退出码 3 显示“已经
+  在运行”；直接执行 `--bridge` 时仍显示单实例保护提示。
+- 自动结果：相关定向测试 113 项通过；含音频迁移回归的扩展定向测试
+  159 项通过；完整测试 958 项通过、7 项跳过。
+- 冻结实测：桥接持有单实例锁时，新候选以设置来源启动，在 256 ms
+  内返回退出码 3，没有显示模态提示框。
+- 状态：通过。
+
+### CHECK-VOICE-010 AUDIO_STOP 与短音频顺序
+
+- 现象：短会话可以有开始/停止控制事件，但 PCM 汇总为
+  `frames=0 samples=0`。
+- 确定性复现：生产 `RC003BleSession` 注入开始、10 个音频通知、停止；旧
+  worker 因 CONTROL 优先先关闭 decoder，10 个音频全部作为晚到数据被拒绝。
+- 修复：CONTROL/AUDIO 通知共享序号；序号分配与入队在同一 producer lock
+  内；`AUDIO_STOP` 仅排空同代且更早的音频，下一会话音频保持延后。
+- 性能隔离：解码后 PCM 进入 64 帧有界 FIFO，阻塞式 PortAudio 写由独立
+  worker 串行执行；`AUDIO_STOP` 等待 FIFO 屏障后才释放宿主快捷键。队列满、
+  写失败和屏障超时都停止转发并请求重连。
+- 定向结果：`NotificationProcessingTests` 9 项通过，含并发 producer、
+  上一会话停止和下一会话首帧隔离。
+- 2026-08-29 回归：新 worker 覆盖阻塞写不卡入队、FIFO 屏障、连续两次
+  会话、队列满、写失败、屏障/停止超时和 sink 所有权；完整 unittest
+  1651 项通过，7 项按平台或安全条件跳过，退出码 0。
+- 真机边界：仍需当前构建连续复测短按与 1 至 3 秒 HOLD，会话必须有非零
+  PCM、尾音完整且停止后无残留；另覆盖长说、快速连续两次、断开/
+  重连和休眠恢复。
+- 状态：自动检查通过，真机待实测。
+
+### CHECK-VOICE-011 RC003 TOGGLE 固件边界复核（历史，专项程序已撤下）
+
+- 产品基线：RC003 普通语音键是按住传音、松开停止；上游同型号真机实验中，
+  主动 `MIC_OPEN` 返回 stream 0 的开始控制事件但没有 audio characteristic
+  数据，同连接普通语音键则立即出现连续音频。
+- 本地探针：On-request-only 协商成功，直接 `MIC_OPEN` 返回开始但四秒零
+  PCM；该探针没有先收到实体 `START_SEARCH`。
+- 专项程序：隐藏入口 `--on-request-probe` 已实现；便携包通过
+  `Run-OnRequest-Probe.cmd` 启动。它使用正式桥接互斥锁，但不启动 HID、宿主
+  快捷键、PortAudio 或 VB-CABLE，也不保存语音内容。探针生命周期内会临时
+  吞掉 RC003 泄漏的 F5，不向记事本写入日期，也不替换成其它宿主快捷键。
+- 真机步骤：先从通知区域退出旧桥接；运行脚本并等到 On-request 协商完成；
+  点击确定后短按一次话筒键并立即松开，马上连续说话约 3 秒，再短按一次结束。
+- 结果文件：
+  `%LOCALAPPDATA%\RemoteMic\RC003\logs\on-request-probe-result.json`；同时回传
+  同目录 `app.log`。
+- 通过判据：必须收到实体 `START_SEARCH`，主机只发一次 `MIC_OPEN`，设备报告
+  `AUDIO_START reason=0, stream_id=0`，且这个主机开麦会话自身开始一秒后仍有
+  PCM；第二次按下只发一次 `MIC_CLOSE`。普通 HTT 长按音频不能算通过。
+- 失败判据：无 `START_SEARCH`、无主机开麦开始事件、只有开始控制而零 PCM，
+  或主机开麦 PCM 未持续超过一秒。不得用宿主窗口已经唤起判断结果。
+- 自动结果：专项状态/编排/入口/构建契约测试及完整回归通过；完整测试 1179
+  项通过、7 项安全或平台条件跳过，公开边界扫描 277 个文件通过，
+  `compileall`、`pip check` 和 `git diff --check` 通过。
+- 当前判定：HOLD 为正式支持路径；TOGGLE 是待产品决策的实验路径，不能标记
+  已修复。
+- 状态：专项程序已完成自动验证，协议窄路径待真机运行。
+
+### CHECK-TRAY-001 后台桥接通知区域控制
+
+- 范围：原生 Win32 托盘消息循环、设置入口命令、菜单分发、跨线程退出、
+  asyncio 取消与应用停止调用。
+- 预期：双击或“打开设置”只启动 `--settings`；“退出桥接”取消桥接任务并
+  进入正常资源清理；关闭设置窗口不结束桥接。
+- 自动结果：托盘、启动器、应用与入口定向测试 90 项通过，1 项平台相关
+  跳过。
+- 本机 smoke test：原生托盘线程 `start()` 和 `stop()` 均返回成功，无
+  `ResourceWarning`。
+- 冻结候选实际启动：日志确认通知区域图标 ready/started，桥接进程继续
+  完成 RC003 BLE/ATVV 能力连接。
+- 本机人工验收：用户从通知区域菜单先执行“打开设置”，设置窗口正常独立
+  启动；随后执行“退出桥接”。桥接进程消失，设置窗口继续保留，符合进程
+  分离设计。日志依次记录 HID tap stopped、BLE/HID/音频清理和
+  `notification area: graceful bridge exit requested`。
+- 状态：通过。
+
+### CHECK-VOICE-012 HOLD-only 配置迁移与标准松手结束
+
+- 目标：证明开关型和非话筒键语音不能继续进入运行路径，且已撤下的松手补发
+  不会通过旧配置重新进入运行时。
+- 自动覆盖：
+  - schema-1 开关配置不被解释成按住说话；
+  - 旧开关型、非话筒键语音和次级语音整键停用；
+  - 用户重新选择普通动作后恢复；
+  - schema-2 旧松手补发字段在加载和保存时被移除；
+  - 即使旧字段在内存中仍为 `true`，实体松手先到或音频停止先到都只产生一次
+    正常抬键，绝不发送额外点按；
+  - 设置页不再显示或保存该选项。
+- 结果：四组定向测试 303 项通过、1 项跳过；完整 unittest 1152 项通过、
+  7 项跳过，退出码 0。
+- 本机候选：从源码提交 `90b552e` 构建并复制到
+  `RemoteMicRC003-0.1.0-candidate-20260823-hold2`。共 2062 个文件，
+  复制前后逐文件 SHA-256 一致；`--help=0`、`--dry-run=0`。EXE SHA-256 为
+  `AE072B578FFA112F301201D8452C8A8959C656D75977BF00620A5E066819C5FF`。
+- 六个产品 QML 与源码逐文件一致，旧松手补发控件文字为零。
+- 便携 ZIP：
+  `RemoteMicRC003-0.1.0-candidate-20260823-hold2-portable.zip`，大小
+  127,255,338 字节，SHA-256 为
+  `3D9E900195FE99D193D4C324D09D993B1F94146C4821456B62F1EF05527D44FB`。完整解压
+  后只有一个版本顶层目录，2062 个文件与本机候选逐文件 SHA-256 一致。
+- 状态：自动检查通过，真机见 `TEST-VOICE-005`。
+
+### CHECK-VOICE-013 三键默认撤回与旧配置保护
+
+- 目标：新安装、新建配置和恢复默认继续使用右侧 Alt，同时不覆盖旧用户已保存
+  的自定义值或仅存在于嵌套 HOLD 字段中的值；界面和文档不得再把
+  `Ctrl + Alt + F8` 写成已验证默认。
+- 自动覆盖：默认配置、缺失配置文件、恢复默认、控制器首次显示；旧 `ralt`、
+  自定义 `ctrl+l`、仅嵌套 HOLD、旧开关配置、Ctrl+Win 与错误 `lalt` 的兼容
+  回退；通用三键仍覆盖按下顺序、反向释放，以及 F8 投递失败后的完整补释放，
+  但不再把它当成默认值。
+- 边界：`DoubaoPhysicalizer` 只处理右侧 Alt。自动测试不能证明 UU 远程稳定保留
+  任意按住组合的 KEY_DOWN/KEY_UP 时长，也不能证明快捷键未被其他软件占用。
+- 状态：默认与兼容保护可自动检查；UU 按住边沿问题见 `TEST-VOICE-007`。
+
+### CHECK-STARTUP-001 桥接状态与冷启动提示自动门禁
+
+- 目标：桥接未运行时醒目阻止误判，并让刚启动桥接后的真实按键检测覆盖本次
+  约 46 秒的冷启动时间。
+- 自动结果：桥接状态、60 秒等待、连接中/就绪文字和真实离屏 QML 相关定向测试
+  172 项通过；完整 unittest 1157 项通过、7 项跳过，公开边界扫描 290 个文件。
+- 本机候选：从源码提交 `83adfba` 构建并复制到
+  `RemoteMicRC003-0.1.0-candidate-20260823-hold3`。共 2062 个文件、
+  320,901,336 字节，与构建目录逐文件 SHA-256 一致；`--help=0`、`--dry-run=0`、
+  无效 HID 注入 PID `=4`。EXE SHA-256 为
+  `8FF6A4840653035AA001746E0957159C33297BBBEA233AD9F6ED043112B38B0E`。
+- 资源结果：6 个 QML 与源码一致，新桥接警告已进入冻结资源；Frida Gadget、
+  VB-CABLE 固定哈希通过，旧松手补发文字和 On-request 专项文件均为零。
+- 便携 ZIP：
+  `RemoteMicRC003-0.1.0-candidate-20260823-hold3-portable.zip`，大小
+  127,256,558 字节，SHA-256 为
+  `33C53BB6AC59AFE8EC661D051AE60EA16290F882971E49F3D46BE6BAB697B1B2`。完整解压
+  后只有一个版本顶层目录，2062 个文件与本机候选逐文件 SHA-256 一致。
+- 状态：自动检查通过，真机见 `TEST-STARTUP-001`。
+
+### CHECK-STARTUP-002 桥接存活刷新与首次按键确认
+
+- 目标：设置窗口存活期间，桥接从外部启动或退出后两页警告能自动同步；补充通道
+  不再要求用户先等就绪再按键；本地检测有明确超时，且仅补充通道可捕获全部已知键。
+- 正例：刷新前后桥接状态变化会更新 `bridgeRunning`；真实离屏 QML 中红色警告随
+  外部启动隐藏、随退出恢复；补充通道第一次上键读取能同时确认通道并选择上键；
+  本地双通道检测 60 秒后停止并释放资源。
+- 反例：明确启动失败或成功结果不被周期查询覆盖；桥接状态查询异常继续显示红色
+  警告；连接握手和心跳不会误报就绪；空报告、未知按键值、界面未提供的静音值、
+  错误报告编号或长度不会误选按键；停止资源失败时保留停止错误，不被普通超时文字覆盖。
+- 自动结果：控制器、状态机、状态文字和真实离屏 QML 定向测试 211 项通过；完整
+  unittest 1165 项通过、7 项跳过；`compileall`、`pip check`、公开边界扫描
+  245 个文件和 `git diff --check` 通过。真机见 `TEST-STARTUP-002`。
+- 本机候选：从修复提交 `0b6d5aaa4d85fbab0add1252034cf0f3fd2967f0` 构建并
+  复制到 `RemoteMicRC003-0.1.0-candidate-20260823-hold4`。正式构建
+  脚本内公开边界扫描 278 个文件，完整 unittest 1165 项通过、7 项跳过；候选共
+  2062 个文件、320,902,537 字节，与构建目录零差异。EXE SHA-256 为
+  `64A329A51BE6C181FF4928463CD9DC6078A8B6C8B6A853EFD0379E75226CFCC4`。
+- 冻结结果：`--help=0`、`--dry-run=0`、无效 HID 注入 PID `=4`，6 个产品 QML
+  与源码一致；隔离配置目录中的设置窗口离屏存活 5 秒。未制作外发 ZIP，状态仍为
+  自动检查和本机构建通过、真实 RC003 待测。
+
+### CHECK-VOICE-014 迟到 F5 隔离与发送所有权（历史，已由 CHECK-VOICE-018 取代）
+
+- 历史边界：本条记录 2026-08-24 当时的低层 F5 transform/emit 方案。当前运行
+  结构已经取消 F5 的宿主快捷键发送权，现行口径见 `CHECK-VOICE-018`。
+- 现象：direct HID 已确认实体话筒键松开后，legacy F5 down/up 仍会迟到并干扰
+  下一轮；最终复审还稳定复现“transform 已返回、emit 未发送、HID down 先到”，
+  旧代码会向宿主发送两个快捷键 down、只发送一个 up。
+- 入口与原因：低层 F5 transform/emit、direct HID、设置热更新和
+  `AudioStopped` 来自不同线程；旧状态只认已经完成的 transform session，不认
+  “已决定但尚未发送”的在途状态。
+- 修复：同一状态锁串行化 F5 变换、发送、设置应用和音频停止。物理 HID 先认领
+  时隔离尚未 emit 的 F5，并正常发送配置快捷键；F5 先 emit 时，HID 识别已有发送
+  而不重发。隔离只在成功重连后解除。
+- 正例：正常 F5 down/up、HID 或 F5 任一方先到、空闲设置应用、成功清理重连均
+  只产生一对宿主边沿。
+- 反例：迟到 up 不关闭下一轮、迟到 down 不开启假会话、在途 emit 被 HID 或
+  `AudioStopped` 抢先时不再补发、配置快捷键部分失败只欠配置键的补释放，不会
+  错补右侧 Alt；清理失败不提前解除隔离。
+- 自动结果：新增 2 项仲裁/补释放反例与相邻 5 项通过；应用接线 113 项通过、
+  1 项跳过且资源泄漏扫描为零。完整 unittest 1205 项通过、7 项跳过；公开边界
+  扫描 302 个文件、`compileall`、`pip check`、PowerShell 全脚本解析和
+  `git diff --check` 通过。
+- 冻结与便携包：`--help=0`、`--dry-run=0`；11 个 QML 与源码逐文件一致。
+  `selfcheck1` 便携目录 2072 个文件、320,960,337 字节；ZIP 127,308,081 字节，
+  完整解压后路径与逐文件 SHA-256 零差异。ZIP SHA-256 为
+  `B110C4D44AAD62060B597AF02D875D5D06576EA039F4187895AF4B2BC7AE94C4`。
+- 状态：自动与冻结检查通过；真机见 `TEST-KEY-001`、`TEST-KEY-003`、
+  `TEST-VOICE-005` 和 `TEST-VOICE-007`。
+
+### CHECK-KEY-005 自定义组合键不参与按住连发
+
+- 目标：方向键仍可用于连续导航，但把方向键映射为 `Shift+3` 等自定义组合后，
+  持续按住只能执行一次完整点按。
+- 自动覆盖：所有动作类型逐一验证重复资格；自定义组合键按下后不创建重复
+  定时器；方向、退格和音量加减保持可重复。
+- 状态：自动检查通过，真机见 `TEST-KEY-004`。
+
+### CHECK-DESKTOP-030 candidate.36 日志补齐本地测试包
+
+- 核验时间：2026-09-13 19:50；来源 `842ee0c4eee812515083b6f1ff1a9e2cf9078044` 加原有工作区及本地版本
+  标记修改，版本 0.2.0-candidate.36，固定 .venv Python 3.12.10 直接 PyInstaller
+  封装源码，未执行 Cython。未签名本地测试包，不是正式候选或发布。
+- 包含 `CHECK-DIAGNOSTIC-001` 故障证据及 `CHECK-DEVICE-LABEL-001` 实际设备
+  名称；.35 双遥控和偶发语音问题仍未确定根因，不把采集能力增强写成修复通过。
+- 实际主程序 `--dry-run`、`--qt-runtime-check`、助手 `--self-check` 均返回 0。
+  两个 EXE 的相关模块逐项比对当前源码，主程序另核对 app/diagnostic_trace/
+  win32_input/wetype_control_windows；随包 QML 逐字节相同。实际归档中的诊断
+  模块在隔离目录产生故障前后报告成功。上述是入口、依赖及隔离功能检查，真实
+  设备、气泡、声音和文字效果仍需实测。
+- 复用本次受影响源码检查；ZIP 单顶层/唯一主入口、助手、VERSION、文件数量
+  及每项长度/哈希核对通过。ZIP：项目总目录 `MoteDeck-Windows-0.2.0-candidate.36-免安装.zip`，
+  149,881,754 字节，SHA-256 `CCECAB121CFF132BD78D7854F7B3B8E9F095090E475572AA6E3D01BC62174AC0`。
+  构建输入 242 项，前后指纹一致：
+  `55BDF2E9BC1E225E5882C23BE7B9C10B7FBB02FBA9E32551CC9C0E671609D3EB`；主程序 SHA-256：
+  `DA0457F76366C510DAF701AFE631B779DF305E78C81AAC07A71653758522123F`；Gadget 脚本 SHA-256：
+  `f668a45455a7a17d0dc72b4987fb436317672a901aef4071fabecb4035b74d42`。协议 4/来源修订 1/助手代际 12 不变。
+- 证据 `.build/candidate36-result.json`、`candidate36-frozen-audit.json`、
+  `candidate36-frozen-checks.log`、`candidate36-pyinstaller.log` 及
+  `%TEMP%/rc003-diagnostic-upgrade-44e68c0da7294551bf91e30f1df0fc8d`。本地输出 `dist/local-test-candidate36`、临时构建
+  `build/smoke-work-candidate36` 和 .build 临时脚本均不入 Git/程序包，无需保留时
+  可清理。旧 .35 ZIP/产物保留，未操作真实配置、设备、运行实例或驱动。
+- 人工：正常退出旧程序，新目录解压运行 .36，开启现有“诊断日志”；两只遥控
+  都连接，只选择已登记的小米，复现来源问题后提供同轮日志。如语音再次失败，
+  同时保留大致时间。故障报告只在观察到失败时生成；不要只反馈 app.log 或据
+  无报告判断正常。不把重启 Windows 作为常规前置条件。总体检查点待实测。
+
+### CHECK-DESKTOP-031 candidate.37 设备实例修复与通用诊断本地包
+
+- 核验时间 2026-09-13 21:10；来源提交 `0cea88f958bffa568776b36f5e2226c09e29bd7f`
+  加原有工作区及本地版本标记。固定 .venv Python 3.12.10 直接 PyInstaller 封装
+  Python 源码，未执行 Cython；未签名本地测试 ZIP，未上传或发布。
+- 包含 `CHECK-HID-SOURCE-003` 实例身份读取修复及 `CHECK-PROGRAM-LOG-001`
+  通用前台/逐键/限时接收日志。复用本轮 112 项来源检查和此前有效的通用日志检查；
+  不重跑全项目。双遥控、真实升级及远程输入法行为仍为检查点待实测。
+- 实际主程序 --dry-run、--qt-runtime-check、助手 --self-check、独立接收入口
+  --observe-shortcut --dry-run 四项均返回 0；后者核对 .37 版本及完整计划/结束记录，
+  未安装真实钩子。主程序和助手相关冻结模块逐项与源码一致；主程序另含通用前台、
+  接收器及诊断模块，全部 QML 逐字节相同。实际归档模块以独立包加载验证故障报告，
+  相对导入使用归档前台模块，不回退到源文件。
+- ZIP 单顶层、唯一主入口、助手、VERSION、文件数量及全部长度/哈希通过。产物：
+  项目总目录 `MoteDeck-Windows-0.2.0-candidate.37-免安装.zip`，149,895,992 字节，
+  SHA-256 `F8216DE7DA1795C519E50E233F05A08BF26926CC49EE4B2B9957F5BEC752EA6D`。
+  构建输入 244 项，前后指纹相同：
+  `6ED57304375779BD7D5257B896A603C85966DA11570FA4AF4CE4A10F62B59087`；主 EXE：
+  `5D9D0203FBA903C5B004FB521246B59244C3FA4A960F868DA83354BF3B546D69`；脚本摘要：
+  `2cee3404f53d96532f49c3dbbb565754a979778d08c0040047df95600eee57ed`。
+  协议 4、来源修订 1、助手代际 12 保持兼容；脚本内容变化沿用已有热重载。
+- 证据 `.build/candidate37-result.json`、candidate37-frozen-audit.json、
+  candidate37-frozen-checks.log、candidate37-observation-plan.jsonl、构建日志及脚本；
+  另存 `%TEMP%/rc003-instance-source-89fe106bc14c40dd899e4bedd1d97192`。输出
+  dist/local-test-candidate37、build/smoke-work-candidate37 和 .build 辅助脚本均为
+  Git 忽略的本地衍生产物；脚本/证据不随包，无需复核时可清理。旧 .36 ZIP 保留。
+- 人工：完全退出旧程序，新目录解压并确认 .37，开启已有“诊断日志”；两只遥控
+  同时连接，只使用已登记并选中的小米，分别及同时按键。再在普通窗口和远程窗口
+  各试一次语音，分别确认气泡、声音和文字；反馈同轮日志目录及大致时间。需要对照
+  被控端时再运行独立限时入口。重启电脑不是本轮常规前置步骤，旧组件异常按日志判断。
+
+### CHECK-HID-SOURCE-003 从设备参数句柄读取本设备实例身份
+
+- 2026-09-13 检查点待实测。依据 .36 测试机 app.log 的 19:56:36 来源证据：
+  参数子项没有 ContainerID，但精确实例根身份有效且匹配所选小米；共享宿主
+  不能依赖独占回退。真实身份读取与可选失败诊断现共用同一解析函数。
+- 基础流程：两只遥控连接，已登记并选择小米 → 另一只先按 → 小米按下/松开
+  → 两只同键重叠。只接受所选身份；另一只不能占候选、进入映射或终止旧手势。
+  来源无效保留明确失败状态，读取恢复后可再次核验，不要求循环重启服务。
+- 真实 Frida 隔离子进程验证两个独立 Device Parameters 句柄、各自父键、只读
+  权限/关闭与成功缓存；子项伪造所选 ID 不能覆盖其它设备的实例根身份。异常
+  路径、空段、截断键名、深层子项、拒绝打开、非法 GUID、查询异常及恢复均覆盖。
+  原实例根、选择变化、句柄复用、并发报告、独占兼容、真实系统映像和日志门禁复用。
+- 14 项定向及 98 项受影响检查全部通过（112 项、无跳过）；旧 HEAD f698dce
+  脚本在新增回归失败。相关模块为 test_hid_device_source/test_diagnostic_evidence、
+  test_frida_compat/test_hid_gadget_lifecycle/test_hid_copy_interception、
+  test_frida_hid_tap_runtime/test_hid_source_entry/test_remote_selection。
+  固定 .venv Python 3.12.10、UTF-8、PYTHONPATH=src、禁用真实输入，源码 dry-run 通过。
+- 证据 `%TEMP%/rc003-instance-source-89fe106bc14c40dd899e4bedd1d97192` 的
+  source-smoke.log、source-targeted-final.log、affected-tests.log、regression-before.log。
+  新测试包另登记交付结果。真机两只遥控共存、热重载和连续使用待用户验证；不把
+  隔离脚本成功当作真实升级成功，也不把本项当作远程语音问题已经解决。
+
+### CHECK-PROGRAM-LOG-001 通用前台与限时接收证据
+
+- 2026-09-13 检查点待实测。消费者：app 语音前后/尝试上下文、win32_input 语音
+  逐边沿、wetype_control_windows 异常上下文、diagnostic_trace 的输入变化时间线、
+  voice_hotkey_probe 只读快照，以及新独立接收端入口。
+- 基本流程：现有诊断开启 → 在任意程序触发 → 查看程序、窗口/焦点/HKL 变化
+  和键事件 → 关闭停止采集；接收端参数校验 → 明确限定键/时间/新文件 → 记录
+  并转交 → 自动卸钩退出。真实程序识别不限定 UU、浏览器或特定输入法。
+- `test_program_diagnostics` 覆盖跨程序与布局变化、采样限频/限时、并发动作、
+  未知/异常、真实自身进程名查询且不泄露路径、不查询文本、原生发送成功/失败及
+  日志失败保持输入行为、接收键过滤/未知来源、拒绝覆盖、真实入口 dry-run、
+  模拟钩子转交与卸钩。其它日志、应用接线、微信/豆包/按键/隐私共 421 项检查
+  成功（1 项既有跳过）；直接入口和旧探针另 100 项通过。并发观察修改后 20 项
+  定向通过，最终共覆盖 520 项通过、1 项跳过，非全项目检查。
+- 固定当前 .venv Python 3.12.10、UTF-8、PYTHONPATH=src；真实输入关闭，测试
+  使用临时文件、模拟系统 API 和仅输出计划的独立子进程。证据
+  `%TEMP%/rc003-program-diagnostics-3a6fa6a19f3744bab44e72b91d774fc9`：`affected-tests.log`、`entry-consumers.log`、
+  `timeline-final.log`、`source-smoke.log`。未更新 .36 ZIP、未安装真实钩子。
+- 人工待测：下一份包含此源码的包在不同前台程序下观察字段，必要时两端明确
+  开启限时接收采集，对照时钟与键序。HKL 相同不能证明 TSF 输入法未变；没有
+  接收到事件不能单独证明 UU 没发送；窗口/回调变化不等于气泡、开麦或上屏。
+
+### CHECK-DIAGNOSTIC-001 设备身份与语音失败证据
+
+- 2026-09-13：检查点待实测。目标是一次普通反馈尽量带齐所选/已登记设备摘要、
+  实际脚本/入口、身份读取层级、语音边沿确认及故障前后恢复证据，不代表根因已修复。
+- 最基本流程：开启原有诊断开关 → 原操作出现来源不明或语音失败 → 原日志目录
+  读取 trace/故障报告 → 服务重启后报告仍保留；关闭开关不继续采集。使用临时目录、
+  合成故障、实际异步 writer 和真实 Frida 独立子进程验证，无真实遥控或输入事件。
+- 初轮受影响范围 542 项，226 项应用初始化暴露漏导入，修复后应用 229 项检查
+  成功（1 项环境跳过）；后续多来源证据变化定向重跑 93 项通过。其余有效结果
+  复用，最终覆盖 541 项通过、1 项跳过。范围包括诊断、HID 拷贝/来源/入口、语音
+  按键/微信/豆包、应用接线、隐私及设备选择 QML；非全项目测试。
+- 新测试 `test_diagnostic_evidence` 覆盖跨 4 个会话保留最近 3 次、前后事件顺序、
+  报告损坏/不可写/大小上限、按下和松开成功/超时、诊断回调失败不影响输入、
+  宿主字段白名单、脚本未知/不同/相同、按来源限次和关闭不查询、只读实例父键
+  比较及真实 NtQueryKey；只终止自己创建的隔离测试子进程。
+- 证据 `%TEMP%/rc003-diagnostic-upgrade-44e68c0da7294551bf91e30f1df0fc8d` 中 `affected-tests.log`、`app-final.log`、
+  `hid-evidence-final.log`。待测：新包开启诊断、双遥控均连接且仅选择小米时复现，
+  如语音再次失败同时保留日志；不得把模拟来源通过写成双实体通过。
+
+## 真机验收队列
+
+### TEST-UI-001 语音设置界面与持久化
+
+- 前置：使用 `fix13`，先记下当前两种宿主快捷键和当前语音方式。
+- 步骤：确认连接页没有语音快捷键面板；进入按键映射页，分别录制两套不同
+  快捷键，在两种方式间来回切换并保存；关闭设置窗口后重新打开。
+- 预期：两套快捷键互不覆盖；麦克风卡显示当前方式和对应快捷键；重新打开后
+  当前方式及两套快捷键均与保存前一致。
+- 实际：待用户实测。
+- 状态：待实测。
+
+说明：本项保留 `fix13` 界面模型的历史验收入口；最新候选由下方
+`TEST-UI-002` 取代，不再要求在全局方式之间切换。
+
+### TEST-UI-002 统一按键语音动作与持久化（fix15 历史）
+
+- 前置：使用 `fix15`，记录当前两套语音快捷键和 13 键主/次映射。
+- 步骤：确认页面只有两套语音快捷键输入，没有全局模式按钮；临时设置
+  `上键 -> 普通动作` 并配置一个普通双击动作，再把主映射改成“按住型语音”；
+  同时设置 `麦克风键 -> Escape`，确认上键行的双击/长按控件不可用后保存并
+  重开；把上键切回普通动作并确认次级设置恢复；再尝试给麦克风键同时设置开关
+  型语音；最后把所有语音主映射改为普通动作并保存一次。
+- 预期：首次重开后两套快捷键和两行主映射保持不变，语音期间隐藏的普通次级
+  设置在切回普通动作后恢复；第二个语音主映射得到明确冲突提示且不会静默移动
+  绑定；语音动作不能录入双击/长按；零语音映射可以保存，且不会仅因未选择
+  语音输出端点失败。
+- 实际：待用户实测。
+- 状态：待实测。
+
+说明：本项记录任意实体键语音的实验界面；当前产品已撤下这条能力，由下方
+`TEST-UI-004` 取代。
+
+### TEST-UI-003 全局框架与三页职责
+
+- 前置：使用本批新候选；先记录当前设备、语音输出和按键映射，后台桥接可运行
+  也可不运行。Windows 显示缩放优先在 125% 或 150% 下测试一次。
+- 步骤：依次打开设备、按键、语音；确认设备页依次显示当前设备、按键接收、
+  遥控器服务和运行日志，语音页依次显示音频前置、语音程序和测试验证。用键盘 Tab
+  走完三页全部按钮，确认当前设备只有 RC003，页面不再出现 DJI Mic 2。修改一项
+  尚未应用的语音设置后回到设备页点击“启动”，最后关闭设置窗口。
+- 预期：顶部导航和正文不重叠、无横向滚动；窄窗口中焦点会自动滚动到可见位置，
+  末项继续 Tab 能回到顶部导航。设备页“启动”不保存刚才未应用的语音修改；启动后
+  显示真实阶段，只有运行状态确认设备连接后才显示“RC003 已连接”。原诊断结果在
+  对应业务行显示，不冒充自动授权；关闭设置窗口不结束后台服务。
+- 实际：待用户实测。
+- 状态：待实测。
+
+### TEST-UI-004 HOLD-only 语音界面与旧配置停用
+
+- 前置：使用本批新候选，先备份现有设置文件。
+- 步骤：打开语音页，确认只有一套“语音按键”，不存在松手补发选项；再到按键页
+  打开话筒键和任一普通键的编辑项；分别用旧开关型配置、非话筒键语音配置启动一次
+  设置窗口。
+- 预期：只有话筒键可选“按住说话”，普通键不出现语音动作；旧配置对应整行
+  显示停用提示，单击、双击和长按均不执行，重新选择普通动作或话筒键按住说话
+  并保存后恢复。重开设置后快捷键保持一致，旧松手补发字段已从配置移除。
+- 实际：自动模型、保存和 QML 离屏检查通过，当前候选待人工复测。
+- 状态：待实测。
+
+### TEST-UI-005 紧凑界面、语音程序与映射备注
+
+- 前置：使用包含 `CHECK-VOICE-024` 的测试版本；记录现有设备、输出端点、语音
+  按键和按键映射。先保持语音程序为“不管理”。
+- 步骤：在 `720x560` 与 `640x480` 窗口依次查看设备、按键、语音三页；在语音页
+  依次选择搜狗、微信和豆包，确认自动读取、普通白色“录入”按钮和输入框尾部刷新图标；
+  再选择自定义程序，分别测试普通启动和管理员启动。回到设备页启动服务，在服务运行时
+  更换一次语音程序。进入按键页，为普通键设置单击、双击、长按及备注，完成后关闭并重开。
+- 预期：默认无纵向滚动、无裁切和错连；等待设备时持续显示阶段、转圈和计时。
+  “不管理”不会启动外部程序；微信和豆包正常安装后可自动识别对应输入法，搜狗、微信
+  和豆包都能读取自身快捷键并保留录入兜底；不存在 Windows 语音输入/`Win+H` 产品项。
+  快捷键输入框在两种窗口下不少于 130 像素；程序缺失或 UAC 取消不影响服务。已有服务
+  不需重启即可应用新语音程序。卡片有备注时显示备注，无备注时显示快捷键；完成编辑后
+  卡片和连线不乱，重开后动作与备注均保留。语音动作下双击、长按不可执行。
+- 实际：源码自动检查与截图复核通过，待本地测试包和真实环境验证。
+- 状态：检查点待实测。
+
+### TEST-STARTUP-001 桥接未运行与冷启动就绪提示
+
+- 前置：使用最新候选，先从通知区域退出桥接，确认任务栏没有桥接图标。
+- 步骤：打开设置，分别查看设备页和按键页；在设备页点击“启动”后立刻
+  点击“检测真实按键”，观察状态变化；补充通道显示“已连接”后直接按一次要测
+  的按键，不要等待“已就绪”。随后逐一测试 13 键，最后连续完成 3 轮按住说话。
+- 预期：服务未运行时设备页显示未运行，按键页显示红色警告，明确话筒键不会由本
+  程序触发语音；
+  启动后提示首次可能等待约一分钟，检测不会在 15 秒提前超时；状态依次区分
+  Windows 通道已启动、补充通道连接中和 13 键均可测。就绪后每键一次响应，
+  语音产生识别文字且不再输入日期或时间。
+- 实际：2026-08-23 旧 `hold2` 日志确认桥接未运行阶段会漏入时间；桥接于
+  18:00:37 启动、补充通道于 18:01:23 就绪后按键恢复快速捕获，两轮语音为
+  有效信号。新提示和 60 秒等待的相关定向测试 172 项通过；完整 unittest
+  1157 项通过、7 项跳过，公开边界扫描 290 个文件通过。最新候选待人工复测。
+- 状态：修复检查点待真机复测。
+
+### TEST-STARTUP-002 桥接退出同步与补充通道第一次按键
+
+- 前置：使用包含 `BUG-026` 修复的新候选，启动桥接并从通知区域打开设置。
+- 步骤：保持设置窗口打开，从通知区域退出桥接；观察两页警告。随后在桥接未运行
+  时启动真实按键检测，看到补充通道“已连接”后只按一次返回键或音量键。另做一轮
+  仅补充通道的上键检测，并做一轮 60 秒不按键的超时检查。最后重新启动桥接，
+  测试 13 键和三轮按住说话。
+- 预期：外部退出后最迟两秒恢复红色警告；最近一次启动结果保留为历史文字；第一
+  次特殊键直接被捕获，不需要第二次；仅补充通道也能捕获上键；超时后检测停止且
+  可立即重新开始；桥接恢复后按键无明显延迟，语音不输入日期或时间。
+- 实际：自动测试通过，真实 RC003 待用户复测。
+- 状态：修复检查点待真机复测。
+
+### TEST-KEY-001 设置页逐键识别
+
+- 前置：`fix5` 桥接已运行且 RC003 已配对；从通知区域打开设置。桥接未
+  运行时仍可直接启动设置页的本地检测路径。
+- 步骤：依次点击“检测真实按键”，分别按电源、上、下、左、右、确定、
+  返回、主页、菜单、TV、音量加、音量减；每次记录界面显示的逻辑键。
+- 预期：12 个实体普通键均能被识别并定位高亮；桥接运行时该次按键由后台
+  回传，且不会执行已配置映射。
+- 实际：`fix4` 从托盘打开的设置页无法检测；`fix5` 改为后台一次性 IPC。
+  后续 `fix8` 异机确认全部普通按键均可在映射页识别；`fix10` 本机进一步
+  确认包含麦克风键在内的 13 个按钮全部可识别。麦克风检测时误开启语音的
+  副作用单独记录在 `CHECK-KEY-002`，不影响本项“能否识别”的结论。
+- 状态：通过。
+
+2026-08-20 根因复核：桥接已独占 HID tap 端口并吞掉原始键，托盘设置页
+作为第二个进程不能再启动同一 tap，也看不到被吞掉的 Raw Input。`fix5`
+不再重复监听，而是让资源所有者捕获并回传下一键。
+
+### TEST-KEY-002 按键映射边沿与重复
+
+- 前置：完成 `TEST-KEY-001`，保存容易观察的临时映射并启动桥接。
+- 步骤：每个普通键短按一次，再对方向键和音量键做按住重复测试。
+- 预期：短按只执行一次；按住仅对允许重复的动作产生受控重复；释放后
+  不继续触发；应用日志中 HID tap 已收到真实 IO 后才出现 ready。
+- 实际：用户确认普通映射在记事本中有效。把上键映射为 `Shift+3` 后长按时，
+  光标会被原始上方向键拉回行首；日志确认第一次边沿被拦截，但 Windows 后续
+  每约 60 至 80 毫秒产生的重复方向键全部漏出。`BUG-020` 已改为按设备侧
+  按住状态拦截整段重复，并在 Windows 抬起后恢复。其他键仍缺系统化长按复测。
+- 状态：修复检查点待真机复测。
+
+### TEST-KEY-003 麦克风键普通映射
+
+- 前置：使用 `fix15`，把麦克风键主映射临时改为容易观察的普通动作，并确保
+  其他按键没有语音主映射。
+- 步骤：分别测试麦克风键单击、双击和长按，再执行一次“检测真实按键”。
+- 预期：只执行配置的普通动作，不发送语音快捷键，不进入持续 `MIC_OPEN`，
+  原生 F5 不泄漏到记事本；检测状态只定位麦克风键且不执行映射。
+- 实际：待用户实测。
+- 状态：待实测。
+
+### TEST-VOICE-001 CABLE Input 选择与预检
+
+- 前置：VB-CABLE 已安装并按驱动要求完成重启。
+- 步骤：在“语音”页的输出端点下拉中选择检测到的 CABLE Input，等待预检结束；分别验证
+  选择推荐端点和其它可用端点，再重开设置检查保存的 host API。
+- 预期：优先保存 `Windows WASAPI`；没有 WASAPI 时允许
+  `Windows DirectSound`；不会保存 `Windows WDM-KS`；保存前预检成功。保存后本页自动
+  刷新为最新诊断，不需要再次点“应用”或去设备页“重新检查”；当前已是推荐端点时不显示
+  “选推荐端点”，选择其它端点时该按钮只作为返回推荐值的快捷入口。
+- 实际：待用户实测。
+- 状态：待实测。
+
+2026-08-20 首次尝试说明：配置仍为
+`Output (VB-Audio Point) / Windows WDM-KS`，日志继续报告阻塞播放 API
+不支持并产生 `frames=0 samples=0`。
+这验证了旧配置问题仍在生效，不是最新候选的 WASAPI 语音结果。
+
+### TEST-VOICE-002 宿主按住说话
+
+- 前置：宿主语音功能已设置自己的快捷键；软件中生命周期选“按住说话”，
+  快捷键录制为宿主实际使用的组合键；完成 `TEST-VOICE-001`。
+- 步骤：按住 RC003 麦克风键说一句固定测试短语，然后释放。
+- 预期：按下后宿主开始听写，讲话产生可见识别文本，释放后结束；日志的
+  PCM 汇总 `frames` 与 `samples` 均大于零。
+- 实际：`fix4` 已记录约 2.4 秒非零 PCM，汇总结果为 `signal`，宿主产生
+  可见识别文字；当时按下开始、抬起结束符合预期。2026-08-22 异机日志又确认
+  一个后续缺口：实体 F5 已抬起但本次没有 `AudioStopped` 时，旧 HOLD 状态会
+  保持 active，并可能让宿主修饰键持续按下。“Alt 键锁死问题”已改为物理抬起立即
+  KEY_UP、`AudioStopped` 仅作兜底。新一轮真机日志进一步证明直接 HID up 比
+  legacy F5 up 早约 1.85 秒；现改为直接 HID up 立即释放，不再等待迟到 F5。
+  2026-08-28 防锁日志进一步确认 22 轮 RC003 右 Alt 异常共有 27 条带私有标记的
+  DOWN、0 条同标记 UP，其中 19 轮由外部程序解除。第四轮修复已让成功 DOWN 立即
+  登记释放所有权，并在断连、退出和事件代次切换时由 cleanup 补 UP；完整 unittest
+  1536 项通过、7 项跳过。2026-08-30 两机日志进一步稳定确认：`AudioStopped`
+  先结束旧轮后，迟到 Raw Input down 会被误认成新按下并再次发送宿主 DOWN；第五轮
+  已把仍处于按下状态的 F5 只用于锁住旧手势，迟到 HID 只能并入旧轮，F5 本身不发送
+  或释放宿主快捷键。
+- 状态：第五轮修复检查点待真机复测。
+
+### TEST-VOICE-004 宿主按一下切换持续语音
+
+- 前置：仅在执行 `CHECK-VOICE-011` 的实验探针时启用；宿主快捷键本身先用
+  键盘确认可点按开启/结束。
+- 步骤：必须记录实体 `START_SEARCH`、主机 `MIC_OPEN`、开始 reason、
+  stream id、PCM 数量和停止 reason；不能只观察宿主窗口。
+- 通过：第一次松开后持续得到非零 PCM，第二次按下或 `MIC_CLOSE` 才结束。
+- 失败：只有 `AudioStarted` 但 PCM 为零，或仍在第一次松开时停止。
+- 实际：现有 HTT 后续开策略多轮真机仍无持续 PCM；上游同型号主动开麦实验
+  也为零音频。最后的严格 On-request 真机探针完成协商后，在 18 秒观察窗口内
+  收到 `START_SEARCH=0`、`AudioStarted=0`、PCM 样本 `=0`，结果为
+  `no_start_search`。RC003 短按话筒键没有进入开关型持续传声路径。
+- 状态：未通过并已从产品运行路径、设置界面和候选专项程序中撤下。本文保留
+  作为历史失败证据，不再列入候选通过门槛。
+
+### TEST-VOICE-005 按住说话与标准松手结束
+
+- 前置：只有实体话筒键设置为“按住说话”；先用实体键盘确认同一宿主快捷键
+  支持按下听写、抬起结束，并完成 `TEST-VOICE-001`。
+- 步骤：连续完成 10 轮按住说话，其中至少 3 轮按住 5 至 10 秒；每次松手后立即
+  输入单个字母并操作鼠标，再包含一次快速开始下一轮和一次宿主润色模式。测试前
+  可在旧配置中保留 `voice_release_finish_tap_enabled=true`，启动后再检查该字段
+  是否已被清理。
+- 预期：只在实体话筒键按住期间得到非零语音数据；松手不残留当前快捷键的
+  `Ctrl`、`Alt`、`F8` 或旧配置使用的右侧 Alt，不写入日期时间，也不发生额外
+  一次快捷键点按；后续单个字母不能变成连续输入，鼠标也不能表现为按钮或动作
+  持续按住。宿主窗口是否随正常抬键关闭应与实体键盘测试一致，不由程序猜测或
+  二次切换。
+- 实际：自动时序、跨来源迟到顺序与旧字段迁移覆盖通过，当前源码待真机复测。
+- 状态：待实测。
+
+### TEST-VOICE-007 UU 远程按住边沿稳定性与旧配置回归
+
+- 前置：备份现有 `config.json`；确认被控电脑的可编辑文本框确实有输入光标，
+  并确认搜狗仍选择“按着说（按住快捷键说话，松手结束）”。完成
+  `TEST-VOICE-001`，并确认 UU 远程连接稳定。
+- 步骤：
+  1. 先用一份已保存为右侧 Alt 或自定义组合键的旧配置启动，确认升级后界面仍
+     显示原值；
+  2. 再用隔离的新配置目录启动，或点击“恢复按键与语音默认”，确认界面显示
+     右侧 Alt；
+  3. 控制端实体键盘在 UU 窗口聚焦时，按住与搜狗一致的快捷键至少 2 秒后抬起，
+     对照被控端搜狗日志中的 KEY_DOWN/KEY_UP 时间；
+  4. 再按住遥控器语音键说话后释放，连续重复至少 10 轮，其中包含一次快速开始
+     下一轮；对照控制端 `app.log` 的按键、`START_SEARCH`、快捷键下发和 PCM 记录；
+  5. 每轮观察窗口系统菜单、目标语音窗口、识别文字、PCM 汇总和松手后的修饰键
+     状态。
+- 预期：旧配置值不变；新配置不误写三键默认；经 UU 的实体键盘和遥控器路径都
+  能保持与实际按住时长相符的语音会话，不打开 Windows 窗口
+  左上角系统菜单；松手后 `F8`、`Alt`、`Ctrl` 全部释放，无粘键、额外点按或
+  日期时间漏出，PCM `frames` 与 `samples` 大于零。
+- 反例记录：若实体键盘组合可用但遥控器路径失败，记录目标软件名称、是否拒绝
+  injected 事件及 UU 传输表现；若实体键盘本身也失败，先归为宿主快捷键占用或
+  配置问题，不能算 Remote Mic 通过或失败。
+- 实际：待用户真机验收。
+- 状态：待实测。
+
+### TEST-VOICE-008 VB-CABLE 本地通道主动测试
+
+- 前置：安装 VB-CABLE 并重启 Windows；在语音页应用
+  `CABLE Input — Windows WASAPI`（无 WASAPI 时用 DirectSound），并知悉正在监听
+  `CABLE Output` 的其它程序也可能收到约一秒合成信号。
+- 步骤：在语音页点击“测试通道”；分别记录服务未运行时正常通过、服务运行时确认
+  临时退出并自动恢复、取消确认、拔除或禁用任一端点后的失败文案。通过后用实体
+  话筒键验证非零 PCM 和目标输入法文字上屏。
+- 预期：只有扫频确实从当前 `CABLE Input` 到达同 host API 的唯一
+  `CABLE Output`，且无溢出/欠载时显示通过；测试不修改默认设备、不保存 PCM。
+  原服务正常恢复；恢复失败时明确提示并提供重新启动入口。本项通过仍不能替代
+  RC003、宿主快捷键和文字上屏验收。
+- 实际：待用户在真实 VB-CABLE 驱动上验收并校准阈值。
+- 状态：待实测。
+
+### TEST-VOICE-009 微信输入法直接语音控制
+
+- 前置：微信输入法已安装并加入 Windows 输入法列表；完成 `TEST-VOICE-001` 和
+  `TEST-VOICE-008`。微信输入法自身的语音快捷键必须为按住型；在MoteDeck中选择微信后确认
+  已自动读取当前组合键，读取失败时再手动录入。开始前可保持搜狗或其它输入法为当前输入法。
+- 步骤：把光标放入可编辑输入框，用 RC003 按住话筒键完整说一句话再松手，连续重复
+  10 轮，其中至少 3 轮先切到其它输入法形成冷启动，一轮快速开始下一句；再在语音过程中
+  断开蓝牙、停止服务和完全退出各一次。随后在本机作为主控端打开远程控制窗口，把光标放入
+  被控电脑的远程输入框，再重复 5 轮。另在微信设置中更换一次按住型快捷键，回到MoteDeck后
+  点击刷新图标，确认输入框立即更新并保存，再重复一轮；随后手动录入另一个值，重新进入
+  页面确认不会被自动读取覆盖，最后主动刷新恢复微信当前值。对照日志确认每轮使用
+  `wetype_hotkey`，运行链路不再出现状态栏按钮查找、固定坐标点击或气泡可见门槛。
+- 预期：热启动直接发送MoteDeck当前保存的组合键；冷启动先在独立 STA 动态找到并激活本机
+  WeType，约 50 毫秒后再发送。STA 激活或查询失败时记录错误，但仍尝试发送用户保存的
+  快捷键；后台超时任务仍不能迟到切换。各按下边沿间隔约 80 毫秒，松手时反向释放本次
+  实际按下的同一组键。发送后用麦克风 `LastUsedTimeStart` 做尽力确认；首次未确认时按
+  2、3、5 秒阶梯循环输入法并重发，最终仍未确认只记录失败，不在用户仍按住话筒键时释放
+  快捷键或停止音频转发。首帧真实 PCM 到达后才能显示“正在
+  接收音频”。断连、停止服务、完全退出和 120 秒保险均能结束当前会话；模拟一次首次
+  KEY_UP 失败时只存在一个退避重试，下一会话开始前必须清掉欠松，不残留组合键或 F5。
+  微信收到非零音频并把完整文字写入本地及远程目标输入框；使用后当前输入法可以保持为
+  WeType。切换到搜狗后仍使用搜狗自己的按住型快捷键。
+- 已有结果：2026-09-08 `candidate.26` 日志已确认本地窗口 4 轮成功、远程窗口 8 轮因旧
+  状态栏按钮隐藏而失败；这只锁定旧实现根因。2026-09-10 当前源码完成上述容错修正，输入法
+  控制与应用接线定向测试 68 项通过、1 项按平台条件跳过；尚未生成对应测试包，不能替代
+  本地和远程真实 RC003 验收。
+- 状态：检查点待实测。
+
+### TEST-VOICE-010 豆包输入法按住说话与快捷键刷新
+
+#### 2026-10-10 豆包 0.9.2.7 适配（源码检查点待实测）
+
+- 范围与基线：正式主目录 `main` 的 `df08960`，当前源码 `1.0.88-candidate.88`，仅修复豆包版本升级造成的语音启动及结束校验拒绝。消费者为小米按住、谷歌按住和谷歌开关；已有微信并行修复独立保留，本次不改其文件或结论。
+- 版本与原生依据（2026-10-10）：本机更新元数据、注册表 `VersionDir`、安装清单及 `version.dat` 一致指向 0.9.2.7。直接读取本版 `SetWindowsHookExW` 注册处及异常函数边界，确认回调布局为 `(0x7829E0, 0x782B12, 0x782B18, 0x7837DA, 0x38)`；两处门字节为 `FF 15 40 E8 95 00 E9 E9 0C 00 00`、`80 7C 24 38 00 75 16`。新增精确构建白名单，不按版本字符串猜地址，保留旧布局及在安装任何 Interceptor 前核对全部门字节的规则。
+- 实际 SHA-256：`ImeService.exe` 为 `38742f838d58b6e5b87a08564c6917da1d75ac6b81ec6ee3388ffaaac7c9f3ad`；`rpc.dll` 为 `e3ee88527bf6bd38156e86b93413ca004a829809ad51f064a42db44814e9a5d5`；`tsf-oime-core.dll` 为 `ef827968a374de491529f65eade36d58c7eab78933ebe8508bd2fed8563290c0`。绑定结束接口时仍逐次核实同目录三文件，覆盖所有新旧版本交叉组合的拒绝，未放宽未知构建或缺文件保护。
+- 结束参数依据：本版自己的停止按钮在 `0x7D5E70` 传消息 `0x3E9`，在 `0x7D5E75` 传 `wParam=1`，随后调用 `0x7ED430`；对应服务分支仍包含首 800 毫秒保护及来源 1 的正常结束分支。本版采用 1，0.9.0.0 保持 0，0.9.1.22 保持 1；不新增补发或等待，不改变已绑定采集身份与一次请求责任。按住型通过既有 UP 结束，谷歌开关型通过已有受限子进程正常结束。
+- 自动验证：固定本工作区 `.venv` Python 3.12.10、UTF-8、`-B` 和 `PYTHONPATH=src`，受影响范围去重 **348 项通过**，包含豆包 RPC/布局/资源清理、小米会话、谷歌豆包按住/开关/取消/采集替换/失败、输入法目标、快捷键读取、共用物理化及发送 ABI；最终定向回归 41 项通过。未改业务发送、音频或 UI；未知哈希、混合布局、修改后的门字节、交叉三模块与原非零返回保护继续有效。
+- 隔离原生验证：直接核对已安装文件的门字节，实际加载新版 `rpc.dll`，对唯一不存在的测试管道调用五参数接口，返回非零 `305397761`，未当作成功。生产生成脚本在临时隐藏子进程的微型回调中正常加载，按本机按住 `rctrl+l`、开关 `rctrl+o` 分别验证共 16 个标记 DOWN/UP、正常决策门防串、修饰键转发及无关/实体/无序号/负 nCode 保护场景；修改门字节时安装前拒绝，脚本、会话和子进程已清理。该夹具不等于完整输入法，未证明早转发路径的全部真实语义或录音/识别成功；初期夹具错误与外部调用限制已隔离登记，不据此修改产品或宣称新根因。
+- 证据与人工边界：本轮开发证据在 `%TEMP%/RemoteMic-doubao-0927-20261010`，包含注册/回调/停止分支反汇编、`native_probe.py`、`native-result.json`、`probe-limitations.txt`、定向结果和独立任务补丁；属于临时开发证据，不纳入 Git 或发布。0.9.1.22 与 0.9.2.7 本机实际三模块通过；0.9.0.0 的服务 EXE 已不在残留目录，旧版仅复用精确构建回归，不宣称本轮旧版实机通过。未向在用输入法附加、发送桌面按键、启动录音或修改真实配置。
+- 后续实测：加载含本修复的源码或新产物后，在真实文字框核对小米按住/松手、谷歌按住/松手、谷歌开关开始/结束和刚开始即结束，确认气泡、遥控器声音、文字上屏、无串键及退出清理。仅代码与隔离检查通过，`TEST-VOICE-010` 的人工队列继续有效；现有 `.87`、`.88` ZIP 不包含本修复，本次未变更版本、打包、推送或发布。因共享工作区另一写入任务仍在进行，按并发保护仅保存独立补丁，暂不操作真实 index 和提交。
+
+#### 2026-10-01 豆包 0.9.1.22 续接核验（.86 本地包，遥控器与文字上屏待实测）
+
+- 本轮范围：本机更新后的豆包快捷键读取、设置入口、共享语音物理化钩子与正常结束 RPC；消费者为 RC003、按住模式和开关模式。与 9 月 29 日 B 款微信日志问题分别处理，未把豆包版本升级当成原微信久置故障的根因。
+- 已确认断点：实际运行的 `ImeService.exe` 来自 `versions\v0.9.1.22`。原源码只验证过 0.9.0.0；新版在 `DoubaoPhysicalizer.start` 被归为 `unsupported_version`，语音发送前退出；结束 RPC 的三模块校验也拒绝新版。这两处需要适配，快捷键读取及设置入口本身未发现新版合同变化。
+- 快捷键核验：新版设置界面与当前用户配置均为按住 `rctrl+l`（keyCode 76）、开关 `rctrl+o`（keyCode 79），modifierFlags 514；语音快捷键启用，未报冲突。新旧 `ShortcutComboModel`、`ShortcutCaptureSession`、`LocalShortcutValidator` 及语音设置读写反编译一致；旧 mode 字段为空不影响当前两字段读取。只读 TSF 枚举确认豆包 profile 已安装且启用；生产设置目标解析到 `bootstrap\SettingsLauncher.exe`，实际打开 `v0.9.1.22\DoubaoImeSettings.exe` 设置窗口并核对显示值。未更改用户快捷键或豆包麦克风选择；MoteDeck手动值、主动刷新及不写豆包私有配置的操作合同沿用原实现。
+- 挂钩核验：按新版 `SetWindowsHookExW(WH_KEYBOARD_LL)` 的回调地址、异常函数边界及转发分支定位，布局为 `(0x782D80, 0x782EB2, 0x782EB8, 0x783B7A, 0x38)`；两处内存签名分别为 `FF 15 D0 F4 95 00 E9 E9 0C 00 00`、`80 7C 24 38 00 75 16`。旧版布局与字节保持原值；完整五项布局选取本版签名，所有字节在安装任何 Interceptor 前检查。未知、混合布局及内存不符仍拒绝，未仅按版本字符串放行。
+- 新版模块 SHA-256：`ImeService.exe` 为 `94ace7e504e6aa70c15095d5219604aee93e17247eb85429a046c7a4fdb95e90`；`rpc.dll` 为 `0be0cb35d864d06b2c8b5267d9f0669a1383493f557a45c6a1ebbfa203e85e53`；`tsf-oime-core.dll` 为 `8544bfb87d8d2cc847b13e2ccc9bbd2220b20bceafdd1fc88ad5eaff5a28bb02`。停止接口每次绑定重核同目录的三文件对应关系，旧版三哈希组合保留；交叉版本、缺文件和未知哈希仍拒绝。新版 `RpcPipe_SimpleMessageEx` 外部 ABI 仍为五参数、`c_int32` 状态；独立不存在管道返回非零，异常与成功可区分，未将非零状态视为录音结束。
+- 追加复现与修法：首次普通开关录音后说话阶段等待 1 秒，再发送一次 `0x3E9,wParam=0`，约 250 毫秒结束；但刚观察到录音即发送同样请求，10 秒后仍活动，退出清理时后续停止才结束，不能算一次结束成功。新版服务 `slot_SimpleMessage` 的 `0x7EEFDE`～`0x7EF12B` 分支在部分停止来源、触发后的 800 毫秒内抑制普通请求；`wParam=1` 进入正常结束分支。自己的停止按钮在 `0x7D6130` 传 `0x3E9`、`0x7D6135` 传 `wParam=1`，随后调用该槽。新版该消息内部标签为 `TOGGLE`，不是以源码旧常量名推断枚举含义；同来源无活动录音时按停止意图处理为空操作。修复让已核实新版三文件组合传 1，旧版保持 0；既有会话身份校验和一次发送责任不变，不增加延时、重复快捷键或盲目补发停止。
+- 修后原生核验：在实际记事本新建空白标签页，沿用生产 Raw Input 安全跟踪、应用语音钩子、豆包钩子及发键函数，读取当前配置并激活豆包。开关型启动后立即请求结束，只发送一次，约 266 毫秒录音结束；两秒后按住型启动，保持约 0.8 秒后松键，录音结束。配置键的标记边沿、正常决策分支及字母防串处理均进入新版原生回调；两组钩子及 Raw Input 清理，无残留按键，记事本仍为 0 字。测试标签页关闭，用户原有未保存标签页保留；最终无活动豆包录音。初始探针缺 Raw 跟踪，以及临时 Qt 编辑宿主未成功启动的结果均保留为探针限制，未据此更改产品或宣称所有宿主已通过。
+- 证据与边界：开发机原始结果、修前快速失败和修后结果分别保存在 `%TEMP%\RemoteMic-doubao-09122-20261001` 的 `normal-result.json`、`quick-failure-result.json`、`result.json`，同目录保留探针及构建、定向复测、冻结、包装日志；这些是本轮产生的开发证据，不属于原用户 ZIP。受影响范围 136 项通过，随后新增新版停止参数绑定回归的豆包 39 项通过。完整检查及本地包结果见“1.0.86 本地测试包”。实际录音使用现有 CABLE 虚拟麦克风及静音测试，未验证实体遥控器 PCM、识别文字上屏、长期久置或其它电脑；原人工步骤和状态继续有效。
+
+#### 原人工队列（继续有效）
+
+- 前置：豆包输入法已正常安装并加入 Windows 输入法列表；豆包语音输入设备已选择
+  `CABLE Output`，按住型语音快捷键在豆包中可用。MoteDeck“语音程序”选择“豆包输入法”，
+  应自动识别安装状态、设置入口和当前快捷键，且不显示管理员启动或随服务启动选项。
+- 步骤：在记事本可编辑区域按住 RC003 话筒键说话并松开，连续 10 轮，其中至少 3 轮从
+  其它输入法冷切换，一轮快速开始下一句；再分别在说话时断开蓝牙、停止服务和完全退出。
+  随后在豆包设置中更换按住型快捷键，回到MoteDeck后点击刷新图标，确认输入框立即更新并
+  保存，再重复一轮；手动录入另一个值后重新进入页面，确认自动读取不会覆盖，主动刷新后
+  才恢复豆包当前值。刷新过程中再检查录入、保存、说话和收尾状态下按钮均不可用。
+- 预期：每轮先激活豆包输入法，再按下MoteDeck保存的同一组合键；松手、断连、停止服务、
+  完全退出和 120 秒保险均释放本次实际按下的键。外部改键后无需重新选择下拉项，点击刷新
+  即从下一次语音生效；MoteDeck不改写豆包私有配置，也不把豆包交给 Windows 管理或当普通
+  程序启动。右 Alt 作为豆包快捷键时不被微信专用物理化入口拦截；STA 超时后不迟到切换。
+  每轮均有非零 PCM 和完整文字上屏。
+- 已有结果：2026-09-09 本机只读读取到豆包按住型快捷键为右 Alt，安装、运行和设置入口
+  检测正常。2026-09-10 新增独立 Interception 设备层右 Alt 探针；本机使用 Axonkey DLL
+  只读枚举时无法创建驱动上下文，未发送按键、未安装驱动，因此豆包设备层路线仍待实测。
+  自动测试不能替代 RC003、VB-CABLE、豆包识别和文字上屏验收。
+- 状态：检查点待实测。
+
+### TEST-VOICE-006 非麦克风键启动语音的硬件可行性
+
+- 前置：使用 `fix15`，把麦克风键改为普通动作，把上键主映射设为“按住型
+  语音”或“开关型语音”，并填写对应宿主快捷键。
+- 步骤：按映射后的上键启动语音并讲话，观察日志中的 `MIC_OPEN`、
+  `AudioStarted`、PCM `frames/samples` 和识别文字；随后按所选生命周期结束。
+- 预期：不按实体麦克风键也能得到持续非零 PCM 和可见识别文字，结束后音频、
+  快捷键与按键状态全部释放。若只有宿主窗口被唤起而没有持续 PCM，应记录为
+  RC003 固件/协议能力边界，不能宣称“任意按键语音”已通过。
+- 实际：用户已反复确认普通按钮可以唤起宿主快捷键但没有遥控器语音；同型号
+  上游 Power 主动 `MIC_OPEN` 和本地 On-request-only 直接开麦都只得到 stream 0
+  开始控制、没有 PCM。普通按钮不会产生实体话筒键的 `START_SEARCH`，当前
+  RC003 不能把普通按钮产品化为遥控器语音入口。
+- 状态：RC003 遥控器音频路径未通过，产品已移除非话筒键语音动作。本节只
+  保留历史边界；其他按钮仍可配置普通宿主快捷键，若宿主使用电脑自身麦克风
+  则属于另一条链路。
+
+### TEST-KEY-004 连续动作与自定义组合键
+
+- 前置：`TEST-KEY-001` 通过，记事本或另一个容易观察输入的编辑框获得焦点。
+- 步骤：
+  1. 上键保持“方向上”，持续按住 2 秒再松开；
+  2. 上键改为 `Shift+3`，分别短按和持续按住 2 秒；
+  3. 返回键和音量加减各持续按住 2 秒。
+- 预期：方向、退格和音量连续执行并在松手后立即停止；`Shift+3` 无论短按或
+  长按都只产生一次 `#`，不回到行首、不持续输入、不残留 Shift。
+- 实际：自动边界通过，当前候选待真机复测。
+- 状态：待实测。
+
+### TEST-VOICE-003 断连、重连与休眠恢复
+
+- 前置：`TEST-VOICE-002` 通过。
+- 步骤：先让遥控器离开蓝牙范围，看到设备页显示“等待连接”和“立即重连”后让遥控器
+  回到范围，立即点击一次按钮，并尝试快速重复点击；连接恢复后重复一轮语音。再执行电脑
+  休眠和唤醒，分别验证自动恢复及点击“立即重连”恢复。最后连续执行微信语音或其它慢按键
+  操作至少 10 分钟，期间穿插方向、返回和音量键。
+- 预期：按钮点击后显示“连接中…/重连中”，跳过当前退避等待且不会重启服务或并发连接；
+  连接成功后界面及时恢复“已连接”。快捷键无卡住状态，语音仍有非零 PCM 并可识别；日志
+  不出现 `gadget_intercept_lease_expired`，管理员按键状态保持可用。
+- 实际：自动监督器、桥接、控制器和真实离屏 QML 检查通过，真实 RC003 待用户实测。
+- 状态：待实测。
+
+### TEST-HOST-001 搜狗语音向 Codex 输入框提交文字
+
+- 前置：记事本中已经确认同一语音链可识别并上屏。
+- 已确认原因：2026-08-24 只读进程令牌核实显示，当前 Codex/ChatGPT 及其父
+  进程为高完整性级别；搜狗语音主进程为中完整性级别且 `UIAccess=0`，记事本
+  为中完整性级别。搜狗 `TextInputWorker.js` 对权限更高的前台窗口返回
+  `PERMISSION_ELEVATION_REQUIRED` 并停止文字输入。
+- 步骤：退出管理员权限 Codex，并从普通权限入口重新启动，不能由管理员权限的
+  Remote Mic 桥接或其它管理员程序代为启动；让输入框保持焦点，先用实体键盘
+  触发同一搜狗语音快捷键，成功后再用 RC003 重复一轮。
+- 预期：普通权限 Codex 与搜狗权限相同，键盘和 RC003 两条路径都能开启语音、
+  接收同一 PCM 并提交文字。若键盘成功而 RC003 失败，再单独检查本程序焦点
+  时序；不能把管理员权限 Codex 下的现象算作 Remote Mic PCM 失败。
+- 实际：权限差异与搜狗拒绝分支已确认；普通权限 Codex 尚未人工复测。
+- 状态：原因已确认，检查点待实测。
+
+### 2026-08-25 异机按键与语音修复检查点
+
+- 异机晚间日志确认旧冻结包没有携带 Frida Gadget，因此 HID tap 不可用，返回键、
+  音量键等仅靠 Raw Input 不能完整覆盖；这不是按键映射配置缺失。完整冻结构建现已
+  强制获取并再次校验固定 Gadget，缺失或哈希不符时直接失败。
+- 同一日志还确认 tap 不可用时存在一条语音卡死时序：`AudioStopped` 后迟到的
+  Raw Input 话筒 down 会留下 `hid` 来源，而 legacy F5 up 只清理自身来源，后续
+  语音会话一直被旧手势状态阻挡。现已让该 F5 up 在无 tap 时清理同一次按压残留，
+  不改变正常直接 HID tap 的仲裁路径。
+- 自动验证：公开边界扫描 364 个文件；完整 unittest 1240 项通过、7 项按平台或
+  安全条件跳过；PyInstaller、冻结 `--dry-run` 和两项第三方资产哈希门禁通过。
+- 本地测试包为
+  `RemoteMicRC003-0.1.0-localtest-20260825-audio-hid-fix1-portable.zip`，SHA-256 为
+  `C8CEFBDF258328B917E61DA905E6C1D0F5D8CDA5C0CBD6B1D7954C8FDA17C02E`；包内 EXE
+  SHA-256 为 `0ED8002B7AD72A874D41E86C9E4628BD76AF76D8B1B806794B8FE79EA9690B88`，
+  Gadget SHA-256 为 `B566D70189B6D551AD8F4E0BEA24DE08A3D4C0F559BB35B2BDB67D45182240C2`。
+  目录与 ZIP 均为 2073 个文件，零缺失、零新增、零内容差异。
+- 状态：检查点待实测。另一台电脑需要重新完成 13 键逐键识别与映射，并连续完成
+  10 轮按住说话，确认每轮都有非零 PCM、实际端点日志、识别文字和完整松手收尾。
+
+### 2026-08-25 桥接启动反馈与映射保存稳定性检查点
+
+- “保存并启动桥接”不再在设置窗口线程内执行约 1.5 秒的同步等待。设置页现在按
+  “保存设置 -> 启动桥接 -> 等待 RC003 连接”推进，显示旋转状态和已等待时间；
+  桥接进程通过原子运行状态文件报告“等待设备”或“已经连接”，界面明确区分进程
+  已启动与 RC003 已连接。状态文件只含阶段、进程号和更新时间，退出清理按进程号
+  防止旧进程删除新进程状态。
+- “保存映射”不再重置 13 行模型。卡片、遥控器热点和选中状态保持原对象，卡片、
+  热点、图片和容器的几何变化统一在布局稳定后重绘连线；全局状态栏固定占位，保存
+  提示出现或消失不会再改变映射区高度。
+- 等价可视验证使用真实 QML 窗口、真实编辑和“保存映射”点击。保存前后映射数据、
+  13 张卡片、13 个热点、13 个连线画布、遥控器框、选中的话筒键及整块映射区像素
+  完全一致；两次 PNG 的 SHA-256 均为
+  `1A99753167DFA4E38BD475F5649EC9B40897454C443B76D8F8C7150210E43E7E`。
+- 自动验证：相关 290 项通过、1 项按平台条件跳过；公开边界扫描 368 个文件通过；
+  完整 unittest 1254 项通过、7 项按平台或安全条件跳过；`git diff --check` 通过。
+- 本轮未制作新的冻结目录或 ZIP。此前异机按键与语音修复包不包含本轮新增的启动
+  反馈和映射保存稳定性修改；如需在另一台电脑同时验证本轮界面行为，需要后续明确
+  制作新的本地测试包。
+- 状态：检查点待实测。真实设备仍需确认启动阶段能持续更新并最终显示 RC003 已连接，
+  再完成 13 键逐键识别和连续 10 轮按住说话。
+
+### 2026-08-26 合并界面本地测试包检查点
+
+- 打包前完整复核发现并修正语音程序管理缺口：自定义 `.lnk` 现在通过 Windows
+  Shell Link 接口解析真实目标程序，运行状态按目标完整路径判断；不同目录的同名
+  `.exe` 不再误报为已运行。无法解析目标的快捷方式会安全停用，不影响桥接。
+- 定向验证包含语音程序与 Qt 设置共 186 项通过，语音程序最终 20 项通过；另用
+  本机真实开始菜单快捷方式确认 `.lnk` 能解析目标并识别为运行中。
+- 来源提交为 `9ae70b9`。从该干净提交执行正式构建门禁：公开边界扫描 277 个文件，
+  完整 unittest 1330 项通过、7 项按平台条件跳过；VB-CABLE 与 Frida Gadget 固定
+  资源校验、PyInstaller 和冻结程序 `--dry-run` 全部通过。
+- 非发布本地测试包为
+  `RemoteMicRC003-0.1.0-localtest-20260826-ui-voice-audio1-portable.zip`，共 2086 个
+  文件，SHA-256 为
+  `6916325D31D68FF4FB269BD8BF380F5BE9C80849D6D12A7C89092CAC6579B3B9`；包内 EXE
+  SHA-256 为 `ED6ADD695C58014702F8E0C497792FA19343164511EC42EB060D8CA00C6B7C1F`。
+  ZIP 可正常打开，只有一个预期顶层目录，包内 EXE 与复制目录一致。
+- 状态：未签名本地测试包，检查点待实测，不是候选或发布包。仍需实测四页界面、
+  桥接阶段、13 键映射、连续按住说话、VB-CABLE、输入法文字上屏和实际语音程序。
+
+### 2026-08-27 DJI 入口收窄与微信输入法自动识别检查点
+
+- 当前设备下拉只保留 RC003；旧 DJI 配置打开时在内存中回退 RC003，不自动写盘。
+  自动诊断从 7 项变为 6 项，不再显示或运行 DJI Mic 2 录音输入检查；底层 DJI
+  设备档案、端点识别函数和兼容分支仍保留。
+- 微信输入法加入语音程序选项，从运行进程、卸载注册信息、开始菜单和标准安装目录
+  自动识别，不要求用户指定路径；由 Windows 管理，不随桥接强行启动，也不显示
+  管理员启动。
+- 自动结果：语音程序与语音程序 QML 25 项通过；Windows 诊断 117 项运行，115 项
+  通过、2 项按平台条件跳过；Qt 设置 167 项通过。`py_compile`、真实 QML 探针和
+  `git diff --check` 通过。本机只读检查识别到微信输入法并确认后台进程运行。
+- 状态：检查点待实测。仍需用户在设置窗口确认设备下拉、诊断页和微信输入法状态
+  的实际显示，并用真实语音链验证文字上屏。
+
+### 2026-08-27 三页设置界面职责重组检查点
+
+- 当前设置窗口收敛为“设备 / 按键 / 语音”三页。“设备”页集中当前 RC003、按键
+  接收、遥控器服务和运行日志；“按键”页保留 13 键真实检测与映射；“语音”页集中
+  音频前置、语音程序和测试验证。原权限与诊断结果按职责放回对应业务行，不再保留
+  独立页面。本条取代旧检查项中的当前页面入口说明，旧条目只保留历史证据。
+- 设备页“启动”只使用上次已经保存的配置，不保存其它页面尚未应用的修改。声音
+  通道测试在服务运行时先二次确认，再通过通知区域的正常清理路径临时退出服务，
+  测试结束自动恢复；恢复失败会明确提示并提供“启动服务”。
+- 语音程序新增 Windows 语音输入（`Win+H`）系统管理项；“试说一句”打开可编辑
+  多行输入框，让当前语音程序把识别文字直接输入其中。按键页恢复内置默认保留二次
+  确认，语音主映射的双击和长按仍不可用。
+- 自动验证：桥接通知区、启动、停止控制、设置辅助、Qt 设置、语音程序 QML、语音
+  程序管理和 Windows 诊断共 418 项运行，416 项通过、2 项按平台条件跳过，无失败。
+  真实 QML 在 `720x464`、`640x440` 下加载无警告、无横向溢出和区块重叠。
+- 本轮未构建或打包。真实 RC003、VB-CABLE、语音程序、输入法文字上屏和长期运行
+  仍需人工验证，状态为检查点待实测。
+
+### 2026-08-27 三页界面本机可运行程序检查点
+
+- 来源提交：`abb89b98ec71a3f323e13bf45a6a945f7dcfab5e`。完整检查唯一入口为
+  `build/build-candidate.ps1`，没有在脚本外重复执行同一套全量门禁。
+- 公开边界扫描 326 个文件通过；VB-CABLE Pack45 与 Frida Gadget 17.15.3 固定
+  来源和 SHA-256 校验通过；完整 unittest 共 1353 项运行，1346 项通过、7 项按
+  平台或安全条件跳过，无失败；PyInstaller 和冻结 EXE `--dry-run` 通过。
+- 本机可运行目录为 `apps/windows/rc003/dist/RemoteMicRC003`，共 2086 个文件、
+  397,313,870 字节。主 EXE 为 5,116,179 字节，SHA-256：
+  `2CE0AF478FCF1447312D65A4B00AEBC189743CD9DDB0DBC34F3F9D094BF1491F`。
+  冻结内容包含当前 `DevicePage.qml`、`ButtonsPage.qml`、`VoicePage.qml`，不包含已删除
+  的连接、权限和诊断页。
+- 本产物未签名，只是本机测试程序，不是正式候选或发布包；未制作 ZIP、安装器或
+  哈希清单。真实 RC003、VB-CABLE、按键、语音程序和文字上屏仍需人工验证。
+- 后续实际启动确认该 EXE 无法打开设置窗口。自动构建结果保留作历史证据，但哈希为
+  `2CE0AF478FCF1447312D65A4B00AEBC189743CD9DDB0DBC34F3F9D094BF1491F` 的程序已
+  作废，不再用于测试；替代结果见下一条。
+
+### 2026-08-27 冻结 Qt 启动故障修复检查点
+
+- 已确认故障与残留进程、用户配置无关。PyInstaller 受构建环境 `PATH` 影响，把
+  其它工具链的 `icuuc.dll` 放进冻结目录并遮蔽 Windows 系统 ICU，导致
+  `PySide6.QtCore` 导入失败，设置窗口尚未创建就退出。
+- 构建规则现在过滤非 PySide6 自带的环境 ICU，并新增隐藏的
+  `--qt-runtime-check`：真实导入 `QtCore`、`QtGui`、`QtQml`、`QtQuick`、
+  `QtQuickControls2`，同时确认冻结 `main.qml` 存在。本地构建和 Windows CI 都把
+  该检查作为必过门禁，原 `--dry-run` 继续保留。
+- 完整构建入口通过：公开边界扫描 326 个文件；完整 unittest 共 1357 项运行，
+  1350 项通过、7 项按平台或安全条件跳过；两项固定资源、PyInstaller、冻结
+  `--dry-run` 与冻结 Qt 运行时检查全部通过。
+- 实际启动新 EXE 后，设置窗口标题为“Remote Mic 设置”，持续 6 秒未退出；正常
+  关闭后没有残留进程。冻结目录不再包含 `_internal/icuuc.dll`。
+- 新本机测试目录仍为 `apps/windows/rc003/dist/RemoteMicRC003`，共 2085 个文件、
+  394,585,934 字节。主 EXE 为 5,116,691 字节，SHA-256：
+  `D6B037743321409AD878B3693EC76AD9347CEF70EE601CDC172EFC29363644C1`。
+- 本产物未签名，只是本机测试程序；没有制作 ZIP、安装器、候选或发布包。真实
+  RC003、VB-CABLE、按键、语音程序和文字上屏仍为检查点待实测。
+
+### 2026-08-27 三页界面交互与显示修复检查点
+
+- 左侧导航按下立即切页，三个按钮的选中背景与按钮边界一致，不再保留控件内部的
+  第二套选中状态。Windows 优先使用系统中文 UI 字体，项目内置字体保留为回退。
+- 按键页 13 张卡片高度为 55，边框减细，非标题文字增大、加深；底部重复服务提示
+  已删除。默认和最小窗口分别为 `720x500`、`640x480`，两种尺寸下 13 张卡片、
+  遥控器实物图、连线和编辑入口均保持在页面内。
+- “实际说话”输入区高度不少于 150；按键编辑、快捷键录入和实际说话弹窗共用
+  Fluent 关闭按钮。Windows Fluent 实际截图确认中文、图标、弹窗和页面布局正常。
+- 自动结果：`tests.test_qt_settings_app` 共 182 项全部通过；受影响 QML 静态检查退出
+  码为 0，仅保留项目既有导入和未限定访问告警；`git diff --check` 通过。
+- 本轮未构建或打包。导航实际手感、持续使用时的文字稳定性和真实 RC003 链路仍待
+  用户实测，状态为检查点待实测。
+
+### 2026-08-27 三页界面显示修复本机测试程序
+
+- 来源提交：`c0c1f969c6792f8d6ad9a5adc90a3d5b36e7b936`。为避免混入主工作区其它
+  未提交修改，从该提交的独立干净工作区执行 `build/build-candidate.ps1`。
+- 公开边界扫描 176 个文件通过；完整 unittest 共 1360 项运行，1353 项通过、7 项按
+  平台或安全条件跳过；VB-CABLE 与 Frida Gadget 固定资源、PyInstaller、冻结
+  `--dry-run` 和 Qt 运行时检查全部通过。
+- 本机测试目录为
+  `RemoteMicRC003-0.1.0-localtest-20260827-ui-fix2`，共 2086 个文件、
+  394,586,719 字节；复制前后逐文件 SHA-256 一致。主 EXE 为 5,116,691 字节，
+  SHA-256 为 `A203B14534F8F2140706D18FA6AD788B46FBD4DB6CC54F08F7C200FD2A84E430`。
+- 冻结内容包含当前三页和统一弹窗关闭按钮，不包含已删除的旧连接、权限和诊断页。
+  使用隔离配置目录实际启动后，窗口标题为“Remote Mic 设置”；正常关闭后没有残留
+  进程。本产物未签名，只是本机测试程序，没有制作 ZIP、安装器、候选或发布包。
+- 状态：检查点待实测。仍需用户验证导航手感、长时间文字稳定性、真实 RC003、
+  VB-CABLE、13 键映射、语音程序和识别文字上屏。
+
+### CHECK-KEY-006 Quicker URI 与遥控器组合自动检查（历史）
+
+- 目标：动作输入框只接受 `quicker:runaction:`；遥控器组合只允许 TV、菜单或主页
+  作为主键，第二键限制为方向、确定、返回和音量加减，并拒绝主键双击/长按冲突。
+- 自动结果：受影响范围共 452 项运行，451 项通过、1 项按平台条件跳过。覆盖 URI
+  解析和 Windows 协议启动、配置 schema 6 兼容与错误配置失败关闭、组合仲裁、原生
+  按键抑制、Qt 保存回读和恢复默认。
+- 补充完整检查：全部 unittest 共 1383 项通过、7 项按平台条件跳过；公开边界扫描
+  332 个文件通过，`compileall`、`pip check` 与 `git diff --check` 通过。另行穷举
+  3 个主键、8 个第二键、两种抬键顺序和第二键先按场景，组合状态机结果全部符合预期。
+- 界面结果：真实 QML 在 `640x480`、`720x500`、`840x720` 及 Basic、
+  FluentWinUI3 两种样式下切换“单键映射 / 组合按键映射”；八行组合映射、顶部通长
+  切换和底部固定操作栏均在页面边界内，无重叠。
+- 2026-09-08 复核：2026-08-20 至 2026-09-08 的两份轮转日志共记录 2494 个
+  RC003 按键边沿，同时按下峰值为 1，重叠次数为 0。此前自动测试只验证了人工构造的
+  多 usage 报告，不能替代固件真机行为。
+- 当前状态：历史自动结果保留；遥控器组合功能已撤下，不再作为当前产品能力。
+
+### TEST-KEY-005 Quicker 与遥控器组合真机验收（已取消）
+
+- 前置：安装并正常运行 Quicker；在组合页选择主键，至少配置一个 Quicker URI 和
+  一个电脑快捷键。组合主键保留一个可观察的单击动作，第二键也保留单键动作。
+- 步骤：分别验证主键单击、主键+已配置第二键、主键+未配置第二键；按住主键依次
+  触发两个已配置第二键；保存并重启后重复。确认命中组合时只执行组合动作，未命中
+  时主键和第二键仍按各自规则执行，没有重复、漏发、套娃或原生键漏出。
+- Quicker 权限：先用普通权限桥接验证，再按真实 HID tap 使用方式验证管理员桥接与
+  普通权限 Quicker 的组合；Quicker 本身不以管理员身份运行。分别记录是否成功唤起
+  指定动作、是否只执行一次，以及失败时的 `app.log`。
+- 2026-09-08 真机结果：TV+上未产生重叠按键边沿；一次相邻记录中，上键在 TV 松开
+  76 毫秒后才按下，属于两个独立单键。另一轮按住 TV 后操作上键只记录到 TV，未收到
+  上键边沿。
+- 状态：不通过；用户决定不改成顺序手势，当前版本撤下遥控器组合入口和识别。
+
+### CHECK-KEY-007 鼠标映射与欠松开自动检查
+
+- 目标：七个鼠标动作共用现有单击、双击和长按选项源；左、右、中、
+  X1、X2 单击成对发送，滚轮一次一格。任何可能只送达 down 的失败都先补发 up，
+  补松未确认时保留所有权并阻止后续动作。
+- 自动范围：动作序列化与回读、全部映射入口选项、Win32 `INPUT/MOUSEINPUT` ABI、
+  X1/X2 `mouseData`、正负滚轮、部分发送、提交异常、补发失败、下一动作阻断、BLE
+  清理和最终退出。
+- 自动结果：精确暂存候选共运行 553 项，552 项通过、1 项按平台条件跳过；其中已包含
+  真实离屏 QML 直接保存集成检查。`py_compile` 和暂存差异检查通过。
+- 状态：自动检查通过；真实行为见 `TEST-KEY-006`，检查点待实测。
+
+### CHECK-KEY-008 鼠标映射板块并发与实体输入复核
+
+- 已确认问题：设置保存与按键线程交错时，旧物理手势可能执行新映射；主映射未避让实体
+  同名鼠标键；元素导航先移动指针再检查实体按键，且点击部分送达后的补松失败没有保留
+  所有权。三项按共同的输入所有权根因合并修复。
+- 当前行为：单击、双击、长按、连发和普通话筒动作在整次手势内冻结原映射；
+  主映射只避让实体同名鼠标键，元素导航因会移动指针而避让全部五种实体鼠标键。元素
+  导航补松未确认时阻止后续点击和滚轮，并在退出、停止前重试。
+- 正反例：并发探针覆盖空闲判断后插入新手势、延迟回调已出队但尚未执行、取消手势与
+  回调交错、连发回调与松键交错后的空闲通知；鼠标覆盖同名占用阻断、无关按键不误拦、
+  拖拽时不移动指针、部分发送补松、补松失败阻断滚轮和后续释放成功。
+- 自动结果：最终受影响板块共运行 1074 项，其中 1073 项通过、1 项按平台条件跳过；
+  包含真实离屏设置界面、配置回读、主程序接线、Win32 ABI、元素导航控制和独立导出。
+  `py_compile` 与 `git diff --check` 通过。
+- 状态：代码与自动检查已完成；真实行为继续按 `TEST-KEY-006` 验收，检查点待实测。
+
+### TEST-KEY-006 鼠标映射真机验收
+
+- 前置：使用包含本功能的当前源码对应测试程序；准备一个能观察左/右/中/X1/X2
+  和滚轮的普通窗口，先记录原映射，测试后恢复。不要在有未保存内容的目标上测试。
+- 步骤：分别把七个动作放入单击、双击和长按，保存并重开；
+  验证点击只发生一次且作用于当前鼠标位置，滚轮方向正确、一次一格。再把滚轮放到
+  允许连发和不允许连发的实体键上，确认只有前者按住连续滚动。
+- 安全检查：每次动作后立即用本机鼠标和键盘继续操作，确认没有按钮保持按下、拖拽、
+  连续菜单、持续滚动或其它输入被抢占；停止服务、模拟断连恢复和完全退出后再复查。
+- 状态：检查点待实测。
+
+### 2026-08-27 Quicker 组合与元素导航本机测试程序
+
+- 来源提交：`057f8f81d0d2745b265c4c8646e46ab5ecaab10e`。完整构建入口的公开边界
+  扫描 338 个文件通过；1406 项 unittest 中 1399 项通过、7 项按平台或安全条件跳过；
+  两项固定第三方资源、PyInstaller、冻结 `--dry-run` 和 Qt 运行时检查全部通过。
+- 本机测试目录：
+  `RemoteMicRC003-0.1.0-localtest-20260827-quicker-combo-nav1`，共
+  2086 个文件、394,608,856 字节。主 EXE 为 5,127,586 字节，SHA-256：
+  `841741F70BC413EE46178ADE4356A1FCC45376EB3249ABCE485D107F897A2E8C`。复制后的
+  EXE 再次通过 `--dry-run` 和 Qt 运行时检查。
+- 本产物未签名，只用于本机测试，不是候选或发布包；没有制作 ZIP 或安装器。真实
+  RC003、Quicker、遥控器组合、元素导航和语音链路仍为检查点待实测。
+
+### CHECK-UI-006 按键卡片与语音页列对齐
+
+- 按键页 13 张卡片的唯一高度由 `55px` 调整为 `49px`，约降低 11%；页面不再另存
+  一份高度常量。顶部视图切换、左右卡片列、遥控器实物图和底部操作栏保持分离。
+- 语音页统一使用 `54px` 状态列和 `120px` 最右操作列；状态位于操作列左侧，右侧
+  按钮等宽。下拉框、路径和快捷键输入位于左侧编辑区并占用剩余宽度，设备页沿用
+  共享设置行原有的自适应默认布局。
+- 自动结果：`tests.test_qt_settings_app` 共 185 项全部通过。真实 QML 几何和截图覆盖
+  `640x480`、`720x500` 及 Basic、FluentWinUI3 两种样式；卡片、输入、状态和按钮
+  无越界或重叠。受影响 QML 静态检查退出码为 0，仅保留项目既有告警。
+- 本轮未构建或打包。实际观感和真实 RC003 操作仍由用户在后续本机测试程序中确认，
+  状态为检查点待实测。
+
+### CHECK-NAV-001 元素导航原型完整检查
+
+- 范围：独立键盘原型的 UIA/MSAA 识别、四向排序、同方向防循环、立即反向、鼠标点
+  初始定位、父子层级、文件夹展开/收起刷新、窗口移动同步、后台预识别和异常恢复。
+- 定向结果：元素导航 59 项全部通过。随机推演覆盖 800 组不规则布局、85,375 次连续
+  同方向移动和 124,000 次立即反向，零循环、零反向丢失；300 元素全部方向首轮计算
+  约 0.58 秒，缓存后 120,000 次查询约 0.03 秒。
+- 运行结果：同一稳定窗口只预识别一次；热键扫描任务栏约 0.15 秒；ChatGPT 预识别
+  约 1.0 至 1.4 秒；标准错误日志为空。“展开显示”在真实 UIA 树中确认为可调用按钮。
+- 完整结果：1444 项 unittest 中 1437 项通过、7 项按平台或安全条件跳过；公开边界扫描
+  341 个文件、`compileall`、`pip check` 和 `git diff --check` 通过。
+- 交付边界：本轮不构建、不打包、不发布。源码达到默认关闭、固定软件白名单、独立
+  伴随进程的受控应用试用条件；正式 RC003 按键、真实文件夹和弹窗路径、跨屏缩放、
+  坐标点击及长时间运行仍为检查点待实测。
+
+### CHECK-NAV-002 元素操作闭环完整检查
+
+- 范围：确定键真实左击与原生双击、菜单键右击、音量键滚动、原生菜单键盘接管、
+  自绘菜单和双击后的内容重扫、同软件弹窗跟随、无关软件退出，以及原有四向和父子导航。
+- 定向结果：元素导航 65 项全部通过。800 组随机不规则布局覆盖 734,471 次连续同方向
+  移动和 134,019 次立即反向，零循环、零反向丢失。
+- 性能结果：300 元素全部方向首轮计算约 0.57 秒，缓存后 120,000 次查询约 0.025 秒；
+  500,000 轮按键、滚轮和窗口判断约 0.17 秒。快速第二次点击和连续滚动均有短时坐标缓存，
+  不重复执行全树命中检查。
+- 运行结果：最终源码后台启动和全局热键正常，缓存扫描 QQ 的 48 个可导航元素耗时约
+  0.03 秒；切换到其它软件后按规则退出导航，标准错误日志为空。
+- 完整结果：1,450 项 unittest 通过、7 项按平台或安全条件跳过；公开边界扫描 341 个
+  文件，`compileall`、`pip check` 和 `git diff --check` 通过。
+- 交付边界：不构建、不打包、不发布。真实文件夹双击、右键菜单、自绘弹层、滚动、
+  同软件弹窗、跨屏缩放、长时间运行和 RC003 实体按键接入仍为检查点待实测。
+
+### CHECK-NAV-003 空间路径与嵌套操作修正
+
+- 范围：内容区向右不得跨行绕回左侧栏；文件夹父块内部的独立“展开显示”操作必须
+  可达；同一行未显示的悬停按钮不能因此重新进入候选。
+- 算法依据：请求方向候选优先，跨行绕回只作为同分支网格补充；包住当前元素的底层
+  容器排除，当前块内部独立成行的可操作子元素优先。实现原则对照 W3C CSS Spatial
+  Navigation、Android `FocusFinder` 和 Chromium Spatial Navigation。
+- 定向结果：元素导航 67 项全部通过。800 组随机布局覆盖 83,675 次连续同方向移动和
+  12,039 次立即反向，零循环、零反向丢失；300 元素全部方向首轮约 0.66 秒，缓存后
+  120,000 次查询约 0.08 秒。
+- 运行结果：真实 Codex 窗口扫描约 1.00 秒；放宽全部嵌套小按钮时曾出现 169 个候选，
+  收紧为独立视觉行规则后不再出现成批侧栏悬停假按钮，当前可见紧凑操作仍保留。
+- 完整结果：最新提交基线上叠加本任务改动后，共运行 1,459 项 unittest，其中
+  1,452 项通过、7 项按平台或安全条件跳过；公开边界扫描 348 个文件通过，
+  `py_compile` 和 `git diff --check` 通过。
+- 交付边界：本轮不构建、不打包、不发布。两张真实截图中的路径、真实“展开显示”
+  和 RC003 实体按键仍为检查点待实测。
+
+### CHECK-NAV-004 可选候选诊断
+
+- 范围：元素导航原型增加默认关闭的候选解释；`Ctrl+Alt+D` 运行时开关，
+  `--diagnostics` 可在启动时开启。每次方向移动说明实际候选顺序、通道类型、距离、
+  UIA 路径共同层级、历史去重、实时命中失败和未进入候选的原因。
+- 自动结果：元素导航 72 项全部通过；覆盖诊断默认关闭、全局热键映射、同通道与斜向
+  排序、跨行补充、反向返回、方向排除和白话输出。`py_compile` 与
+  `git diff --check` 通过。
+- 性能结果：300 个模拟元素、158 个方向候选连续生成并格式化 5,000 份完整诊断共约
+  4.17 秒，平均约 0.83 毫秒；关闭时不生成候选解释，只检查一次关闭状态。控制台
+  实际写出速度取决于宿主，诊断只用于短时复现。
+- 交付边界：诊断只输出到当前控制台，不自动落盘，不改变排序算法、正式配置或 RC003
+  动作出口。本轮不构建、不打包、不发布；真实全局热键和实际反例输出待用户实测。
+
+### CHECK-NAV-005 主内容区横向互达
+
+- 范围：修复主内容区两个消息操作之间横向移动时被左侧对话列表抢走的问题；同时验证
+  反向返回、跨窗格出口和同方向连续移动，不能把焦点永久锁在主内容区。
+- 真实结构：2026-08-28 只读核验当前 ChatGPT 窗口 UIA 树。两个消息操作矩形分别为
+  `(1104,688)-(1143,727)` 和 `(2170,875)-(2209,914)`，共同位于
+  `(934,242)-(2390,1759)` 主内容区；抢焦点的对话项位于
+  `(497,242)-(934,1759)` 左侧栏。旧排序把纵向重叠的侧栏项绝对排在略微斜向的
+  同内容区操作之前。
+- 修正规则：从 UIA 祖先矩形推断窗口内的大区域。横向移动时，同一区域且路径关系
+  更近的斜向候选可先于另一窗格的同通道候选；另一窗格明显更近时仍可正常跨出。
+  这沿用 W3C CSS Spatial Navigation 的导航容器思路，不写死软件名、截图坐标或编号。
+- 自动结果：元素导航 75 项全部通过；800 组带随机区域的不规则布局连续移动
+  48,751 次，零循环。300 个元素的 1,200 个方向关系冷计算约 0.65 秒，平均约
+  0.54 毫秒；扫描过程复用已读取的控件矩形，不为区域判断重复读取可点击控件位置。
+  `py_compile` 和 `git diff --check` 通过。
+- 交付边界：本轮不构建、不打包、不发布。当前已运行原型仍需重启后才会加载新源码；
+  两个真实消息操作的左右互达和跨回侧栏仍为检查点待实测。
+- 人工结果：2026-08-28 未通过。右侧消息操作回到左侧消息操作已改善，但从左侧消息
+  操作继续按左时会跳到右侧顶部标题，而不是进入空间上对应的左侧栏。本条被
+  `CHECK-NAV-006` 的网格坐标与相邻区域出口修正取代，不能继续作为已解决结论。
+
+### CHECK-NAV-006 网格坐标与相邻区域出口
+
+- 范围：方向键按二维网格处理。按左先比较真实位于左侧的候选，按右先比较真实位于
+  右侧的候选；上方和下方候选同时参与，并按与当前方向轴线的距离排序，不能先绕到
+  顶部标题再进入侧栏。跨行绕回只允许在真实方向候选全部不可用后兜底。
+- 真实结构：2026-08-28 只读核验 ChatGPT UIA 树。消息操作位于正文滚动区，顶部
+  标题位于独立横向标题区，左侧会话位于 `ListControl` 列表区。上一版只取第一个
+  横向分栏祖先，把标题和正文都归入右侧主区；横向斜向过滤又让按左只保留上方候选，
+  两者叠加造成错误跳转。
+- 修正规则：区域识别改为最近的语义列表 / 树 / 菜单 / 标签区，或独立正文、顶部
+  横带；同时保存区域矩形。左右候选先按方向轴线贴合程度和二维距离排序，不再保留
+  “左键只看上方、右键只看下方”的阅读顺序偏置。同区目标只有横向更近且纵向偏移
+  不过大时才保留直接互达，否则进入请求方向上纵向相交的最近相邻区域；窗口整体移动
+  时元素矩形与区域矩形一起平移。
+- 自动结果：元素导航 81 项全部通过；覆盖正文与标题分区、语义列表区、左右区域
+  双向返回、同区与跨区候选上下对称、方向轴线优先、真实方向先于跨行绕回、窗口移动、
+  重叠元素中心距离和既有防循环路径。800 组三分区随机网格连续移动 71,289 次，
+  零循环；300 元素的 1,200 个方向关系冷计算中位约 0.97 秒，平均约 0.81 毫秒。
+  `py_compile` 和 `git diff --check` 通过。
+- 交付边界：本轮不构建、不打包、不发布。当前运行的原型仍是修改前进程，新规则需
+  再次明确重启后才能实测；截图路径、跨区手感和 RC003 实体按键仍为检查点待实测。
+
+### CHECK-NAV-007 互动点、全目标可达与动态刷新
+
+- 范围：只保留真实互动点，排除大型弱焦点容器；保留匿名动作、可点击父块及其独立
+  子按钮；父块坐标点击避开子按钮。方向候选走完后覆盖全部剩余目标，动态图标出现、
+  消失或变更时按窗口事件更新，不能靠每次按键全树扫描。
+- 自动结果：元素导航 99 项全部通过，覆盖父子真实动作、远处和偏轴子按钮、最终顺序
+  延后、匿名图标、父块安全点击、动态事件合并、扫描代数、预识别中断恢复和查询顺序。
+  500 组随机界面连续移动 272,832 次，零循环、零提前停止、零漏达；100 组随机查询
+  顺序与固定顺序结果一致。
+- 性能结果：300 个元素冷查询平均约 0.77 毫秒，P95 约 1.24 毫秒。WinEvent 回调只
+  标记当前窗口变化；连续变化约 150 毫秒合并，等待期间的新事件不吞键。5 秒处理
+  可疑路径，30 秒后的首次移动无条件刷新；两个事件范围不完整时明确使用时限兜底。
+- 完整结果：1,492 项 unittest 通过、7 项按平台条件跳过；公开边界扫描 348 个文件、
+  `py_compile` 和 `git diff --check` 通过。
+- 交付边界：本轮不构建、不打包、不发布。当前运行的旧原型尚未加载新源码；重启后
+  仍需验证真实宿主中的动态图标、父子点击、长期手感和 RC003 实体按键，状态为
+  检查点待实测。
+
+### CHECK-NAV-008 视觉同行、互动过滤与异步跟随
+
+- 范围：左右移动只把纵向重叠充分或中心线接近的元素视为同一行，偏上、偏下的中间
+  元素不再抢走横向直达路径；相邻窗格与其缩进列表按同一导航区域处理。仅有 Legacy
+  默认动作、不可聚焦且没有直接操作模式的列表项和数据项按正文内容排除，真实按钮、
+  可聚焦原生列表项、可展开项和直接操作项继续保留。
+- 时序结果：方向键和回车的正常路径不再同步执行整窗枚举。同软件新弹窗先使用最多约
+  `0.2` 秒的协作式扫描，已有结果可先操作，剩余内容在空闲时补全；首次为空时有限重试，
+  并暂存最多两个方向操作。新按键可取消后台刷新，扫描代数变化或导航退出后，旧结果
+  不能重新激活导航。`0.2` 秒是协作预算，不能约束第三方 UIA 单次调用自身卡住的时间。
+- 自动结果：元素导航 112 项全部通过；800 组三分区随机网格连续移动 281,040 次，
+  零循环、零漏达；100 组随机查询顺序与固定顺序结果一致。300 个元素的 1,200 个方向
+  关系冷计算约 1.32 秒，缓存后 120,000 次查询约 0.025 秒。
+- 完整结果：1,507 项 unittest 通过、7 项按平台条件跳过，完整日志未出现
+  `ResourceWarning` 或未关闭资源；公开边界扫描 348 个文件、`compileall`、
+  `pip check` 和 `git diff --check` 通过。
+- 交付边界：本轮不构建、不打包、不发布。真实 Codex 与其它宿主中的横向手感、慢加载
+  弹窗、文件夹展开、动态按钮、长时间运行和 RC003 实体按键仍为检查点待实测。
+
+### CHECK-NAV-009 动态单元格与四向可达
+
+- 范围：把可点击元素整理为局部动态网格。可点击父行先扣除已保留的行内按钮，正文区
+  与每个按钮分别占一个单元格；左右优先保持同行，上下优先保持当前列，缺格时沿原列
+  跨过。边界不再用横向跨行或全屏轮转补目标；散乱布局中没有入口的单元格才插入距离
+  最合适的双向网格边，且不得改写已经成立的同行或同列路线。
+- 自动结果：元素导航 118 项全部通过，覆盖父行与行内按钮左右互达、正文列与按钮列
+  分别上下保持、多按钮列、缺格跨越、三点布局反向返回、散乱中心格接入、边界停止、
+  相邻窗格出口、查询顺序和动态刷新既有路径。800 组随机布局从每一个起点遍历四向
+  首选边，零不可达；既有连续同方向防循环测试继续通过。
+- 性能结果：随机 2 至 40 个目标的网格建立中位约 2.85 毫秒，P95 约 9.68 毫秒；
+  300 个目标建立完整首选网格约 0.54 秒，补齐全部 1,200 个候选序列约 0.52 秒，
+  缓存后 120,000 次查询约 0.022 秒。首选网格在扫描结果提交阶段建立；某个单元格的
+  某一方向首次使用时才补齐备用候选，后续读取缓存，整个过程不重新枚举整窗 UIA。
+- 检查结果：目标测试、`py_compile` 和 `git diff --check` 通过。本轮不构建、不打包、
+  不发布；真实 Codex、其它宿主和 RC003 实体按键仍需重启原型后人工验证，状态为
+  检查点待实测。本条取代旧的“横向跨行 / 全目标轮转”路径结论，历史记录保留原事实。
+
+### CHECK-NAV-010 固定软件互动点补全
+
+- 范围：QQ 等 Chromium / Electron 软件中重复的会话行和消息块可作为受限坐标目标；
+  主窗口上方的小型同进程、所有者或 Topmost / ToolWindow / NoActivate 窗口可合并
+  导航，用于 Quicker 跨进程悬浮动作；只有 UIA 确实不暴露文件项的旧式可聚焦窗格才
+  启用降采样视觉行/网格，正常窗口继续使用 UIA/MSAA。
+- 过滤结果：重复内容至少三行且尺寸相近；视觉窗格必须带 Legacy IAccessible，并有
+  表头或滚动能力，UIA 已覆盖足够真实目标时停用；多组规则文件行保留，远处少量状态
+  文字丢弃。悬浮窗限制面积、重叠和关联关系，并排除桌面、任务栏类。
+- 自动结果：元素导航 127 项全部通过；覆盖重复行与普通布局区分、旧窗格启用和覆盖
+  停用、详情行与缩略图格、视觉离群分组、悬浮窗关系/面积/重叠、跨进程前台保持、
+  指定窗口扫描、合成坐标平移和无子控件小浮窗的根窗口坐标格。`py_compile` 与
+  `git diff --check` 通过。
+- 本机结果：QQ 扫描 66 个目标约 1.21 秒；Directory Opus 扫描 33 个目标约 0.44 秒，
+  左右文件窗格分别为 15 行和 8 行，无底部大空白假框。4,000 元素纯计算中，重复内容
+  归并约 2.72 毫秒、旧窗格筛选约 2.00 毫秒，720x450 视觉扫描约 84.29 毫秒。
+- Quicker 结果：真实 `FloatButtonWindow` 的 UIA 树只有根节点、没有子控件，旧实现因此
+  生成 0 个候选。增加受限根窗口坐标格后，指定 Codex 窗口只读扫描得到 3 个
+  `OverlayWindowControl`。本轮不构建、不打包、不发布；真实选中、回车调用、长时间运行
+  和 RC003 实体按键仍为检查点待实测。
+
+### CHECK-NAV-011 统一屏幕网格与 Quicker 关联状态
+
+- 范围：所有已识别互动点按屏幕坐标进入同一套四向排序；Quicker 关联状态只决定浮窗
+  是否加入候选，不改变方向顺序。删除为保证全局连通而插入孤立格、连接分区，以及按
+  UIA 区域强制改写左右目标的路径，避免按右先去上方、按左先绕远等反直觉跳转。
+- Quicker 边界：可选读取 `%LOCALAPPDATA%\RemoteMic\RC003\quicker-navigation.json`，
+  也可通过命令行或环境变量指定只读 JSON 快照。状态明确关联当前软件时，窗口外浮动
+  动作也进入网格；快照不存在或无效时，仍识别当前可见且可信的小型
+  `FloatButtonWindow`。本轮未修改 Quicker 配置，也未安装状态导出动作。
+- 自动结果：元素导航 130 项全部通过。真实坐标回归确认，从窗口边缘动作按右先到屏幕
+  右侧最近的 Quicker 浮窗，不再跳到上方消息操作；反向按左可直接返回。300 个目标建图
+  约 63.7 毫秒，首次计算全部 1,200 个方向约 499.8 毫秒，缓存后 120,000 次查询约
+  24.1 毫秒。`py_compile` 和 `git diff --check` 通过。
+- 交付边界：本轮不构建、不打包、不发布。真实回车调用、窗口外关联动作、长期运行和
+  RC003 实体按键仍为检查点待实测；本条取代 `CHECK-NAV-009` 中“插入孤立格、连接
+  分区”作为当前导航规则的结论。
+
+### CHECK-NAV-012 互动证据、中心线分列与 Quicker 场景收紧
+
+- 范围：Chromium / Electron 的重复内容只有自身或同矩形后代提供 `Invoke` /
+  `SelectionItem` 直接动作时，才提升为坐标目标；仅有文字、Legacy 或键盘焦点的状态行
+  不再进入。同行、同列改由中心线距离决定，矩形横跨其它列不能获得通道优先级。
+- Quicker 边界：状态明确关联当前进程的浮窗仍可位于屏幕任意位置；状态不可用时，
+  `FloatButtonWindow` 仅在与当前窗口重叠或横纵间隔均不超过 48 像素时回退加入。真实
+  Codex 窗口附近的三枚 68 像素动作保留，屏幕右上角未关联的 120 像素 `geek` 动作排除。
+- 自动结果：元素导航 131 项全部通过；覆盖长条文字与右侧小按钮的纵向分列、纯状态行
+  过滤、直接动作会话行保留、明确关联的远处浮窗、贴边回退和远处未关联浮窗排除。
+  `py_compile` 与 `git diff --check` 通过。
+- 实窗结果：Codex 两次扫描约 1.43 至 1.93 秒，纯状态文字不再生成
+  `ContentItemControl`；节点数量随当前页面内容由 884 变为 1,290，未见新增固定开销。
+  本轮不构建、不打包、不发布；方向手感、Quicker 实际回车调用和 RC003 实体按键仍为
+  检查点待实测。
+
+### CHECK-NAV-013 纵向软通道与近斜向入口
+
+- 范围：中心线同列继续作为纵向首选，但不再绝对压过所有斜向目标。只有原首选确属
+  同列，且其前进距离超过斜向目标远边距离两倍再加当前单元格高度时，才允许近斜向
+  截入；同行、同列定义本身不放宽。
+- 边界：父子或祖先后代动作不参与软截入，仍通过左右键或父子键进入；同为同列或同为
+  斜向时保留原排序。截入候选必须在 `13 × 主轴距离² + 侧向距离²` 上优于原同列目标，
+  多个合格候选再选最近入口，不改变后续动作栈内部的正常上下顺序。
+- 自动结果：元素导航 136 项全部通过。截图坐标回归为
+  `1 → 继续 → 然后 → 概述 → 2`；缺格列、多按钮列、主内容区与侧栏、长条中心列、
+  嵌套“展开显示”、极远横向目标、父子动作、上下对称、查询顺序和既有反向返回继续
+  通过。另对 24,000 个随机方向关系核对候选集合与截入条件，未丢失候选，软截入只在
+  上下方向且两道门槛均成立时发生。`py_compile` 与 `git diff --check` 通过。
+- 性能结果：固定 300 个随机目标五轮中位为建图约 42.48 毫秒，首次计算 1,200 个方向
+  约 598.88 毫秒，缓存后 120,000 次查询约 15.98 毫秒。新规则只比较已识别坐标，不
+  重新扫描 UIA。本轮不构建、不打包、不发布；真实截图路径、连续操作手感和 RC003
+  实体按键仍为检查点待实测。
+
+### CHECK-NAV-014 首次启动预热与 UIA 扫描去重
+
+- 故障：后台预热原来对同一窗口只请求一次，但缓存 15 秒后会失效；界面变化或缓存
+  到期后不会重新补热。预热预算 1.5 秒又与 Codex 实窗冷扫描耗时接近，首次热键可能
+  取消即将完成的预热并从头扫描。
+- 修复：前台稳定等待由 0.75 秒缩短为 0.35 秒，预热预算提高到 2 秒；首次热键不再
+  中断正在进行的预热。缓存到期或界面变化静止后可重新补热，失败和重复请求保留 5 秒
+  冷却，持续变化期间不反复扫描。
+- 扫描：同一次遍历取得的控件类型、名称、自动化标识、可用、离屏、键盘焦点和矩形
+  直接复用，不再为候选过滤逐项读取第二遍。性能剖析中这些属性调用次数已降至约每个
+  UIA 节点一次。
+- 自动结果：元素导航 138 项全部通过，`py_compile` 通过。当前 Codex 实窗固定
+  1,041 个节点、194 个目标的五轮冷扫描为 1.35 至 1.59 秒，中位约 1.40 秒；冷扫描仍
+  主要受系统 UIA 树遍历影响，改动重点是提高首次热键的预热命中率。本轮不构建、不
+  打包、不发布；真实后台预热命中和快捷键体感仍为检查点待实测。
+
+### CHECK-NAV-015 正交领地网格与稳定遍历
+
+- 范围：已识别互动点按真实屏幕范围平铺到一张无空洞、无重叠的正交领地图。UIA
+  层级只继续用于判断元素能否互动，不再参与分区；切线优先走元素之间的真实空隙，
+  避免把同一视觉行压成细条。两个元素中心重合时，共同中心作为边界，不把任一元素
+  的真实位置移出自己的领地。
+- 移动规则：只有足够长的水平或竖直共边才建立方向邻接，角碰角和短边不算；候选
+  始终使用真实元素中心排序，领地因远处元素扩张时不改写本地顺序。所有边再经过真实
+  坐标方向门禁，按上、下、左、右不能落到相反方向；立即反向优先回到上一元素。
+- 真实快照：2026-08-29 对 Codex 162 个目标和另一软件 134 个目标重建领地图。两份
+  快照均为 0 个中心错位、0 个重叠、0 个空洞、单一连通分量、0 条反向边、0 次同方向
+  循环和 0 次立即反向失败；最窄领地分别为 32 和 23 像素，不再出现 1 至 2 像素细条。
+  建图中位分别约 31.31 和 24.98 毫秒，P95 分别约 35.73 和 26.73 毫秒。
+- 扩展检查：1,000 组 8 至 60 个随机散乱元素均无错位、断连和反向边；加入超远目标后
+  138,880 次本地首选核对均未重排。99 个目标建图中位约 17.81 毫秒、P95 约 21.75
+  毫秒；300 个目标中位约 164.96 毫秒、P95 约 265.34 毫秒。元素导航 147 项、
+  `py_compile` 和 `git diff --check` 通过。
+- 交付边界：本轮不构建、不打包、不发布。自动检查证明网格结构和方向合同成立；真实
+  软件中的连续方向手感、动态界面刷新、回车调用和 RC003 实体按键仍为检查点待实测。
+
+### CHECK-VOICE-012 语音程序快捷键自动读取与同步
+
+- 自动行为：配置 schema 7 分别记忆搜狗、微信输入法、Windows 语音输入和自定义程序
+  的按住说话快捷键；旧全局值迁移给原选中程序。切换搜狗或微信输入法时读取真实值，
+  重新进入语音页或重复选择当前程序时再次读取；即使录入值与当前显示相同，也重新同步
+  第三方并读回，再保存 Remote Mic。第三方操作在后台执行，处理期间禁止交叉保存、
+  恢复默认和启动服务。
+- 本机只读/受控结果：搜狗退出状态读取当前配置成功；微信输入法设置关闭时可用正式
+  `-showsetting` 参数自动打开，UI Automation 读取和修改 `F9 -> F8 -> F9` 后读回
+  一致，并关闭本轮自动打开的设置窗口。最终微信仍为左 Ctrl + 左 Shift + F9，搜狗
+  仍为左 Ctrl + 左 Shift + F7。
+- 失败闭环：Remote Mic 保存后读回失败会恢复并验证原配置文件；搜狗配置读取无权限、
+  进程状态无法确认、写入验证失败和回退失败均有定向覆盖。微信写入验证失败会恢复并
+  读回原快捷键；回退失败时返回实际读到的值。第三方实际值无法保存到 Remote Mic 时，
+  界面回到磁盘值并明确提示两边不一致。
+- 自动结果：相关配置、第三方同步、控制器、交叉操作保护和真实 QML 定向检查通过；
+  完整 unittest 1589 项通过、7 项按平台条件跳过，完整日志未出现 `ResourceWarning`。公开边界扫描
+  362 个文件，`compileall`、`pip check` 和 `git diff --check` 通过。
+- 交付边界：本轮不构建、不打包、不发布。仍需用真实 RC003 分别选择搜狗、微信输入法
+  并改一次快捷键，确认输入法设置同步、遥控器按住说话、声音接收和文字上屏；状态为
+  检查点待实测。
+
+### CHECK-VOICE-013 搜狗管理员启动默认值与分程序记忆
+
+- 自动行为：配置 schema 8 新增搜狗和自定义程序各自的管理员启动偏好。新配置首次
+  选择搜狗为开启，自定义程序为关闭；手动修改后，程序切换和重新打开设置仍恢复各自
+  值。微信输入法和 Windows 语音输入继续由系统管理，不参与该偏好。
+- 迁移行为：schema 7 及更早版本已保存的单个管理员选择同时迁移给搜狗和自定义程序；
+  旧值为 `false` 时搜狗仍保持关闭，旧值为 `true` 时两种程序都保持开启。
+- 自动结果：定向 188 项通过；完整 unittest 共 1598 项，其中 1591 项通过、7 项按
+  平台条件跳过，未出现 `ResourceWarning`。公开边界扫描 362 个文件，`compileall`、
+  `pip check` 和 `git diff --check` 通过。
+- 本地测试包：用户明确要求后，从 `67954de` 加工作树差异 SHA-256
+  `06934E951A4B7952C81C15314AD659CFEA07254637CD92137E5F3CE5DDB862A7` 执行构建。
+  脚本内公开边界扫描 360 个文件；完整 unittest 共 1602 项，其中 1595 项通过、7 项
+  跳过；固定资源、PyInstaller、冻结 `--dry-run` 和 Qt 运行时检查通过。
+- ZIP 为 `RemoteMicRC003-0.1.0-localtest-20260829-sogou-admin1-portable.zip`，共
+  143814968 字节，SHA-256 为
+  `C9998246183F311F244D09D7ACDE3AA1A195D498787277B53BB22F69CAF0940E`；包内 EXE
+  SHA-256 为 `009D07989622222D40179A5565B560E388849513DAB8CD8795228548C2E6A5F6`。
+  ZIP 可正常打开，只有一个预期顶层目录，2083 个文件与复制目录一致。
+- 交付边界：本包未签名，仅用于本地测试，不是候选或发布包。仍需在真实设置页确认
+  首次选择搜狗默认勾选、手动关闭后重开仍关闭，以及普通权限搜狗退出后由桥接请求
+  UAC 并以管理员权限重启；状态为检查点待实测。
+
+### CHECK-VOICE-014 微信快捷键收窄与分程序设置入口
+
+- 历史行为：本条当时取代 `CHECK-VOICE-012` 中微信输入法自动读取、修改和读回快捷键的
+  当前实现结论。微信输入法只保存 Remote Mic 的分程序记忆，不再自动打开设置、控制
+  鼠标或使用 UI Automation 改写；搜狗仍静默读取、原子同步并读回确认。
+- 记录边界：搜狗、微信输入法、Windows 语音输入和自定义程序各自只记忆一套“按住
+  说话”快捷键，不记录点按或开关型语音。初始值依次为右 Ctrl、左 Ctrl + 左 Win、
+  `Win+H`、右 Alt；旧全局快捷键仍只迁移给升级时选中的程序。
+- 当时界面与诊断：搜狗、微信输入法和 Windows 语音输入的“打开设置”统一位于“语音按键”
+  行，自定义程序不显示。首次真实 QML 加载确认没有误报“设置已修改”；桥接转为已连接
+  后自动排队重查诊断，并通过并发测试确认不会重叠执行。
+- 自动结果：快捷键、配置、程序管理、控制器、源码合同和真实离屏 QML 定向检查通过；
+  完整 unittest 共 1595 项通过、7 项按平台条件跳过，未出现 `ResourceWarning`，
+  `git diff --check` 通过。
+- 交付边界：本轮不构建、不打包。仍需真机确认搜狗和微信的“打开设置”入口、RC003
+  连接后“按键接收”自动刷新，以及两种输入法各自的真实快捷键、遥控器按住说话、
+  声音接收和文字上屏；状态为检查点待实测。
+
+说明：搜狗已安装后的当前设置方式由 `CHECK-VOICE-017` 取代；微信输入法和 Windows
+语音输入的“打开设置”入口不变。
+
+### CHECK-VOICE-015 搜狗语音设置与未安装入口
+
+- 历史行为：已安装搜狗语音时，“打开设置”通过搜狗语音托盘菜单调用独立设置窗口，
+  不再打开搜狗输入法通用设置，也不移动鼠标。未安装时按钮显示“去安装”；能找到
+  AI 工具箱就打开并在底部状态栏提示手动安装，找不到时只提示，不自动点击下载。
+- 自动结果：程序管理、控制器、真实离屏 QML 和隐私合同定向测试共 58 项通过；
+  `git diff --check` 与 Python 语法检查通过。
+- 本机结果：2026-08-29 使用项目正式函数关闭并重新打开
+  `搜狗语音输入法-设置` 成功；禁用进程与语音启动项来源后，仍能从搜狗卸载信息定位
+  `SOGOUSmartAssistant.exe`。当前电脑已经安装搜狗语音，因此真实“未安装后下载”
+  页面只做模拟分支检查，没有卸载用户程序。
+- 交付边界：本轮不构建、不打包。仍需在后续本地测试程序中点击“打开设置/去安装”
+  确认底部状态提示和外部工具箱界面；状态为检查点待实测。
+
+说明：本条记录当时的自动托盘入口，当前行为由 `CHECK-VOICE-017` 取代。
+
+### CHECK-VOICE-016 语音快捷键取消录入
+
+- 当前行为：点击语音快捷键输入框后开始录入；点击输入框外、切换页面或输入框失去
+  焦点时取消录入。取消只停止键盘捕获，不保存、不触发输入法同步，输入框恢复录入前
+  的快捷键；点击的其它控件继续执行原操作。
+- 自动结果：真实离屏 QML 鼠标测试覆盖输入框开始录入、点击空白处取消、点击其它控件
+  取消并继续操作，以及取消后界面值和控制器值保持原快捷键。构建入口公开边界扫描
+  360 个文件；完整 unittest 共 1607 项，其中 1600 项通过、7 项跳过；固定 VB-CABLE /
+  Frida 资源、PyInstaller、冻结 `--dry-run` 和 Qt 运行时检查通过。
+- 本地测试包：来源提交 `d131d07`。ZIP 为
+  `RemoteMicRC003-0.1.0-localtest-20260829-voice-hotkey-cancel1-portable.zip`，
+  143874983 字节，SHA-256 为
+  `306EE36301906813DFB25F7B0EF050166D71ED9CF68E360EE80D7CF6369954F7`；包内 EXE
+  SHA-256 为 `FD0C28978A17E183E3FE1D1D0A08EB19CB5A342D740D12768FE5CC08AB629134`。
+  ZIP 可正常打开，只有一个预期顶层目录，共 2088 个文件，包含规定的许可、版权、
+  第三方通知、归属和使用说明文件。
+- 交付边界：本包未签名，仅用于本地测试，不是候选或发布包。仍需在真实设置页确认
+  鼠标点击空白处、其它控件和切换页面都会退出录入并恢复原快捷键；状态为检查点待实测。
+
+### CHECK-VOICE-017 搜狗手动设置提示与废弃入口清理
+
+- 当前行为：已安装搜狗语音时不显示设置按钮，状态文字提示用户在任务栏通知区域
+  （含隐藏图标）右键搜狗语音图标并选择“设置”；Remote Mic 不再控制托盘、鼠标或
+  设置窗口。未安装时仍显示“去安装”，能找到 AI 工具箱就打开并提示手动安装，找不到
+  时只提示。微信输入法和 Windows 语音输入继续显示“打开设置”。
+- 清理范围：删除已经没有运行消费者的搜狗托盘 UI Automation / 鼠标自动化、RC003
+  设置页内不可达的 DJI Mic 2 页面分支，以及无消费者的辅助诊断和重置入口；旧 DJI
+  配置回退、设备档案和 `BackKeyCompatLayer` 兼容边界保留。
+- 自动结果：语音程序、真实离屏 QML、设置控制器、快捷键和诊断定向测试 375 项通过、
+  2 项按环境跳过；完整 unittest 1609 项通过、7 项按环境跳过。公开边界扫描 361 个
+  文件，`compileall`、`pip check` 和 `git diff --check` 通过。
+- 交付边界：本轮不构建、不打包、不发布。真实搜狗通知区域提示、AI 工具箱、微信与
+  Windows 设置入口，以及 RC003 按住说话、声音接收和文字上屏仍为检查点待实测。
+
+### CHECK-VOICE-018 迟到 HID 与 F5 跨轮残留
+
+- 已确认顺序：两台机器的黑匣子记录都能稳定得到
+  `AudioStarted -> F5 down -> AudioStopped -> 迟到 Raw Input mic down -> F5 up`。
+  旧代码在 `AudioStopped` 时过早结束手势，随后把迟到 HID down 当成下一轮并再次
+  发送宿主 DOWN；该轮没有匹配的 HID up，因而会留下宿主快捷键按下状态。长按会拉大
+  各来源到达间隔，所以更容易出现。
+- 当前行为：F5 永远不启动、发送或释放宿主语音快捷键，只能附着到已经存在的手势
+  帮助收尾。迟到 HID down 会并回旧轮；匹配过 down 的 HID up 才能释放，游离 up
+  被忽略。HID 已释放后，迟到 F5 up 会在设置热加载、普通映射和按键检测之前隔离
+  消费，不能影响下一轮。
+- 相邻边界：F5 up 早于 `AudioStopped` 时不提前释放宿主；HID tap 中途变为可用不
+  改写本轮来源归属；语音中途发起按键检测时，本轮收尾优先，检测请求留给下一轮；
+  cleanup 与 F5 回调交错后，新连接首个 F5 仍可正常投递。
+- 自动结果：本轮新增和受影响定向测试 32 项通过；完整 unittest 1633 项通过、
+  7 项按平台条件跳过且无 `ResourceWarning`。公开边界扫描 311 个文件，
+  `compileall`、`pip check` 和 `git diff --check` 通过。
+- 本地测试包：从 `ab61442`（包含修复提交 `e97b424`）使用 Python 3.12 完成未签名
+  便携包构建；构建入口内 1629 项测试通过、7 项跳过，EXE `--dry-run` 与 Qt 运行时
+  自检通过。ZIP SHA-256 为
+  `EE1A0B843F75CE0A149465CB5B0F7735AD5E21793093443FF27C70845C1EF678`。
+- 人工结果：2026-08-30 用户在真机复测后确认，长按语音结束后不再出现连续按键或
+  卡键现象；本项通过并收口。
+
+### CHECK-NAV-016 元素导航转向与远斜跳约束
+
+- 当前行为：连续同方向移动继续保留进入长条或缺列区域时的列/行位置；方向改变时先
+  回到当前真实元素范围，避免把上一方向的虚拟通道带入新方向。若目标明显偏离当前
+  通道，且已有同一行或同一列的正交邻居，本次方向键保持原位，要求先完成横向或纵向
+  对齐；没有正交路径时仍保留原有斜向候选。
+- 兼容边界：正交领地图和全部邻接边不删除，已有遍历、立即反向、长输入框跨列、缺列
+  动作轨迹和远处元素不重排本地路线的合同继续保留。诊断模式会明确提示需要先对齐。
+- 自动结果：元素导航 151 项、`py_compile` 和 `git diff --check` 通过；1,000 组随机
+  散乱界面的 85,112 个方向入口确认所有拦截都有可用正交步骤，规则网格零误拦截。
+  99 / 300 目标的建图和四向判断中位约 23.65 / 198.25 毫秒。
+- 交付边界：本轮不构建、不打包、不发布。真实 Codex 悬浮动作、其它宿主软件连续
+  导航手感和 RC003 实体按键仍为检查点待实测。
+
+### CHECK-NAV-017 元素导航缩放稳定与分界辅助
+
+- 当前行为：通道容差和领地共边门槛随当前目标集合的典型尺寸变化；小目标的共边门槛
+  另受自身尺寸限制。正交对齐只有在旁边路径能够实际转到当前候选时才拦截，旁边死路
+  不再造成方向键无反应。
+- 分界行为：明确左右栏的竖直分界只辅助上下移动，明确上下横带的水平分界只辅助左右
+  移动；与分界线垂直的移动不受限制。辅助只调整同方向候选顺序，没有同栏候选时仍可
+  跨栏，不删除领地邻接边。
+- 自动结果：元素导航 157 项、`py_compile` 和 `git diff --check` 通过。1,000 组随机
+  布局检查 114,689 个方向入口，其中 4,952 次正交拦截均存在真实转弯路径。当前 Codex
+  157 个目标在 75% / 100% / 125% 等比坐标下的 628 条方向结果零变化，三次建图约
+  29.64 至 31.25 毫秒；99 / 300 目标的建图和四向判断中位约 18.24 / 180.47 毫秒。
+- 交付边界：本轮不构建、不打包、不发布。真实窗口缩放、截图中的消息操作和图片缩略图、
+  明确分栏以及 RC003 实体按键仍为检查点待实测。
+
+### CHECK-NAV-018 元素导航投射优先与领地后备
+
+- 根因：当前正交领地始终为单块矩形，没有飞地或异形；问题发生在邻接图被当成唯一
+  候选来源。更近的真实正向元素若没有与当前领地共边，会在距离排序之前就被排除。
+- 当前行为：上下左右先合并真实矩形投射命中与领地共边目标。投射命中不再要求领地
+  共边，但不能越过更近的领地前沿；同一前沿内按真实距离排序，并继续应用平行分界辅助。
+  因此正向目标不会被更远斜向目标抢走，缺列、长输入框和逐行经过中间元素仍保留。
+- 自动结果：元素导航 159 项通过。1,000 组随机布局共检查 62,426 个有候选方向入口；
+  6,429 个斜向首邻与正向投射并存入口中，0 次丢失更近且完全位于请求方向的投射目标；
+  45,796 个投射与邻接并存入口中，0 次越过首个领地前沿。300 目标建图约 203.07 毫秒，
+  1,200 次首次四向查询共约 807.72 毫秒，缓存后共约 1.20 毫秒。
+- 真实快照：同一份 ChatGPT 157 目标、628 条首选路线与修改前比较，共 10 条变化；其中
+  4 条从远斜向改为更近的正向投射，0 条从正向退化为斜向。交付状态为检查点待实测，
+  不构建、不打包、不发布；仍需用户验证截图中的附件、消息动作、其它软件和 RC003
+  实体方向键。
+
+### CHECK-DESKTOP-001 统一窗口、自动启动与三态图标
+
+- 范围：设备页底部三个桌面选项、配置 schema 9、用户级 Windows 登录自启、隐藏启动参数、
+  设置单实例恢复、桥接子进程图标抑制、完全退出清理、窗口/任务栏/通知区域三态图标、
+  PyInstaller 和 Inno Setup 图标与卸载清理。
+- 自动结果：生命周期、配置、入口、Qt、安装器、资源、隐私与公开边界相关定向测试
+  700 项通过，2 项按平台条件跳过；Basic/FluentWinUI3 在 `640×480` 和 `720×500`
+  下真实 QML 加载与布局通过；`compileall`、公开边界扫描 324 个文件和 diff 检查通过。
+  未写入真实用户注册表或配置，未启动/停止真实桥接。
+- 人工步骤：确认任务栏图标只对应当前程序窗口；关闭窗口默认隐藏且通知区域可恢复；
+  切换为完全退出后桥接正常停止；分别验证仅开机启动、仅自动桥接和两个选项同时开启；
+  观察服务未启动、等待小米遥控器2 Pro、小米遥控器2 Pro 已连接时的灰色斜杠、灰色、蓝色麦克风状态。
+- 2026-08-30 调整结果：单独“常规”页已移除，三个选项作为一整组移到设备页底部；
+  “启动程序时自动启动桥接”只复用一次设备页“启动桥接”动作，与随 Windows 启动互不
+  绑定。用户可见设备名称统一为“小米遥控器2 Pro”，内部兼容标识保持不变。相关 613 项
+  自动测试中 610 项通过、3 项按平台条件跳过，`compileall` 和 diff 检查通过。
+- 本地测试包：用户明确要求后，从提交
+  `a3199052bdc491ef95a1a866961879581ce4f569` 加工作树差异 SHA-256
+  `7DABB80EA4A5CE72FED7DE8B0BED114166F4D1C5883AE7BD9335D141F82EBF27` 执行完整构建
+  门禁；公开边界扫描 324 个文件，完整 unittest 1674 项通过、7 项按平台条件跳过，
+  PyInstaller、冻结 `--dry-run` 和 Qt 运行时检查通过。
+- ZIP 为 `RemoteMicRC003-0.1.0-localtest-20260830-fullcheck1-portable.zip`，
+  143,884,330 字节，SHA-256 为
+  `4605F9C6002997EFC389C57E81325F8513624F6E45DE586FD503378FFA27DE49`；包内 EXE
+  SHA-256 为 `5B80F6C3EEEC23F0B06CA798FA067C335328302C668DC6A543A6990B0849F426`。
+  ZIP 可正常打开，只有一个预期顶层目录，包含 2096 个文件及规定的许可、版权、第三方
+  通知、归属和使用说明。
+- 状态：检查点待实测。上述 ZIP 早于本次页面位置和文案调整，不包含本轮修改；本轮未
+  制作新测试包、候选或发布包。
+
+### CHECK-NAV-019 元素导航正式接入按键映射
+
+- 当前行为：动作下拉按五类显示分隔标题，标题不是选项；单击、双击和长按都可选择
+  “元素导航开关”。首次触发按需启动独立伴随进程，再次触发退出当前导航；
+  桥接完全退出时会通知或清理伴随进程，主进程异常消失时伴随进程也会自行退出。
+- 兼容边界：旧配置中的 `lctrl+win`、`ralt`、`ralt+space` 以及旧版“Return、
+  Delete（退格）、上下文菜单”仍可读取，只是不再作为默认列表项或旧名称显示。
+- 审计结果：取消扫描后的旧结果不能重新显示蓝框；扫描期间导航键不会穿透原软件；
+  按住导航键进入扫描时仍会把对应松手交还原软件。Quicker 状态和进程名使用短缓存，
+  关联悬浮窗常规检查降为约每秒一次，但即将离开导航前会强制补查，避免误退。
+- 自动结果：元素导航控制与空间导航 222 项、并发退出兼容 5 项通过；完整 unittest
+  1,734 项通过、7 项按平台条件跳过；`compileall` 和工作树 diff 检查通过。
+- 人工步骤：分别在单击、双击和长按中选择“元素导航开关”，保存并重开；
+  确认首次触发能进入当前前台窗口、再次触发能退出，方向、回车、右键菜单和音量映射
+  可继续完成移动、点击、右键和滚动；完全退出后不残留元素导航进程。
+- 状态：检查点待实测。本轮不构建、不打包、不发布。
+
+### CHECK-NAV-020 元素导航独立发布准备
+
+- 范围：去除导航宿主对 `ovb_rc003` 和MoteDeck产品名的运行依赖，拆出通用 Win32 命令
+  服务；建立独立入口、精简依赖、归属与第三方说明、发布检查清单和可重复导出脚本。
+- 单一来源：MoteDeck伴随进程与独立导出继续使用 `apps/windows/rc003/scripts` 中同一份
+  导航算法；独立目录只保存发布模板，不复制维护第二套源码。
+- 自动结果：受影响范围合并检查 551 项通过、2 项按平台条件跳过；从系统临时目录中的
+  独立导出副本再次运行导航核心 204 项通过，并完成无依赖安装后的独立导入检查；
+  `py_compile` 和 `git diff --check` 通过。
+- 状态：源码发布准备已完成，独立导出使用 GPL-3.0-only，并包含版权、归属和第三方
+  说明；未制作 EXE。独立 Git 仓库、公开推送和发布状态按实时 GitHub 结果核实。
+
+### CHECK-NAV-021 方向点按全局归属与大框兜底
+
+- 现象：真实 RC003 点按一个方向时，元素导航和 Windows 任务切换器都可能同时收到设备
+  原始方向键和软件映射键，表现为一次走两步；部分 Windows 窗口初扫只暴露整窗或内部
+  大容器，导航会先停在大框。
+- 修复：HID tap 在软件映射前把虚拟键、扫描码、扩展标志和按下/松开交给进程内全局
+  低层钩子，只吞掉同一次设备操作泄漏的原始方向边沿和按住重复；软件映射、普通电脑
+  键盘、快速两次点按和长按重复保持原逻辑。元素导航原有归属逻辑保留为全局钩子不可用
+  时的局部兜底，退出导航时仍清除未完成配对。自检另覆盖设备完整松开后 Windows 原始
+  按下和抬起才迟到的顺序、两次完整设备点按先于 Windows 边沿到达的顺序，以及原始按下
+  先通过时必须继续放行对应松开、不能造成卡键的反向顺序。
+  最外层窗口框不再成为目标；内部大容器已有细元素时删除，只有大容器时在第一次移动前
+  最多补扫 0.25 秒，仍无细元素才继续作为兜底，真实输入框不按大容器删除。
+- 自动结果：全局低层钩子、应用接线、元素导航、输入发送和 HID 映射共 617 项通过、
+  1 项按环境跳过；相关 Python 语法和工作树差异检查通过。
+- 人工步骤：先用 TV 键打开任务切换器，分别短按、快速连按和长按左右方向，确认短按一步、
+  快速两次仍是两步、长按连续移动；再在 Windows 设置和曾出现大框的窗口中复测四方向及
+  大容器进入。导航开启时按住方向后退出并重新开启，确认不会残留锁键或误吞下一次输入。
+- 状态：检查点待实测。本轮不构建、不打包、不更新公开仓库；`candidate.27` 只包含此前
+  的元素导航局部归属，不能作为任务切换方向单次触发的通过依据。
+
+### CHECK-DESKTOP-002 便携版安全切换与短提示
+
+- 当前行为：发现旧版时，首次弹窗只询问是否退出旧版并打开当前版本。更早版本 5 秒内
+  没有接收退出请求时，只提示从通知区域选择“完全退出”；退出后当前版本自动打开。
+  等待期间再次双击不会新增进程，只复用同一条短提示。
+- 自动结果：隔离源码先运行完整构建门禁，1956 项 unittest 通过、7 项按平台或安全
+  条件跳过；公开边界、固定第三方资源、PyInstaller、冻结 `--dry-run` 和 Qt 运行时
+  检查通过。最终短文案同步后，入口与单实例相关 107 项通过、1 项按平台条件跳过，
+  并重新完成 PyInstaller、冻结 `--dry-run` 和 Qt 运行时检查。
+- 本地测试包：`MoteDeck便携测试包-006.zip`，161,752,705 字节，
+  SHA-256 为 `FE8EBAF3075A7A3596826D894EEC07DCBA91E71C4C3FC959350981874555FF15`；
+  包内主 EXE SHA-256 为
+  `A4DD75D9D04E670B97FEB1E8C629F34896BA88EF1EF59AF2402316973A552CB0`。
+  ZIP 只有一个 `RemoteMicRC003-0.2.0-candidate.6` 顶层目录，2100 个文件与构建输出
+  逐文件一致；根层只有 `RemoteMicRC003.exe`，HID 助手只在 `_internal`。
+- 来源边界：构建基线为 `fed1f0f658944a633466b37cda6fa0c7519b0d95`，只带入本轮
+  `candidate.6` 版本切换修复和配套说明，未带入提交 `4c8c878` 的鼠标映射功能。本包
+  未签名，只用于本机测试，不是正式候选或发布包。
+- 人工步骤：先运行旧版，再双击本包；确认首次弹窗为两句短话。选择“是”后，更早旧版
+  未自动退出时应出现两句操作提示；从旧版通知区域选择“完全退出”后，本包应自动打开，
+  且任务栏和通知区域不出现第二套长期进程。
+- 状态：检查点待实测。
+
+### CHECK-DESKTOP-003 综合便携测试包 007（已作废）
+
+- 来源提交：`6fc6e8b97e3260b109be2451b65eea3871cdc64f`，包含便携版安全切换、短提示、
+  鼠标映射及输入所有权修复；从该提交建立隔离工作区全新构建，未复用既有 `dist`。
+- 自动结果：公开边界扫描 226 个文件通过；完整 unittest 共运行 1991 项，其中
+  1984 项通过、7 项按平台或安全条件跳过；固定第三方资源、PyInstaller、冻结
+  `--dry-run` 和 Qt 运行时检查全部通过。
+- 本地测试包：`MoteDeck便携测试包-007.zip`，161,762,399 字节，SHA-256 为
+  `BCB31C01BE4A61E73D2AA6CC189755864FFE12AF383CF8BDE7560B3C688ACA76`；包内主 EXE
+  SHA-256 为 `46C6E96FD6C1A58F962837807C3A8AC80CA1C06005B3387FFCFA938382009350`。
+- 包结构：ZIP 只有一个 `RemoteMicRC003-0.2.0-candidate.6` 顶层目录，2100 个文件
+  已逐文件核对；根层只有 `RemoteMicRC003.exe`，HID 助手只在 `_internal`。
+- 2026-09-05 复核发现：该包的冻结 HID 助手遗漏 `ovb_rc003/VERSION`。程序尝试启用
+  方向改键时，助手会在导入阶段弹出 `Unhandled exception in script` 并退出；两次启动
+  因而留下两个英文错误框。原门禁只检查主程序和文件位置，没有实际运行助手。
+- 状态：该 ZIP 作废，禁止继续测试，也不能作为候选或发布依据。后续包必须先通过冻结
+  助手 `--self-check`、主程序 `--dry-run`、Qt 运行时检查和 ZIP 逐文件回读核对。
+
+### CHECK-DESKTOP-004 综合便携测试包 008（已过期）
+
+- 修复范围：冻结 HID 助手补齐 `VERSION` 并把异常改为静默失败码；构建与打包实际执行
+  助手 `--self-check`；接管能力提早发布并等待 10 秒；旧版取消、保存失败和退出失败
+  立即回传，无法回传的旧版最长等待 45 秒；构建锁扩大到整台电脑并补齐来源指纹范围。
+- 自动结果：公开边界扫描 520 个文件通过；完整自动测试 2156 项通过、7 项按平台或安全
+  条件跳过；PyInstaller、主程序 `--dry-run`、HID 助手 `--self-check`、Qt 运行时检查
+  和 ZIP 逐文件哈希回读全部通过。
+- 来源：提交基线 `eb5731b05664776cc7a15ae1764bb77aeceeafe4` 加本任务工作树差异；
+  构建输入 214 个文件，来源指纹 SHA-256 为
+  `904A2856967599C9F5373095739ED4E87D4486B915A026A842C094FCF96CAD18`。
+- 本地测试包：`MoteDeck便携测试包-008.zip`，162,338,317 字节，SHA-256 为
+  `8A1125B668B0A62F1836D7EF9936B351EB983B465F3E124A8C08C8065FD1B733`；包内主 EXE
+  SHA-256 为 `3A853E9A3E95D402F664207A2C95E9877301B5DE50B843A3B2DFAD00ACEF778B`。
+- 包结构：只有一个 `RemoteMicRC003-0.2.0-candidate.8` 顶层目录，共 2124 个文件；
+  根层只有 `RemoteMicRC003.exe`，内部 HID 助手、`ovb_rc003/VERSION` 和
+  `build-provenance.json` 均存在且与构建结果一致。
+- 状态：历史构建数据保留。2026-09-05 已由包含后续输入、权限和安装合同修复的 `009`
+  取代，禁止继续测试，也不能作为当前候选或发布依据。
+
+### CHECK-DESKTOP-005 综合便携测试包 009
+
+- 修复范围：管理员按键组件不可用时全部自定义映射停用，只保留 Windows 原始按键；
+  Raw Input listener 的启动、退出、代次和恢复统一串行，旧回调不能复活已退出监听或污染
+  当前手势。权限、自启动、单实例、跨版本接管、默认完整退出和安装升级合同完成联合复核。
+- 安装安全合同：历史快捷方式只在新版文件验证和旧版备份提交均成功后删除；任一步失败
+  都不会提前删除。主程序和登录自启保持普通权限，当前管理员账号首次登记固定 HID 助手
+  时确认一次 UAC，后续普通启动和登录自启不再重复授权。
+- 自动结果：公开边界扫描 435 个文件通过；完整 unittest 2351 项通过、7 项按环境跳过；
+  独立资源释放复测、PyInstaller、主程序 `--dry-run`、HID 助手 `--self-check`、Qt 运行时、
+  Inno Setup 6.7.3 编译和 ZIP 逐文件哈希回读全部通过。
+- 来源：提交基线 `3baa7e97634806dd41d35423719667142c29bcea` 加本任务工作树差异；构建输入
+  217 个文件，来源指纹 SHA-256
+  为 `CDB37447B30C54271FB1A8960897B56AE69CA123A82A60ABF9B24FEE5C459F95`。
+- 本地测试包：`MoteDeck便携测试包-009.zip`，162,396,308 字节，SHA-256 为
+  `726EF719757449D63F84C08DA706E49962362C905A523872930E7DD5DE799BB9`；包内主 EXE
+  SHA-256 为 `9EDBFFA33494466551FBDAF3E185B59119FB7956B58396627B1061FB55EF4F35`，内部 HID
+  助手 SHA-256 为 `25EE8A84FC97EB3F0DA8BEAE3CC6EDFE0C0C0E1F183445590BC52BD5EAB31E43`。
+- 包结构：只有一个 `RemoteMicRC003-0.2.0-candidate.9` 顶层目录，共 2124 个文件；
+  根层只有 `RemoteMicRC003.exe`，HID 助手、`ovb_rc003/VERSION` 和
+  `build-provenance.json` 均位于 `_internal` 并与构建结果一致。
+- 同源安装器：`RemoteMicRC003Setup-0.2.0-candidate.9-unsigned.exe`，107,604,622 字节，
+  SHA-256 为 `DA24CEC0CB59CEDF3963397530AF4F9D9B562246B3AE465BFB77FBC231DB720D`。
+- 人工步骤：先验证旧版运行时双击 `009` 能明确接管且最终只剩一个主进程；再验证首次
+  UAC、后续普通启动和重新登录自启不再弹 UAC；逐项验证四方向短按一次、长按松手即停、
+  快速连按、自定义按键和组合映射；最后验证窗口默认完整退出，以及主动改为隐藏到通知
+  区域后可恢复并从通知区域完全退出。
+- 状态：历史构建数据保留。2026-09-05 已由修正权限说明的 `010` 取代，禁止继续测试，
+  也不能作为当前候选或发布依据。
+
+### CHECK-DESKTOP-006 综合便携测试包 010
+
+- 覆盖范围：保留 `009` 的按键生命周期、权限、自启动、单实例、跨版本接管、默认完整
+  退出和安装升级修复，并把所有当前用户提示统一为“管理员按键组件负责全部自定义按键
+  映射”；组件不可用时全部自定义映射停用，只保留 Windows 原始按键操作。
+- 自动结果：定向合同 541 项通过；公开边界扫描 435 个文件通过；完整 unittest 2351 项
+  通过、7 项按环境跳过；PyInstaller、主程序 `--dry-run`、HID 助手 `--self-check`、
+  Qt 运行时、Inno Setup 6.7.3 编译和 ZIP 逐文件哈希回读全部通过。
+- 来源：提交基线 `3baa7e97634806dd41d35423719667142c29bcea` 加本任务工作树差异；构建输入
+  217 个文件，来源指纹 SHA-256
+  为 `2CB4C1B780C8D9FC4C8764F4C8CC596466CA64F65B0744637A293FE17107321B`。
+- 本地测试包：`MoteDeck便携测试包-010.zip`，162,403,958 字节，SHA-256 为
+  `CF86F0E860290E85C88225240FF15EB81E5BF54442DEE36A5062988557ADC2D4`；包内主 EXE
+  SHA-256 为 `C7563F74CB45570A063F06ED683B73CD103EBE750C72485DD21F9EA260BD4A7F`，内部 HID
+  助手 SHA-256 为 `A66BA39500F7E491E728D5B6C2CB72C56DB40D47071CA6D11915E1362C2BCEBB`。
+- 包结构：只有一个 `RemoteMicRC003-0.2.0-candidate.10` 顶层目录，共 2124 个文件；
+  根层只有 `RemoteMicRC003.exe`，HID 助手、`ovb_rc003/VERSION` 和
+  `build-provenance.json` 均位于 `_internal` 并与构建结果一致。
+- 同源安装器：`RemoteMicRC003Setup-0.2.0-candidate.10-unsigned.exe`，107,605,770 字节，
+  SHA-256 为 `7F0975F76A43364AA3B718845057163666774E32F7F8016CAE3448AA665176CE`。
+- 人工步骤：先验证旧版运行时双击 `010` 能明确接管且最终只剩一个主进程；再验证首次
+  UAC、后续普通启动和重新登录自启不再弹 UAC；逐项验证四方向短按一次、长按松手即停、
+  快速连按、自定义按键和组合映射；最后验证窗口默认完整退出，以及主动改为隐藏到通知
+  区域后可恢复并从通知区域完全退出。
+- 状态：历史构建数据保留。2026-09-05 已由 `011` 取代，禁止继续测试，也不能作为
+  当前候选或发布依据。
+
+### CHECK-DESKTOP-007 综合便携测试包 011
+
+- 覆盖范围：修正 Windows 自动补出空任务触发器后管理员按键组件被误判并回滚的问题；
+  首次权限弹窗改为高亮“打开”和文字式“不打开”；新配置关闭窗口默认隐藏到通知区域，
+  已有合法选择保留。`009/010` 的按键释放、单实例、旧版接管和自启动结构继续保留。
+- 自动结果：权限弹窗、控制器和 QML 定向检查 228 项通过；HID 瞬时失败三次上限、第四轮
+  停止、宿主 PID 变化及失败后恢复 3 项通过；公开边界扫描 435 个文件；完整 unittest
+  2376 项通过、7 项按环境跳过；资源泄漏门禁、PyInstaller、主程序 `--dry-run`、HID
+  助手 `--self-check`、Qt 运行时和本地 ZIP 校验全部通过。
+- 来源：提交基线 `ee0283a0a5ee7891781004352d055e8cade6c6f3` 加本任务工作树差异；构建输入
+  217 个文件，来源指纹 SHA-256 为
+  `D2DEC9A8E6AE5F255671A282DB54E2BC26DC0C9BFACF1A724D9BB5C3A2289C1C`。
+- 本地测试包：`MoteDeck便携测试包-011.zip`，158,952,125 字节，SHA-256 为
+  `170FF6C620453CD2C50D098C0B3B2A1BB68FD2065862AD228EEDE92E478E2481`；包内主 EXE
+  SHA-256 为 `202C4644CA4B608BFE0A7D791DE6F9C8C175467CD1F17E683D85D506AF3AECE4`，内部 HID
+  助手 SHA-256 为 `7514777842CAD4A9FD54FB7430CECE40806EB456FAFEC3139E09C78E6F6FC7CB`。
+- 包结构：只有一个 `RemoteMicRC003-0.2.0-candidate.11` 顶层目录，共 2144 个条目（其中
+  2124 个文件）；根层只有 `RemoteMicRC003.exe`，HID 助手和来源指纹均位于 `_internal`。
+- 人工验收：首次普通打开确认弹窗标题、正文和两个按钮，点“打开”只确认一次 UAC；
+  成功后反复普通启动及重新登录自启均不再弹 UAC，设备页不再显示管理员按键组件失败。
+  再核对自定义方向键、遥控器语音键和搜狗快捷键；四方向逐项短按、长按、快速连按，
+  并在松手、断连、停止服务和退出后确认没有双触发、锁键或遗留按下状态。新配置点 `×`
+  应隐藏到通知区域并可恢复；改为“完全退出”后窗口、通知区域图标和进程应全部消失。
+  最后在旧版运行时启动 `011`，按明确提示完成切换，最终只保留一个主程序进程。
+- 状态：历史构建数据保留。2026-09-06 已由 `012` 取代，禁止继续测试，也不能作为
+  当前候选或发布依据。
+
+### CHECK-DESKTOP-008 综合便携测试包 012
+
+- 覆盖范围：修正 Windows 规范化计划任务 ACL 后被旧校验误判并回滚的问题；安装后优先
+  校验注册返回对象，并只对任务暂不可见或暂不可查询做最长 5 秒重查。管理员助手的安装、
+  复制、权限、任务、清单和回滚失败现在能以脱敏阶段写入日志。`011` 的首次提示、默认
+  隐藏到通知区域、按键释放、单实例、旧版接管和普通权限登录自启结构继续保留。
+- 自动结果：受影响范围 745 项通过且无 `ResourceWarning`；公开边界扫描 435 个文件；
+  完整 unittest 2398 项通过、7 项按环境跳过；资源泄漏门禁、PyInstaller、主程序
+  `--dry-run`、HID 助手 `--self-check`、Qt 运行时和本地 ZIP 完整性检查全部通过。
+- 来源：提交基线 `d57acfe71814ba55d00b704bdf25f698905d31e4` 加本任务工作树差异；构建输入
+  217 个文件，来源指纹 SHA-256 为
+  `49C9E3D78AEAE91B13FA68711DEA565DB8F017855EE834BDD9EB14557995187A`。
+- 本地测试包：`MoteDeck便携测试包-012.zip`，162,415,133 字节，SHA-256 为
+  `59B5D9FDC8BF6E0C1CECB1A41501E645860BCC31C56ECB1266FD64DF818AA10E`；包内主 EXE
+  SHA-256 为 `D65D308C590DAD7969308523B9009EE48C62D940781B9A71775D186C1A287A84`，内部 HID
+  助手 SHA-256 为 `38531357114F1E4A17F4F5F2D485FFD79B5CE0C56FA200C092B243F38415FE1F`。
+- 包结构：只有一个 `RemoteMicRC003-0.2.0-candidate.12` 顶层目录，共 2144 个条目（其中
+  2124 个文件）；根层只有 `RemoteMicRC003.exe`，管理员助手和来源指纹均位于
+  `_internal`。ZIP 与构建目录、随包说明和许可文件逐文件哈希一致。
+- 人工验收：首次普通打开点高亮“打开”，确认一次 UAC 后应直接启用成功，设备页不再
+  显示管理员按键组件失败；随后完全退出并反复普通启动、启用改键及重新登录自启，均不应
+  再弹 UAC。核对自定义方向键、遥控器话筒键和搜狗快捷键；四方向逐项短按、长按、快速
+  连按，并在松手、断连、停止服务和完全退出后确认无双触发、锁键或遗留按下状态。新配置
+  点 `×` 应隐藏到通知区域并可恢复；改为“完全退出”后窗口、通知区域图标和进程应全部
+  消失。最后在旧版运行时启动 `012`：旧版能配合时自动接管，不能配合时只明确要求先退出；
+  旧版真实结束后新版再出现，最终只保留一个主程序进程。
+- 状态：未签名本机测试包，检查点待实测，不是正式候选或发布包。`011` 已过期，后续
+  实机改用 `015`；`012` 保留为历史构建记录，不再继续测试。
+
+### CHECK-DESKTOP-009 综合便携测试包 015
+
+- 覆盖范围：修正任务计划程序省略默认设置节点、运行实例状态未主动刷新时，管理员按键
+  组件可能被误判为失败的问题；桌面启动前安全迁移历史独立服务，按登录会话隔离运行状态，
+  并原子清理旧状态。设备页状态按真实通道拆分，右侧按钮在需要时直接显示“立即连接”或
+  “重新启动”，备注缩短且状态与备注均完整显示。默认关闭窗口仍为隐藏到通知区域。
+- 自动结果：最终完整 unittest 2430 项通过、7 项按环境跳过；PyInstaller、主程序
+  `--dry-run`、HID 助手 `--self-check`、Qt 运行时和本地 ZIP 完整性检查全部通过。
+- 来源：提交基线 `d11da70` 加本任务工作树差异；构建输入 217 个文件，来源指纹
+  SHA-256 为 `8B07CACC50DC98F4EDBA116BC396FBD570EDEBCAE1606C07FED941BFF455EA6D`。
+- 本地测试包：`MoteDeck便携测试包-015.zip`，158,972,155 字节，SHA-256 为
+  `A4261E9D5F977BF938D55B4C6FEFEE96E1DF5841736E25C1DD53F2D2F4CBB080`；包内主 EXE
+  SHA-256 为 `5577233E1C1CD89C6AAB6B0D24CEED6B3EDF7879E2D46453E98F72486BFE042A`，内部 HID
+  助手 SHA-256 为 `937CC14A124B25B5299395333E498CA619206690C9A0E7728C92F8F657751E44`。
+- 包结构：只有一个 `RemoteMicRC003-0.2.0-candidate.15` 顶层目录，共 2144 个条目（其中
+  2124 个文件）；根层只有 `RemoteMicRC003.exe`，管理员助手和来源指纹均位于
+  `_internal`。
+- 人工验收：普通打开后按界面提示启用改键，只在首次确认一次 UAC；启用成功后完全退出并
+  反复普通启动，再重新登录验证自启动，均不应再次弹 UAC。该路径使用当前管理员账号测试；
+  标准账号应只提示“换管理员账号”，不显示无效启用按钮，也不弹无用 UAC。启动遥控器服务后
+  核对“按键接收”和“遥控器服务”的短状态、备注及右侧按钮与实际情况一致；出现“立即连接”
+  时点击验证，通道异常时应显示“重新启动”。四方向逐项短按、长按和快速连按，并在松手、
+  断连、停止服务和完全退出后确认没有双触发、锁键或遗留按下状态；再验证话筒键与搜狗
+  快捷键。新配置点窗口关闭按钮应隐藏到通知区域并可恢复；选择“完全退出”后窗口、通知区域
+  图标和进程应全部消失。最后在旧版独立服务运行时启动 `015`：旧版能正常退出时，新版只在
+  旧版真实结束并清理旧状态后打开；无法安全停止或清理时，新版不得打开，应明确提示，用户
+  完全退出旧版后重新启动 `015`。两条路径都不能显示上一次残留的连接或按键状态。
+- 状态：历史未签名本机测试包。`015` 已被未打包的 `0.2.0-candidate.16` 源码取代，
+  不再作为当前验收包；本轮没有制作 `016` 测试包。
+
+### CHECK-UPDATE-001 GitHub 手动检查与校验下载
+
+- 范围：固定官方仓库、候选版数字比较、稳定/预发行通道、发布资产完整性、URL 与重定向
+  限制、响应和文件大小上限、网络超时与限流、`SHA256SUMS.txt`、GitHub 可选摘要、
+  `.part` 清理、取消、已有文件复用、安装版/便携版选择、退出竞态、文件丢失后重新下载，
+  以及更新弹窗和“运行日志”旁入口。
+- 自动结果：2026-09-06 使用项目 `.venv` 和 `-W error::ResourceWarning` 运行更新模块、
+  `--dry-run`、设置控制器、更新文档合同及 Qt 离屏布局共 312 项，全部通过；更新弹窗在
+  `640x480`、`720x560` 下无 QML 警告，紧凑三页布局中的“检查更新”和“日志目录”均未溢出。
+- 真实 GitHub 只读结果：当前 `0.2.0-candidate.16` 查询到公开
+  `0.2.0-candidate.2`，结果为 `local_newer`，没有误报升级或降级；同次发布的安装器、
+  便携 ZIP 和 `SHA256SUMS.txt` 均被识别。本次没有下载大型发布资产。
+- 补充结果：`candidate.17` 已增加“最新版本不完整时不得退回旧包”和过期下载缓存安全
+  清理的正反例，并进入 `MoteDeck便携测试包-017.zip`。陌生文件、链接和更高版本目录保留。
+- 状态：自动检查通过并已进入本地测试包；真实“有新版”下载仍待后续 Release 验证。
+
+### TEST-UPDATE-001 手动更新界面与分发流程
+
+- 当前版本检查：从真实设置页点击“检查更新”，确认只有点击后联网；当前
+  `0.2.0-candidate.19` 应显示“当前版本较新”，关闭后焦点回到原入口。
+- 有新版流程：后续存在高于当前内部版本的完整 Release 时，分别用安装版和便携版确认
+  版本、说明、包类型、大小、下载进度、取消与重新下载；断网、限流、校验失败和下载文件
+  被移动后都应保留当前程序可用，并能重试或打开发布页。
+- 下载后：安装版只打开文件夹，用户完全退出后手动运行安装器；便携版只打开文件夹，用户
+  完全退出后解压到新目录。两者都不得由程序自动运行、覆盖或重启。
+- 状态：检查点待实测。真实“有新版”与完整包下载要等后续发布高于当前内部版本时执行；
+  本轮没有为此制作测试包，也没有自动安装范围。
+
+### CHECK-DESKTOP-010 综合便携测试包 017
+
+- 覆盖范围：第 7 代管理员 HID 助手、分阶段失败日志、普通权限主程序、旧服务与旧状态
+  安全接管、设备页短状态和直接操作按钮，以及手动更新不回退旧版本和过期缓存清理。
+- 自动结果：新增更新、接管和入口定向检查 148 项通过；同一源码状态已完成 HID 权限与
+  注入、产品身份、设备页状态布局检查。冻结 HID 助手、主程序导入、Qt 运行时和 ZIP 内容
+  校验通过；本轮按本机测试包口径未重跑完整测试套件。
+- 来源：提交基线 `d11da70` 加工作树差异；构建输入 219 个文件，来源指纹 SHA-256 为
+  `0E29BA38A3F188B5EB02101F42FB7C5A75C87A92BC3BB36B74D3B1207AF1CAE2`。
+- 本地测试包：`MoteDeck便携测试包-017.zip`，159,004,633 字节，SHA-256 为
+  `D9D31DF5835708A055316234BFBD704E8A842454F921BE7EEFC9250921251857`；包内主 EXE
+  SHA-256 为 `5EE6C2D64AC09CA46DCD7DA3A94F0296A68C24A67F0F6294A04AE96031582196`，内部 HID
+  助手 SHA-256 为 `2C8E49541602B2E9263CAACE04B98D4A97F4223AB28ACB26B371AB8491FC925D`。
+- 人工验收：首次普通打开点“打开”并确认一次 UAC，确认改键启用成功；完全退出后普通
+  双击不再弹 UAC，自启动同样不弹；再测四方向短按、长按、快速连按、自定义映射和搜狗
+  快捷键，确认无双触发、锁键或松手后继续；最后验证重复启动只唤出同一程序，旧版运行时
+  新版只有在旧版真实退出后才打开，窗口关闭默认隐藏且通知区域可完全退出。
+- 状态：未签名本机测试包，检查点待实测，不是正式候选或发布包。`015` 及更早测试包过期。
+
+### CHECK-DESKTOP-011 管理员运行权限与便携测试包 019
+
+- 覆盖范围：第 8 代管理员 HID 助手、`LocalService` 运行文件权限、旧权限自动校正，以及
+  HID 已挂接但尚未收到首次实体按键时的设备页状态和按钮。
+- 自动结果：管理员组件 124 项、设备页状态 3 项定向检查通过；冻结 HID 助手自检、主程序
+  `--dry-run`、Qt 运行时和 ZIP 内容校验通过。本轮没有重跑完整测试套件。
+- 本地测试包：`MoteDeck便携测试包-019.zip`，159,005,819 字节，SHA-256 为
+  `E2572A1FEAF3A5FFD85D0BF0D7CA587786C4A6DE754A9B839B3CD98DC160642B`；包内主 EXE
+  SHA-256 为 `23B64D358281C4D6E27D9003F9AF727FC030E8C9A9C2DAC7D0F86F2F5F8118DB`，内部 HID
+  助手 SHA-256 为 `341E7BDF62CEB66E4AB7C9097E609292CB7591F083A438198D6B5BF4DC531F1C`。
+- 人工验收：在有真实 RC003 的主控端解压到新目录并运行。首次需要时确认一次 UAC；设备页
+  若显示“请按遥控器”，按任意方向键后应进入正常状态且不出现循环重连。随后验证四方向
+  单击、长按、快速连按和松开无双触发、锁键或残留，再验证自定义映射和语音快捷键。
+- 状态：未签名本机测试包，检查点待实测，不是正式候选或发布包。`017` 及更早测试包过期。
+
+### CHECK-DESKTOP-012 三页使用流程与便携测试包 020
+
+- 覆盖范围：普通启动与管理员按键准备、服务启动和状态恢复；实体按键检测、快捷键录入、
+  自定义映射保存与按键生命周期；声音通道测试、实际说话前置检查、语音程序唤起和松键结束。
+- 输入边界：迟到的 Windows/F5 重复事件不能提前释放方向键或语音快捷键；检测和录入退出后才
+  保存或进入下一项操作；松键、断连、停止服务和完全退出均释放当前按下状态。
+- 语音边界：声音通道测试恢复服务时不启动或预热输入法；“实际说话”只有在管理员按键、服务、
+  遥控器连接、话筒键映射、快捷键和音频端点均就绪时才开始，否则界面给出对应操作。
+- 自动结果：完整 unittest 2501 项通过、7 项按环境跳过，资源释放门禁通过；PyInstaller、
+  主程序 `--dry-run`、管理员 HID 助手 `--self-check`、Qt 运行时和 ZIP 逐文件校验全部通过。
+- 构建来源：输入 219 个文件，来源指纹 SHA-256 为
+  `6D872C177256B667266A42F2DEEB3BD1155941A02E4A72E13BB5F2252A3A2AE6`。
+- 本地测试包：`MoteDeck便携测试包-020.zip`，162,460,385 字节，SHA-256 为
+  `D831D5D885935FA41E469A8B6AD3F168CDD2DE1269BACEC360A8EFFED0D3BB81`；包内主 EXE
+  SHA-256 为 `5876DB25251EC8549EDAB177D70842B74C8BEAF81FDD9DCEFA82A5CAED014844`，内部 HID
+  助手 SHA-256 为 `010CCF954EBEED4C7EE0116425C85FDD51C0E24A3B35615D7C70E186AA9A693A`。
+- 包结构：只有一个 `RemoteMicRC003-0.2.0-candidate.20` 顶层目录，共 2124 个文件；根层只有
+  `RemoteMicRC003.exe`，管理员 HID 助手、版本文件和构建来源均在 `_internal`。
+- 人工验收：设备页先完成管理员改键、启动服务并核对真实连接状态；按键页逐键检测、修改保存，
+  再做四方向短按、长按、快速连按和中途断连；语音页选择 CABLE Input、录入当前输入法快捷键，
+  先测声音通道，再按住实体话筒键说话并松开。每一步都要同时核对界面状态和目标机器反应。
+- 状态：未签名本机测试包，检查点待实测，不是正式候选或发布包。`019` 及更早测试包过期。
+
+### CHECK-DESKTOP-013 搜狗窗口收口与通知区域恢复
+
+- `candidate.20` 本机日志结果：重启蓝牙后桥接、Raw Input、HID 和语音快捷键通道均为正常；
+  方向键检测可更新。三轮遥控器语音均收到实体按下、有效音频、实体松开和音频停止，结束后
+  搜狗只保留后台进程，桌面语音窗口不可见。
+- `candidate.21` 修改：启动阶段不再执行无对应松开的搜狗组件预热；隐藏窗口使用正常恢复，
+  通知区域除右键菜单外的激活事件都可唤回窗口。
+- 自动结果：相关 38 项定向检查、`compileall` 和 `git diff --check` 通过；轻量 PyInstaller、
+  冻结主程序 `--dry-run`、Qt 运行时、HID 助手 `--self-check` 和 ZIP 完整性检查通过。本轮按
+  本地测试包口径未重跑全项目测试。
+- 本地测试包：`MoteDeck便携测试包-021.zip`，159,010,824 字节，SHA-256 为
+  `93B0D32EDB6752B088C860E52E0668F87EE7E0796896EFE5E3C81A2722C424F5`；包内主 EXE
+  SHA-256 为 `BD9D54835B424C1BCA2126225512B225A12F32B1D3B7296A3574481F7C61C403`。
+- 人工验收：完全退出 `020` 后首次打开 `021`，确认搜狗不会因程序启动而一直留在桌面；按住
+  实体语音键时搜狗出现，松开后应立即退下。点 `×` 隐藏窗口后，单击和双击通知区域图标均应
+  恢复同一窗口，进程数量始终为一个。
+- 实际：2026-09-07 用户关闭此前遗留的搜狗窗口并重新打开 `021` 后，启动未再次弹出搜狗窗口；
+  实体语音键按下可唤起搜狗，松开可收回，确认无问题。
+- 状态：搜狗启动与按键收口通过；通知区域单击/双击恢复仍待实测。`020` 及更早测试包过期。
+
+### CHECK-DESKTOP-014 语音快捷键录入与设置行居中（历史）
+
+微信录入曾由 CHECK-VOICE-020 停用，后续已恢复手动录入；当前规则见 CHECK-VOICE-023
+及后续条目。下文停用描述仅指当时阶段。
+
+- 覆盖范围：语音页设置行垂直居中、无操作说明行删除、按住型备注，以及本地物理键盘和
+  远程控制软件转发键盘的快捷键录入。
+- 已确认根因：本机设置窗口能够收到键盘事件，但原先的 Windows 低层键盘钩子在该运行环境
+  没有收到对应按键边沿，因此界面一直停在“请按快捷键”。当前实现保留低层钩子作为精确
+  录入通道，并在它没有收到按键时由应用级 Qt 事件过滤器完成同一次录入。
+- 自动结果：远程注入按下与抬起、默认拒绝注入、孤立抬键不吞键、录入启动与失败清理、
+  语音页真实 QML 交互和三页紧凑布局共 24 项定向检查通过；Python 语法和
+  `git diff --check` 通过。应用级 Qt 兜底、停止清理、迟到结果和真实 QML 保存另有 19 项
+  定向检查通过。
+- 人工验收：选择微信输入法，点击“语音按键”，等待输入框从“正在准备…”变为
+  “请按快捷键”，再分别用本机键盘和远程转发键盘录入一组按住型快捷键；输入框应立即
+  显示新组合，按键不能泄漏到其它程序，取消录入后也不能出现锁键或残留监听。
+- 实际：2026-09-07 本机日志已确认 Qt 兜底可录入并保存微信快捷键；用户完全退出并重新打开
+  最终开发版后再次录入实际快捷键，确认可以正常修改。
+- 状态：当时开发版录入通过；微信录入现已由 `CHECK-VOICE-020` 停用，其它程序的录入
+  结论继续有效。
+
+### CHECK-VOICE-019 分程序快捷键校验（历史，微信部分已取代）
+
+- 覆盖范围：搜狗、微信输入法、Windows 语音输入和自定义程序的快捷键保存入口；不修改
+  录入监听、运行时按下/抬起、配置格式或现有快捷键。
+- 核实来源：2026-09-07 本机搜狗语音助手 `1.0.1.3272` 的实际快捷键实现，以及微信
+  输入法 `2.1.3.18` 的 Windows 快捷键判断；后续程序升级时需重新核对规则是否变化。
+- 正例：搜狗右 Ctrl、搜狗含 Win/方向键组合、微信左 Ctrl+左 Win、微信三键组合和自定义
+  程序单字母均可保存；本机当前搜狗 `左 Ctrl+左 Shift+F8` 可读取并通过校验。
+- 反例：搜狗单字母、未支持功能键、无法可靠区分的数字键盘 Enter 和超过三键；微信无
+  修饰键、超过三键、左右同类修饰键、禁用功能键及 Windows 输入法切换组合均被拒绝。
+  失败后不改第三方配置，设置控制器恢复原快捷键并显示具体原因。
+- 自动结果：快捷键同步模块 25 项、设置保存调用链 3 项、Python 语法和
+  `git diff --check` 通过。本轮未构建、未打包；真实输入法仍按后续测试包人工验证。
+- 状态：代码检查点待实测。
+
+微信输入法的快捷键校验和录入已由后续 `CHECK-VOICE-020` 取代；搜狗、自定义程序和
+Windows 语音输入的结论继续有效。
+
+### CHECK-VOICE-020 微信输入法直接按钮控制（历史，已由 CHECK-VOICE-022 取代）
+
+- 根因核实：微信输入法 `2.1.3.18` 在本机同时为管理员权限时，仍忽略本程序测试的
+  Windows 模拟键盘路径；历史提交中能成功工作的微信主链均为状态栏语音按钮控制，
+  快捷键备用没有形成可验收的成功路径。
+- 当前实现：遥控器话筒键按下时点击微信状态栏语音按钮，并等待同一微信进程的语音窗口
+  确认出现；松开时再次点击结束。打开失败不发送 `MIC_OPEN`；结束失败保留会话供断连
+  清理重试；提交窗口超过 5 秒仍未消失时只尝试关闭同进程的微信语音窗口。新会话会废止旧
+  收尾任务，避免旧任务关闭下一轮窗口。
+- 设置界面：微信“语音按键”固定显示“无需设置”，录入、校验、同步和运行时快捷键
+  发送全部停用；旧配置仅兼容读取，不再生效。搜狗、自定义程序和 Windows 语音输入
+  保持原路径。
+- 自动结果：微信控制器、应用接线、断连清理、设置控制器、真实 QML、快捷键同步和
+  通用输入回归共 133 项运行，132 项通过、1 项按平台条件跳过；本次修改涉及的 Python
+  文件语法检查和 `git diff --check` 均通过。本轮不构建、不打包。
+- 本机受控结果：2026-09-07 微信语音按钮连续 3 轮打开、结束均成功，未残留语音窗口。
+- 状态：代码检查点待实测；真实 RC003 音频、微信识别和文字上屏仍按 `TEST-VOICE-009`
+  验收。
+
+### CHECK-VOICE-021 按键录入与微信运行状态回写（历史，已由 CHECK-VOICE-022 取代）
+
+- 根因核实：`b3122b9` 在共用 `startHotkeyCapture()` 上增加微信和 Windows 语音输入拒绝
+  逻辑，按键页仍复用该入口，导致电脑按键/快捷键无法录入；真实按键检测是另一条链路，
+  所以仍能正常识别音量键和右键。微信语音失败则是隐藏状态栏窗口被当成可点击目标，消息
+  投递成功后面板实际未出现；应用随后按设计禁止开麦，因此没有 PCM。
+- 修复合同：按键页改用独立映射录入入口；语音页继续禁止微信快捷键录入。微信按下时先
+  临时激活 WeType，确认状态栏窗口可见后点击，提交完成后恢复原输入法；不执行旧快捷键，
+  并继续以真实面板出现确认成功。面板失败立即回写运行状态，`MIC_OPEN` 保持禁止。
+- 界面合同：“选择程序”只显示未安装、已安装或运行中；“实际说话”分别显示配置就绪、
+  正在运行、正在收尾、上次正常或上次失败。音频停止后必须先显示“正在收尾”，只有确认
+  面板关闭、原输入法恢复且已有非零 PCM 后才显示“上次正常”；这仍不替代文字上屏验收。
+- 自动范围：覆盖按键独立录入、微信语音页禁止录入、输入法激活与恢复、可见窗口筛选、
+  面板失败禁止开麦、运行状态兼容读写与 QML 状态显示；并执行 Python 语法、真实
+  QML 离屏和 `git diff --check`。本轮不构建、不打包、不发布。
+- 自动结果：当前源码 `--version`、`--dry-run`、`--qt-runtime-check` 均通过；设置控制器、
+  真实 QML、微信控制和运行状态闭环 448 项通过、1 项按平台跳过；应用接线全文件与微信
+  控制复核 243 项通过、1 项按平台跳过。Python 语法和受影响 QML 静态检查退出码为 0，
+  QML 仅保留项目既有动态单例和未限定访问警告。
+- 状态：检查点待实测；真实 RC003、微信输入法切换恢复、非零 PCM、识别和文字上屏按
+  `TEST-VOICE-009` 验收。
+
+### CHECK-DESKTOP-015 三页流程收口与便携测试包 023
+
+- 覆盖范围：普通启动和管理员按键准备、设备连接与服务恢复、实体按键检测和映射、语音
+  快捷键录入与校验、声音通道测试、按住说话及松手收口；设置页分隔线统一使用全局
+  `0.5` 细线。
+- 流程复核：低层钩子无事件时由 Qt 设置窗口接管同一次快捷键录入；快速松开后，已经过期
+  的搜狗就绪任务不能再启动语音窗口；检测、录入、停止服务、断连和完全退出均沿用现有
+  输入清理，未增加第二套按键执行路径。
+- 构建修正：开发版窗口属于虚拟环境派生子进程时，构建脚本仍能确认归属并正常请求退出；
+  历史本地测试 ZIP、冒烟目录和界面审计目录不再被公开边界检查误判为源码，真正位于源码
+  目录的二进制仍会被拦截。
+- 自动结果：`build/build-candidate.ps1` 唯一完整入口通过；unittest 2516 项通过、7 项按环境
+  跳过，资源释放门禁、公开边界、第三方通知、PyInstaller、主程序 `--dry-run`、管理员 HID
+  助手 `--self-check` 和 Qt 运行时检查全部通过。
+- 构建来源：提交 `7fcb5ef`；输入 217 个文件，来源指纹 SHA-256 为
+  `A886649F4411F34879DB71C8678D5AB6C0F341D7DE3866F5921DF40F4E9F5F4B`；构建产物指纹为
+  `B504CF4DB4E0CC3838021A37D922743E5819B80B5C7FD869A533F29994E6D19E`。
+- 本地测试包：`MoteDeck便携测试包-023.zip`，162,463,291 字节，SHA-256 为
+  `026E5E4446587341BC3ED6E718272720CFF7A51C4C3651B82226CDBEC2A7FE06`；包内主 EXE
+  SHA-256 为 `1E66B0808CDF9C6918877D39C6679F71C29F4518B3D082E56D676B64BD10D04F`，内部 HID
+  助手 SHA-256 为 `725389B95BE32C280333D43070737CC1115D74C172071A56BAA8BAADC6FC5F25`。
+- 包结构：只有一个 `RemoteMicRC003-0.2.0-candidate.23` 顶层目录，共 2124 个文件；根层
+  只有一个 `RemoteMicRC003.exe`，包内版本为 `0.2.0-candidate.23`。
+- 人工验收：普通启动完成管理员按键准备并启动服务；按方向键确认连接，再检查单击、长按、
+  快速连按、自定义映射和松手无双触发或锁键；语音页录入当前输入法的按住型快捷键，先测
+  声音通道，再按住实体话筒键说话并松开；最后检查关闭窗口默认隐藏、通知区域恢复、完全
+  退出、重复启动单实例和旧版接管。
+- 状态：未签名本机测试包，检查点待实测，不是正式候选或发布包。`022` 及更早测试包过期。
+
+### CHECK-DESKTOP-016 微信按钮控制与便携测试包 024
+
+- 覆盖范围：`CHECK-DESKTOP-015` 的三页用户流程，以及微信输入法直接语音按钮控制；微信
+  不再录入或执行快捷键，搜狗、自定义程序和 Windows 语音输入保持原路径。
+- 自动结果：`build/build-candidate.ps1` 唯一完整入口通过；unittest 2516 项通过、7 项按环境
+  跳过，资源释放门禁、公开边界、第三方通知、PyInstaller、主程序 `--dry-run`、管理员 HID
+  助手 `--self-check` 和 Qt 运行时检查全部通过。
+- 构建来源：提交 `44a4280`；输入 219 个文件，来源指纹 SHA-256 为
+  `5B1E30F234038CE882EE5E77BA2E77A8BB0A3CEE8DDD76BCAD230FA7B44E5687`；构建产物指纹为
+  `586FF419180E77DD96DB20808F214E49509A8AC168E3646C5E7ED2A2D8F0FFD5`。
+- 本地测试包：`MoteDeck便携测试包-024.zip`，162,471,459 字节，SHA-256 为
+  `4F1EDD2958FE5D1794554253AF820F690B5EB8C38CA4C3BC33AFEAF6A10CC7C5`；包内主 EXE
+  SHA-256 为 `EFA73F53F0C765E512479D06F34D166FEF16732336F416BB3CEC3A7ABC7152CD`，内部 HID
+  助手 SHA-256 为 `61386AF868028E379513FB9B010804A537CA14C4A8C8EA8AC14D3B6B106FCD3A`。
+- 包结构：只有一个 `RemoteMicRC003-0.2.0-candidate.24` 顶层目录，共 2124 个文件；根层
+  只有一个 `RemoteMicRC003.exe`，包内版本为 `0.2.0-candidate.24`。
+- 人工验收：先检查普通启动、管理员按键准备、连接和方向键单击/长按/快速连按；再选择微信
+  输入法，按住实体话筒键确认语音窗口打开、说话可上屏，松开后窗口结束且没有残留；随后回归
+  搜狗按住说话、默认关闭隐藏、通知区域恢复、完全退出、重复启动单实例和旧版接管。
+- 状态：未签名本机测试包，检查点待实测，不是正式候选或发布包。`023` 及更早测试包过期。
+
+### CHECK-DESKTOP-017 candidate.25 下午修复与便携测试包
+
+- 覆盖范围：音量键扩展标记、HID 慢回调期间独立续租、输出端点保存后的状态同步、新应用
+  图标、按键页独立录入，以及微信输入法激活、面板确认、收尾和最近运行结果回写。
+- 自动结果：`build/build-candidate.ps1` 唯一完整入口通过；完整 unittest、资源释放门禁、
+  公开边界、第三方通知、Cython 编译态权限测试、PyInstaller、主程序 `--dry-run`、管理员
+  HID 助手 `--self-check` 和 Qt 运行时检查全部通过。
+- 构建来源：提交 `3fa1ff0`；输入 220 个文件，来源指纹 SHA-256 为
+  `D65BB0F57E6DA83CD9D33F8D5B449215BF00C9AAEDBD075643140431CFB7464B`；构建产物指纹为
+  `878E221FA8F08B439F4925CCE5B433E46932B6DB03914E8E78433251433414B5`。
+- 本地测试包：`MoteDeck便携测试包-candidate.25.zip`，163,130,858 字节，SHA-256 为
+  `BABEF2F29B2A56F3830AA5DF0265FD0416A8E530FD25EBB29CC4FF093594B236`；包内主 EXE
+  SHA-256 为 `D714DA02DD48630113D3BC0BD2CCB112B960A78F96ADF7885B932A7AC790981F`，内部 HID
+  助手 SHA-256 为 `A03EEC1C5B2DEA9297C3B034523B5B6FFAD7BFD6453A1F7508EC1435BB04E72E`。
+- 包结构：只有一个 `RemoteMicRC003-0.2.0-candidate.25` 顶层目录，共 2126 个文件；根层
+  只有一个 `RemoteMicRC003.exe`，包内版本为 `0.2.0-candidate.25`。
+- 人工验收：先确认标题版本和新图标，再检查音量键、HID 长时间按键与休眠恢复、端点保存后
+  页面状态；随后回归按键录入、微信按住说话、识别文字上屏、输入法恢复和失败状态提示。
+- 状态：未签名本机测试包，检查点待实测，不是正式候选或发布包。`candidate.24` 及更早
+  测试包过期。
+
+### CHECK-KEY-009 管理员组件不可用时的按键安全降级
+
+- 已确认问题：HID tap 尚未接管时，Raw Input 对 Windows 不认识、但曾通过实体按键学习
+  绑定为逻辑键的事件，仍可能进入自定义映射；这与“组件不可用时全部自定义映射停用”的
+  正式合同不一致。
+- 当前修复：所有 `raw_*` 逻辑事件在 HID tap 未接管时统一禁止执行自定义映射。Windows
+  已知键继续保留系统原始行为和最长 10 秒补松保护；Windows 不认识的实体键不注入任何
+  操作。按键检测仍可读取事件，HID tap 恢复并完成交接后自定义映射正常恢复。
+- 自动结果：按键接收、HID 交接、Raw Input、单击/长按/重复、输入补松、语音按住释放、
+  单实例和设置状态共运行 900 项，898 项通过、2 项按环境条件跳过；自启、程序入口、权限
+  安装、管理员助手、配置和运行状态另有 314 项通过，均未出现资源泄漏告警。
+- 异机日志：`candidate.24` 在 2026-09-08 00:55:50 至 01:00:23 的会话中完成 HID
+  `starting -> ready`，实体键均为成对按下/抬起；搜狗 216 帧、微信 222 帧语音均检测到
+  有效信号并正常结束，未见错误、连击或锁键证据。
+- 状态：代码检查通过；修复后的冻结程序仍需在真实 RC003 上复测无权限降级和权限恢复。
+
+### CHECK-HID-002 慢回调期间的 HID 租约续租
+
+- 已确认问题：管理员组件和 Gadget 已就绪后，HID socket 线程执行较慢按键业务回调时不能
+  按期续租，可能触发 `gadget_intercept_lease_expired` 并让界面误导用户重启服务。
+- 当前修复：每条 Gadget 连接使用独立续租线程；控制消息仍串行发送，发送失败会让主连接
+  退出，连接断开或程序停止时有界回收线程。
+- 自动结果：`test_frida_compat` 56 项通过，其中阻塞报告回调仍能续租、断开后无线程残留，
+  续租线程启动失败也能正常退出。
+- 状态：代码检查通过；真实 RC003 长时间按键、微信语音、休眠和服务恢复按
+  `TEST-VOICE-003` 待实测。
+
+### CHECK-AUDIO-004 输出端点保存后的诊断同步
+
+- 已确认问题：端点预检和保存已经成功，但设置控制器没有通知诊断控制器，页面继续显示
+  保存前的失败结果，因此同时出现“已保存”和“请应用”。
+- 当前修复：保存成功后自动用最新磁盘配置刷新诊断；旧诊断尚未结束时不接纳其过期结果。
+  已使用推荐端点时隐藏快捷按钮，未使用时只显示“选推荐端点”；下拉选择保持自动保存。
+- 自动结果：设置控制器、诊断、QML 合同和真实离屏渲染 326 项通过。
+- 状态：自动检查通过；真实端点切换后的状态刷新按 `TEST-VOICE-001` 待实测。
+
+### CHECK-KEY-010 Win 系统快捷键手动输入与执行
+
+- 已确认问题：低层钩子在部分本机或远程输入环境收不到 Win 键边沿，Qt 兜底又无法阻止
+  Windows 系统快捷键先执行；用户手动填写 `Win+L` 后配置已经正确保存为
+  `{"kind":"key_combo","keys":["win","l"]}`，但实际只向前台输入了 `L`，没有锁屏。
+- 当前修复：按键录入弹窗可切换“手动输入”，切换后先停止捕获钩子；支持
+  `Win+L`、`Lctrl+Win+左/右箭头`、单独 `Win` 和常用中文按键名。单独 `Win` 规范为
+  左 Win，`Ctrl+Alt+Delete` 明确拒绝。单击、双击和长按共用同一保存规则。
+- 执行边界：精确的 `Win+L` 使用 Windows `LockWorkStation`，不再以 `SendInput` 返回成功
+  代替真实锁屏动作；其它 Win 组合继续沿用现有普通按键发送、失败补释放和重试逻辑，
+  语音快捷键及微信输入法规则未改。
+- 自动结果：按键解析、设置控制器、QML 真实点击保存、应用接线和输入回滚共 479 项通过；
+  `Win+F23` 安全注册热键探针确认当前普通 Win 发送可被 Windows 识别。Python 语法、
+  QML 静态检查和 diff 检查通过，QML 仅保留项目既有警告。
+- 状态：检查点待实测。真实 `Win+L` 会锁屏，`Lctrl+Win+左/右箭头` 会切换虚拟桌面，
+  未在自动任务中直接触发；需用真实 RC003 分别回归单击、双击和长按。
+
+### CHECK-HID-003 多便携版本下的全局权限移除
+
+- 已确认问题：`candidate.24` 与 `candidate.25` 分别解压并运行后，会按两个 EXE 完整路径
+  写入两条消费者记录。旧版没有运行但解压目录仍保留时，当前版本点“移除权限”仍返回
+  `helper_in_use_by_other_consumer`，与确认框“本机所有MoteDeck版本都会失效”的全局撤销语义
+  冲突。临时目录已复现该路径；删除旧目录后旧记录变为过期，原逻辑才允许移除。
+- 当前修复：便携版主动“移除权限”不再使用单版本卸载的消费者拦截，仍在跨进程维护锁内
+  先撤销当前记录、再请求 UAC 移除共享组件，失败时恢复当前记录。安装器卸载仍会为其它
+  有效便携副本保留组件，两个入口继续使用不同合同。
+- 记录清理：冻结版登记和消费者检查会尽力删除已能确认 EXE 不存在的过期 JSON；无效
+  JSON、组件缺失、哈希异常和读取失败继续按未知状态保留，避免自动删除无法证明过期的记录。
+- 自动结果：权限消费者、主入口、HID 调用和设置控制器相关 157 项通过；构建与用户说明
+  合同另行通过。未修改真实 `%LOCALAPPDATA%` 配置，未执行真实 UAC，不构建、不打包、不发布。
+- 状态：检查点待实测。需要在保留两个真实便携目录的电脑上，从当前版本确认一次 UAC
+  完成移除，再分别确认两个版本的自定义按键都停用，任一版本重新启用后可以恢复。
+
+### CHECK-DESKTOP-018 设备页按键等待状态
+
+- 目标：设备页不再把需要用户唤醒遥控器的状态长期写成“检查中”，也不再把已经连接的
+  遥控器服务写成没有实际含义的“确认中”。
+- 自动范围：覆盖服务已连接但两个输入通道等待、Raw Input 已就绪但 HID 等待、首次 HID
+  输入等待、语音快捷键恢复、服务状态未知和明确失败等状态，并在 Basic、FluentWinUI3
+  两种样式下检查设备页真实离屏渲染与窄窗口列宽。
+- 自动结果：设置页源码合同 36 项通过；全状态真实离屏矩阵 1 项通过；QML 静态检查无语法
+  错误，diff 检查通过。
+- 状态：检查点待实测。真实 RC003 休眠后应显示“请按方向键”；按方向键并恢复输入后，
+  按键接收应变为“正常”；服务连接期间应始终显示“已连接”。
+
+### CHECK-DESKTOP-019 candidate.26 今日修改与便携测试包
+
+- 覆盖范围：`candidate.25` 后的 Win 系统快捷键手动输入、按键编辑草稿前置校验、重复
+  打开窗口恢复、撤下遥控器实体组合映射、多便携版本全局权限移除和设备页等待状态修正。
+- 构建修正：首次完整构建发现两个测试口径没有随今天的行为更新；提示框几何改为在鼠标
+  移开前取值，按键检测文案合同改为检查当前直接绑定。两项只修正自动测试，不改变界面。
+- 自动结果：`build/build-candidate.ps1` 唯一完整入口通过；unittest 2577 项通过、7 项按
+  环境跳过，资源释放门禁、公开边界、第三方通知、Cython 编译态权限测试、PyInstaller、
+  主程序 `--dry-run`、管理员 HID 助手 `--self-check` 和 Qt 运行时检查全部通过。
+- 构建来源：提交 `1ebb6c2`；输入 220 个文件，来源指纹 SHA-256 为
+  `7BA887706441BAA52E4287A3B56D9D620C60A001D9B9308C3C5967637DF23EBF`；构建产物指纹为
+  `9002AFB2637BB4C8B9AA5C8E3A6906DA6AD9A9D8B87BF589DD768BFE5BADF913`。
+- 本地测试包：`MoteDeck便携测试包-candidate.26.zip`，163,141,318 字节，SHA-256 为
+  `76681D29EB4A771D5BC768C41F0BD86CA2B9B75C138072C50394BFC62B4661DB`；包内主 EXE
+  SHA-256 为 `0DE53E807F4C7FF98137B6DC588B40D254076853118FA5CB2B73B5DA0CC033B1`，内部 HID
+  助手 SHA-256 为 `6187A830FC4213D3A7C7BBB116D7B20BD7173EF38774E7333D72FA4FC35027CB`。
+- 包结构：只有一个 `RemoteMicRC003-0.2.0-candidate.26` 顶层目录，共 2126 个文件；根层
+  只有一个 `RemoteMicRC003.exe`，包内版本为 `0.2.0-candidate.26`。
+- 人工验收：先确认标题版本、重复打开与通知区域恢复；再检查 Win 快捷键单击、双击和
+  长按、非法草稿拦截、旧组合配置不执行、两个便携目录下全局权限移除与重新启用；最后
+  回归休眠后“请按方向键”、方向键唤醒、微信按住说话、识别文字上屏和输入法恢复。
+- 状态：未签名本机测试包，检查点待实测，不是正式候选或发布包。`candidate.25` 及更早
+  测试包过期。
+
+### CHECK-VOICE-022 微信可配置快捷键与远程窗口唤出修正（历史，已由 CHECK-VOICE-023 取代）
+
+- 根因：`candidate.26` 的微信入口仍是 `PostMessageW` 点击 WeType 状态栏固定坐标。
+  用户日志中本地窗口 4 轮成功，远程窗口 `Qt51512QWindowIcon` 8 轮均因状态栏隐藏失败；
+  应用随后按设计禁止开麦。`candidate.25` 到 `.26` 没有修改该核心链路。
+- 修复合同：微信默认使用左 `Ctrl+Win`，设置页允许录入其它按住型组合键。MoteDeck只保存
+  自己的值，不读取或改写微信私有配置，用户需确保两边一致。TSF 激活只在独立 STA 线程
+  执行，冷切换等待 50 毫秒；每个按键边沿单独调用 `SendInput`，间隔 80 毫秒，松手反向释放
+  本次实际按下的同一组键。发送成功即允许音频继续，不检查状态栏或气泡；当前不自动切回
+  原输入法。
+- 安全范围：保留 HID tap 对 RC003 全部键盘报告的接管和 F5 拦截；保留物理键预检、部分
+  发送回滚、释放失败待清理、断连/停止/退出补释放和 120 秒保险。其它语音程序、普通按键
+  映射、配置 schema 和真实用户配置不变。
+- 自动结果：微信控制、输入注入 ABI/回滚、配置、应用接线、设置、快捷键同步和真实 QML
+  合同共运行 781 项，780 项通过、1 项按平台跳过；Python 语法、旧状态栏运行引用扫描和
+  `git diff --check` 均通过。
+- 状态：检查点待实测；本轮不构建、不打包、不发布。按 `TEST-VOICE-009` 验证本地微信、
+  主控端远程窗口、非零 PCM、文字上屏及松手/断连/退出无残留按键。
+
+### CHECK-VOICE-023 豆包适配与微信/输入法快捷键刷新
+
+- 后续取代：本条微信隐藏状态栏读取及自动触发读取的旧行为已由 `CHECK-VOICE-026` 替代；下列本机读值和结果仅为当时证据。
+- 覆盖范围：新增豆包输入法发现、设置入口、直接适配和按住型快捷键读取；微信从隐藏状态栏
+  无障碍提示读取当前按住型快捷键；搜狗、微信、豆包共用刷新图标和立即保存逻辑。豆包不归
+  Windows 管理，也不作为普通程序随服务启动；微信仍由 Windows 管理。
+- 刷新合同：只在搜狗、微信和豆包显示 28 像素刷新图标，输入框相应缩短。刷新成功立即保存，
+  桥接从下一次语音热加载；录入、保存、说话和收尾时界面与控制器均拒绝刷新。进入语音页和
+  重复选择当前程序仍会读取一次，没有增加窗口重新激活时自动刷新。
+- 本机核实：豆包配置字段 `voice.voiceLongPressShortcut` 读回为右 Alt；微信隐藏状态栏提示
+  读回为左 Ctrl + 左 Shift + F9；豆包安装、运行状态及 `bootstrap\SettingsLauncher.exe`
+  设置入口均识别正常。核实过程只读，未修改真实输入法或MoteDeck用户配置。
+- 自动结果：程序管理、快捷键读取、输入法控制、应用接线、配置、设置控制器和真实 QML
+  共运行 384 项，383 项通过、1 项按平台跳过；`compileall`、工作树和暂存区差异格式检查通过。
+- 状态：检查点待实测；本轮不构建、不打包、不发布。按 `TEST-VOICE-009` 和
+  `TEST-VOICE-010` 验证两种输入法文字上屏、外部改键后刷新、快速松手、断连和退出无残留键。
+
+### CHECK-VOICE-024 三种输入法真实唤出、状态与补松完整修复
+
+- 覆盖范围：按用户确认的 14 项复核当前 `candidate.27` 及之后全部语音改动。搜狗、微信
+  和豆包分别自动读取自身按住型快捷键并保留普通“录入”兜底；手动值优先，主动刷新成功
+  才覆盖。配置 schema 13 记录 `default/auto/manual`，显式空的手动值不再被默认值覆盖。
+- 输入法控制：微信和豆包动态枚举本机已安装 TSF profile；STA 超时会取消并等待线程收尾，
+  不能在失败后迟到切换。微信按键发出后检查麦克风 `LastUsedTimeStart`，首次未确认只
+  循环输入法并重发一次，仍失败就释放按键、停止 PCM 转发并显示“语音程序未响应，程序已
+  禁止开麦”。豆包右 Alt 不进入微信专用物理化链路。
+- 其它宿主：搜狗发送快捷键前先确认目标窗口，失败不发快捷键和 `MIC_OPEN`；搜狗和
+  自定义程序启动后只做有截止时间的进程确认，不持续轮询。Windows 语音输入/`Win+H`
+  产品入口和诊断已删除，旧配置迁移到“不管理”。
+- 状态合同：“选择程序”只说明软件安装或进程；“实际说话”只显示未测试、等待音频、微信
+  已确认开麦、首帧 PCM 后正在接收、收尾中和明确失败。成功后仍由用户在目标输入框确认
+  文字，不显示“气泡已打开”“上次正常”等内部假象。`AudioStarted` 初始化失败会完整回滚，
+  未收到首帧 PCM 不得显示正在接收。
+- 释放合同：语音欠松只允许一个退避重试；新会话开始前先清旧欠松，断连、停止服务、正常
+  完全退出和 120 秒保险继续补释放。任务管理器强杀时进程内代码无法保证最后补松，按用户
+  决定保留为极低概率已知风险，不增加外部看门狗。
+- 界面合同：刷新图标位于快捷键输入框末尾，“录入”保持普通白色按钮；640/720 紧凑窗口
+  快捷键输入框不少于 130 像素。录入、保存、正在说话和收尾时刷新不可用。
+- 自动结果：定向应用接线 216 项通过、1 项跳过；配置 69 项通过；Python 语法、两主题
+  状态矩阵、640/720 紧凑布局、微信右 Alt 例外和语音程序 QML 定向检查通过。最终完整
+  unittest 2663 项通过、7 项按环境跳过，结束后无资源泄漏告警；公开边界扫描 463 个文件，
+  工作区和暂存区差异格式检查通过。现行入口扫描只保留旧 Windows 听写配置迁移常量。
+- 人工验收：先按 `TEST-VOICE-002` 复测搜狗，再按 `TEST-VOICE-009` 验证微信本地与
+  主控端远程窗口，按 `TEST-VOICE-010` 验证豆包；三者都要确认自动读取、手动值优先、
+  主动刷新、非零 PCM、文字上屏、快速松手、断连、停止服务和完全退出无残留键。
+- 状态：检查点待实测；本项已进入 `candidate.28` 本地测试包，仍不是正式候选或发布包。
+
+### CHECK-DESKTOP-020 candidate.27 微信与元素导航修正测试包
+
+- 覆盖范围：`candidate.26` 后的微信固定 `Ctrl+Win` 按住链路、方向边沿归属去重、
+  整窗大容器过滤与首次移动补扫，以及本次版本号和公开归属扫描收口。
+- 构建修正：首次构建在编译前正确拦截了非归属引用，但同时误拦了正式
+  `ATTRIBUTION.md`。现只允许该文件保留外部仓库准确名称，README、Changelog 和
+  维护记录统一链接到它；临时文档和普通源码的拦截仍保留。
+- 自动结果：`build/build-candidate.ps1` 唯一完整入口通过；2593 项通过、7 项按环境
+  跳过，资源释放门禁、公开边界 458 个文件扫描、第三方通知、Cython 编译态权限测试、
+  PyInstaller、主程序 `--dry-run`、管理员 HID 助手 `--self-check` 和 Qt 运行时检查全部通过。
+- 构建来源：提交 `551f5b7` 加构建时的未提交工作树；输入 220 个文件，来源指纹
+  SHA-256 为 `CEB6F713D16DD10C8F9B99F4DBA31CD77EFD3B6C531298536D55F668846A5A48`；构建产物指纹为
+  `11E602F9565203D3A5EC0515BD591A21793E0BC583C9BB92E1592CECD819C70C`。
+- 本地测试包：`MoteDeck便携测试包-candidate.27.zip`，163,138,943 字节，SHA-256 为
+  `29CA9D25DABE811AB03F1DE4B6D259DBF9229FE0DAA617A9BA8B0DE56E8141EB`；包内主 EXE SHA-256 为
+  `3F61F5B43924AC311C9DDBC42F2775A85B29F6E8CA48C1AC292AD5C6F1C215BE`，内部 HID 助手为
+  `482F9C01FD48CD84FC0CCEDB32BB67EB89074A8CF08D2CE4691AC49AD2500289`。
+- 包结构：只有一个 `RemoteMicRC003-0.2.0-candidate.27` 顶层目录，共 2126 个文件；根层
+  只有一个 `RemoteMicRC003.exe`，包内版本为 `0.2.0-candidate.27`。
+- 人工验收：按 `TEST-VOICE-009` 复测本地微信、主控端远程窗口、非零 PCM、文字上屏和
+  松手/断连/退出无残留键；再按 `CHECK-NAV-021` 验证方向短按一步、快速两次仍两步、
+  长按连续移动、大容器可进入和退出后无残留。
+- 状态：未签名本机测试包，检查点待实测，不是正式候选或发布包。`candidate.26` 及更早
+  测试包过期。
+
+### CHECK-UI-007 按键映射自动保存
+
+- 覆盖范围：“按键”页编辑完成自动保存、恢复内置默认自动保存、保存失败重试、保存占用
+  等待、其它页面草稿隔离，以及完全退出前的有界等待和映射保存。
+- 自动结果：最终完整 unittest 2652 项通过、7 项按平台或安全条件跳过。同一编辑弹窗的
+  多字段变化只调用一次 `save_settings_pair()`；映射保存只采用最后已保存的配置，不会把
+  WDM-KS 迁移预选或其它页面草稿静默写盘。端点预检期间“保存并退出”会等待预检完成，
+  只有单独的映射修改仍待保存时才自动保存并退出；旧端点迁移等其它未保存状态或映射保存
+  已经失败时仍进入退出确认。保存失败后修改仍留在模型中并显示重试入口。
+- 人工步骤：在真实设置窗口打开“按键”页，修改一个普通键的主动作、双击、长按和备注，
+  点“完成”后等待底部显示自动保存成功；不要再找或点击“保存映射”。立即完全退出并重开，
+  确认四项值都保持。再恢复内置默认并确认，重开后核对默认值；最后在刚点“完成”后立即
+  完全退出一次，确认不会丢修改或卡在隐藏窗口。
+- 状态：检查点待实测。本项已进入 `candidate.28` 本地测试包。
+
+### CHECK-DESKTOP-022 candidate.28 当前修改便携测试包
+
+- 覆盖范围：`candidate.27` 之后的三种输入法真实唤出、快捷键读取与手动兜底、运行状态与
+  欠松重试、撤下 `Win+H` 产品入口、按键映射自动保存，以及构建输入中的方向键和元素导航修正。
+- 自动结果：`build/build-candidate.ps1` 完整入口通过；公开边界扫描 463 个文件，完整
+  unittest 2663 项通过、7 项按环境跳过，编译态权限模块 136 项通过、1 项跳过；第三方通知、
+  Cython、PyInstaller、主程序 `--dry-run`、HID 助手 `--self-check` 和 Qt 运行时检查全部通过。
+- 构建来源：提交 `551f5b7` 加构建时的未提交工作树；输入 220 个文件，来源指纹 SHA-256 为
+  `E07A8BE26D66567A0DCFF943CE380C6351AD08FC65804523B52D0670AA07E64B`；构建产物指纹为
+  `967E0E1113F86DBFDFB419BB9D73BFCE32116901E3BFE727D1F8990CEDE94388`。
+- 本地测试包：`MoteDeck便携测试包-candidate.28.zip`，163,166,392 字节，SHA-256 为
+  `F02F1010FA55AB12DDC1B42BFBB8ADCDB49D4FE6C1F48981DF50E62C3802AF80`；包内主 EXE SHA-256 为
+  `00F9C676A68AE0E440A498280FCA4775483F4A691E12D48F045C21EDD875B6D4`，内部 HID 助手为
+  `3283BFF3E3CBA2450DC497CA66343832E575E58F34B095F57B7FE1AE41CC6D4C`。
+- 包结构：只有一个 `RemoteMicRC003-0.2.0-candidate.28` 顶层目录，共 2126 个文件；包内版本为
+  `0.2.0-candidate.28`，根层只有一个用户可运行的 `RemoteMicRC003.exe`。
+- 人工验收：按 `CHECK-VOICE-024` 验证搜狗、微信和豆包，再按 `CHECK-NAV-021` 验证方向键，
+  按 `CHECK-UI-007` 验证映射自动保存；同时回归真实 RC003 启动、连接、语音和完全退出流程。
+- 状态：未签名本机测试包，检查点待实测，不是正式候选或发布包。`candidate.27` 及更早测试包过期。
+
+### CHECK-VOICE-025 candidate.28 用户反馈四项修复
+
+- 覆盖范围：微信未确认开麦后的错误重连、空手动快捷键导致程序选择失败、搜狗预热造成
+  松手后气泡不消失、豆包拒绝普通合成键，以及相关 STA 取消和按键补松边界。
+- 根因结果：微信失败只结束本次语音；空手动值降为默认来源并允许保存待录入状态；搜狗
+  删除 `--auto-launch` 和可见窗口判断，只短暂确认进程；豆包仅在已核实版本的自身键盘
+  回调内处理MoteDeck专用标记边沿，未知版本失败关闭。
+- 自动结果：相关源码 `py_compile` 和隔离 `python -m ovb_rc003 --dry-run` 通过；应用接线、
+  输入法控制、豆包适配、Windows 按键按下/抬起及补松 327 项通过、1 项按平台跳过；设置
+  控制器、QML 离屏加载、快捷键读取和程序管理 482 项通过。
+- 人工步骤：使用当前源码或后续新包，分别选择搜狗、微信、豆包，确认自动读取来源与手动
+  录入来源显示正确；按住遥控器话筒键说话并松开，核对气泡、非零 PCM、文字上屏、无反复
+  重连和无残留键。微信另在本地输入框与主控端远程窗口各测；豆包未知版本应明确失败而非乱发键。
+- 状态：检查点待实测；本项已进入 `candidate.29` 本地测试包，仍不是正式候选或发布包。
+
+### CHECK-DESKTOP-024 candidate.30 未保护快速测试包
+
+- 覆盖范围：在 `candidate.29` 后纳入微信输入法按住状态保持和豆包设备层探针，并验证
+  从本机 Poppler 环境误收集的 ICU 数据 DLL 可以安全移出冻结目录。
+- 构建方式：按本地快速测试需求跳过 Cython 源码保护，直接从当前 Python 源码执行
+  PyInstaller；因此本包只能用于本机人工测试，不是受保护候选、正式候选或发布包。
+- 自动结果：应用接线和输入法控制定向测试通过，1 项按平台条件跳过；ICU 打包规则测试
+  和 23 项版本/用户文档合同通过。冻结主程序 `--dry-run`、HID 助手 `--self-check` 和
+  Qt 运行时检查全部通过；冻结目录与 ZIP 中 ICU DLL 数量均为 0。
+- 构建来源：提交 `cd6bd67113b9fd94cb0cbad4d64ba0bfc6a78fb3` 加本次版本和打包规则修正；
+  输入 220 个文件，来源指纹 SHA-256 为
+  `895E9AA860E2E6F5DCD41CD0CC09C96DDEB8FBE224CE6B1F692461D76506377D`；产物指纹为
+  `0B8ED318B1343290417BAC8D2F58466D0ED367DE2FE7CE590320064832F14998`。
+- 本地测试包：`MoteDeck便携测试包-candidate.30-未保护.zip`，149,098,226 字节，SHA-256 为
+  `A57194F4AD01CDD4CEE4B10C8EDF94C9768949DA299E4235123F0C87246FE22E`；包内主 EXE 为
+  `A9F4D955B4D1F898BEA720EFB3C53C45847D9673EC0DC51A3AED2115664DCD4B`，内部 HID 助手为
+  `33D13F110300C24A386D90824BD66625D3873B65DB7F374E903D65830D26E93E`。
+- 包结构：只有一个 `RemoteMicRC003-0.2.0-candidate.30` 顶层目录，共 2123 个文件；包内版本为
+  `0.2.0-candidate.30`，根层只有一个用户可运行的 `RemoteMicRC003.exe`。
+- 状态：未签名本机测试包，检查点待实测，不是正式候选或发布包。`candidate.29` 及更早
+  测试包过期。
+
+### CHECK-DESKTOP-023 candidate.29 用户反馈修复便携测试包
+
+- 覆盖范围：微信未确认开麦不再错误重连、空手动快捷键恢复自动读取、搜狗启动不再提前
+  唤起语音窗口，以及豆包快捷键读取使用当前已核验版本的真实调用合同。
+- 构建修正：首次完整构建只因安装说明仍示例 `candidate.28` 而失败；修正为
+  `candidate.29` 后版本一致性定向检查通过，随后完整构建通过。
+- 自动结果：完整 unittest 2670 项通过、7 项按环境跳过，编译态权限模块 136 项通过、
+  1 项跳过；公开边界、第三方通知、Cython、PyInstaller、主程序 `--dry-run`、HID 助手
+  `--self-check` 和 Qt 运行时检查全部通过。
+- 构建来源：提交 `36adc93` 加构建时的安装说明一行修正；输入 220 个文件，来源指纹
+  SHA-256 为 `11F379FBAD35429AFC1D9F520C8A24401C5739136D20D8DF6657000CB7975A8C`；产物指纹为
+  `6C7A4B468A8003B4A1C5B56BA381C61D4080E697D0ED24D98D153B3050CD28A6`。
+- 本地测试包：`MoteDeck便携测试包-candidate.29.zip`，163,169,293 字节，SHA-256 为
+  `5E4EA6A3D602626960D5C59F53697F3553EB126F8AF3EB0AA327778E5C9E9A4A`；包内主 EXE 为
+  `90E9CB2F49ECB6C9B5E38EA53E8BB077300CE718416A3627F0463D10A2FBB7E9`，内部 HID 助手为
+  `FC9B4FFD26EDB3BBFE539602F9BDC350DB859841A2F1F9D85466EB86CA19BBE0`。
+- 包结构：只有一个 `RemoteMicRC003-0.2.0-candidate.29` 顶层目录，共 2126 个文件；包内版本为
+  `0.2.0-candidate.29`，根层只有一个用户可运行的 `RemoteMicRC003.exe`。
+- 人工验收：按 `CHECK-VOICE-025` 依次验证搜狗、微信、豆包和主控端远程窗口，同时回归
+  RC003 连接、非零 PCM、文字上屏、松手、断连、停止服务和完全退出无残留按键。
+- 状态：未签名本机测试包，检查点待实测，不是正式候选或发布包。`candidate.28` 及更早测试包过期。
+
+### CHECK-TRACE-001 按键与语音统一链路诊断日志（代码完成，检查点待实测）
+
+- 目标：验证 `diagnostic-trace.jsonl` 能用同一 `session_id`、`gesture_id` 和 `attempt_id` 串起 HID、Raw Input、键盘钩子、映射、`SendInput`、元素导航、原生菜单/应用切换、输入法、音频和最终结果。
+- 第一阶段用例：菜单键映射元素导航时单击一次；方向键单击、长按、快速双击；TV/应用切换单击和长按；HID 未 ready 时按键；微信和豆包各完成一次按住唤起、快速松手、失败和恢复。
+- 每项必须核对：HID/Raw/钩子边沿数、吞放决定、逻辑边沿数、映射动作数、`SendInput` 请求/返回数、元素导航 toggle 数、原生事件数、输入法切换结果、音频摘要和最终结果。
+- 性能检查：诊断关闭时保持现有运行路径；诊断开启时低层回调不做同步磁盘写入或慢查询，队列满不阻塞按键并记录丢弃计数。
+- 自动结果：受影响范围共执行 908 项，907 项通过、1 项按平台条件跳过；`compileall` 通过。应用接线 219 项、界面设置 404 项及其余按键、配置、诊断、微信/豆包和输入注入 285 项均通过。
+- 交付边界：本轮补齐默认关闭、手动开启、即时生效并持久保存的稳定开关，以及按键整链路、微信/豆包目标确认和逐手势/逐尝试摘要。只补证据，不改变按键或语音行为；不构建、不打包、不发布。
+- 状态：代码完成，检查点待真实 RC003、菜单/方向/应用切换及微信/豆包链路采集。
+
+- 2026-09-11 语音回归修正：当日 18:44 至 18:45 的微信/豆包尝试暴露了诊断 `action` 参数重复导致发送前异常的问题，已修正请求/结果两处调用及 ATVV 编号覆盖；新增开启真实诊断的 5 项回归测试通过。证据和受影响范围检查结果见 `MAINTENANCE.md` 的“2026-09-11 开启诊断后语音快捷键发送中断修正”。
+- 本次待测：完全退出并重启修正后的源码测试版，保持诊断开启，微信/豆包各完成按住话筒键、观察语音窗口、松手结束；核对请求、发送、松开与尝试结束记录，不应因该 `TypeError` 触发重连。窗口是否出现仍需人工确认，旧的发送后不弹窗问题尚未通过。
+
+#### CHECK-TRACE-001 按键原始报告分项复测
+
+- 来源：2026-09-11 本轮源码；仅测按键重复，状态为检查点待实测。
+- 前置：开发版重启并记录 `hid_report_trace_ready`；按键通道就绪。每项开始、结束
+  单独对应用户反馈，不将连续多项操作当成一次实体按下。
+- 顺序：TV 短按一次并松开；确认记录后按住两秒并松开；再次确认后快速按两次。
+  项间至少间隔三秒，随后视结果再单独检查方向键和菜单键。
+- 核对 `hid_tap_report` 的原始字节、来源和转发决定，及同一 `hid_report_id` 下
+  `hid_report`、`hid_report_decision`、逻辑边沿；再按 `gesture_id` 对应动作与注入。
+  `synthetic_release` 不算硬件松开，未转发报告不算映射动作。
+- 自动结果及局部性能数据见 `MAINTENANCE.md` 的“按键原始报告补充”。尚不能宣称
+  TV 重复的最终根因和修法已确认。
+- 2026-09-11 20:10 至 20:11 已采集 TV、右方向、菜单的分项记录并对照发送端：
+  右方向原键放行后又执行一次映射；菜单原键放行且导航开关执行一次；TV 映射只发
+  一组切换快捷键，随后另有 Quicker 补发原始 TV 键。监控已停止，证据编号、时间和
+  结论边界见维护记录的“分项实测与发送端确认”。
+- 当前结果：本轮采集有效，按键故障仍未修复。TV 补发来源确认不等于已证明画面
+  连跳全部由 Quicker 导致；长按与快速双击尚未按原队列单独验收。
+
+#### CHECK-TRACE-001 右 Alt 过期状态修正复测
+
+- 来源：2026-09-11 当前源码；自动检查结果与现场监控边界见 `MAINTENANCE.md` 的“右 Alt 语音被过期按住状态阻断修正”。当前为检查点待实测，不将模拟发送成功当作气泡出现。
+- 前置：从通知区域完全退出后重新打开当前源码版，保持详细诊断开启；MoteDeck选择豆包语音，豆包输入法激活，焦点放入记事本文字区。
+- 流程：手按右 Alt 确认气泡可出现，完全松开并等两秒，再按住遥控器麦克风键约一秒后松开；至少重复两轮，分别记录气泡是否出现、松手是否结束。已松开的单设备右 Alt 不应继续报 `PhysicalKeyInUseError`；若转为确认超时或其它失败，按新错误继续定位，不标为通过。
+- 保护检查：实体键盘确实按住右 Alt 时不叠加同键注入；合成按住期间实体接管右 Alt 时不得提前强制松键；多键盘重叠持有保持保守阻断。自动测试已覆盖，真实设备结果仍待确认。
+- 边界：原始 F5 仍可能在记事本插入时间，此项未修复；微信专用快捷键、目标兼容处理、音频和文字上屏没有因本次状态修正而获得通过结论。
+- 2026-09-11 21:32 至 21:33 实测结果：未通过气泡验收。新会话五轮右 Alt 的按下和松开均有豆包目标回调确认、不再报此前的按住状态错误，但用户看到日期时间且无气泡。21:53:25 主程序保持运行、独立诊断只发送右 Alt 时，用户确认气泡出现；此对照未触发遥控器与音频，发送进程权限也与主程序不同。下一步需对照 F5 混入顺序，不能把尚未完成的因果验证写成根因确认；证据与清理结果见维护记录。
+- 同轮录入缺陷：21:33:07 备用录入将右 Alt 提交为 `alt` 而报错；左右信息保留修正已通过 60 项定向检查，见 `MAINTENANCE.md` 的“语音快捷键备用录入丢失左右信息修正”。21:50 重启后真实边沿已正确解析并提交 `ralt`，界面结果仍待用户明确反馈；不将此项通过视为遥控器唤起通过。
+- 21:59:13 软件 F5 混入对照：气泡出现。发送右 Alt 时 Windows 确认 F5 尚未松开，之后 F5 先松、右 Alt 保持约 1.2 秒；记事本文字增加 15，用户确认气泡出现。此轮只覆盖软件合成 F5，下一步须与真实键盘 F5 区分；不能据此认定遥控器原键已排除。临时组件和按键均已清理，证据见维护记录。
+- 22:04:39 真实键盘 F5 重叠对照：气泡未出现。监听确认非注入 F5 DOWN/UP，右 Alt 发送时 F5 尚未松开，目标右 Alt 两个边沿均确认；用户反馈“没出现”。该路径已复现原始 F5 干扰，但真实 F5 先松开后发送、以及合成补松是否有效仍待验证，不能据此宣称修法已通过。临时组件和按键均已清理，证据见维护记录。
+- 22:09:50 真实 F5 先松开再发送右 Alt：气泡出现。确认 F5 为非注入的按下和松开，发送右 Alt 前没有任何键按住，用户反馈“出现了”；本轮未合成 F5 事件。先后顺序对照已成立，下一步只验证程序补松是否等效，不能据此宣称遥控器唤起已修复。临时组件和按键均已清理，证据见维护记录。
+- 22:15:36 程序补松对照无效：用户确认仅这一轮没切豆包输入法，因此不计唤起成功/失败，撤回“普通补松无效”判断，前面有效结果保留。重测前须确认记事本已切豆包且手按右 Alt 可出气泡，不以 HKL 或MoteDeck所选提供者替代。组件及按键已清理，原始证据和更正见维护记录。
+- 22:28:13 程序补松有效重测：用户先明确已切豆包、手按右 Alt 可出气泡；真实 F5 按住时补普通 F5 UP，确认 Windows 按住键为空后再发送右 Alt。目标 DOWN/UP 均确认，但用户反馈没有气泡，首个时间后停顿再连续输出时间；监听记录到原生长按重复 DOWN。该次补松未恢复唤起，后续定位原始 F5 干扰与拦截，不再将仅提前补松作为已验证修法。两项临时组件停止且随后确认所有键松开；未改正式发送链路，不证明必须安装驱动。证据见维护记录。
+- 22:33:58 至 22:36:03 当前结果：本机豆包正常遥控器按住说话流程通过。当前主程序同时使用协议 4 原键拦截；用户确认气泡可唤出、TXT 可使用语音、不夹带日期时间、松手正常结束。日志有三次记事本文字增长，其中后两次连续，右 Alt 松开均完成；该窗口六次语音的低层日志仅有右 Alt、无 F5 事件。不将另三次文本观测不变的操作计为文字成功，不将本项通过扩大为微信、其它宿主、保护边界或长期稳定性通过。无需重复补松对照；原始证据、监听取消边界和修正归属见维护记录。
+
+#### CHECK-TRACE-001 微信麦克风旧版本记录修正复测
+
+- 状态：旧记录误判已由后续日志确认消除，完整声音流程转下节复测。22:52 重开后的五轮均读取新版响应，无无依据恢复/重按；当时仍无正常语音文字，不把这处修正当作完整修好。缺陷、修正与原始证据见维护记录“微信麦克风旧版本记录误判修正”。
+- 自动结果：5 项新增回归先复现原问题，修正后微信/豆包控制模块共 34 项通过；真实注册表只读检查已取到今晚新版微信记录。该结果不证明正在运行的主程序已加载修复或微信声音正常。
+- 人工流程：完全退出后重新打开当前源码，保持微信、记事本文本区，用遥控器按住说话并松开。核对当前麦克风时间有响应时不再松键重按、语音文字正常录入和松手结束；无日期时间漏出。首次激活微信是现有流程，不要求取消所有输入法切换。
+- 边界：后续本机监控已确认微信使用 `CABLE Output`，并捕获主程序播放会话在开麦期间被静音；直接证据与修正见下节，不把误重试当作声音失败唯一原因。
+
+#### CHECK-TRACE-001 微信自身播放通道静音保护复测
+
+- 状态：2026-09-12 核验，正式源码的唤起与声音已获用户确认；微信重复上屏仍待定位，完整输入流程不标通过。用户反馈微信、豆包、搜狗均可语音输入，微信在记事本和微信聊天框出现两份，Codex 一份。
+- 来源与自动结果：见 `MAINTENANCE.md` 的“微信开麦期间自身播放通道静音保护”；定向检查 312 项通过、1 项既有跳过，本机无声端点自检通过，不录音、不写其它通道设置。
+- 主流程：完全退出并重新打开当前源码，保持微信输入法，在记事本连续两次按住遥控器说完整短句再松开。期望每轮气泡可唤出、文字正常录入、松手结束，不夹带日期时间；不依赖任何临时监控或解除静音脚本。日志应有本轮 baseline 和 `restore/restored`，没有无依据重按。
+- 对照与保护：确认豆包原有正常流程未受影响。原本静音、设备或会话替换、其它进程、短按/快速松手和旧轮次不应被误解除静音；自动边界已覆盖，真实使用效果仍由用户确认。
+- 当前单项：2026-09-12 00:09 轮确认已加载无等待松键试改，但重复仍在；已撤回该试改及对应试验测试，相关两模块 126 项通过，用户再次重开后的日志确认原间隔恢复。00:19 断连轮捕获临时文字保留后再次追加；00:30 无断连的正常松手轮进一步直接捕获微信切为搜狗，原长度保留后再次增长，焦点未变，与用户目视切换一致。当前优先验证 `lctrl+lshift+f9` 与 Ctrl+Shift 切换输入法冲突，具体设置变更尚待授权；避冲突后应确认不意外切换、每轮只留一份及松手正常结束。证据与边界见 `MAINTENANCE.md` 的“微信松手后重复上屏单项对照”，重复上屏仍未通过。
+
+### CHECK-HID-COPY-001 提前拦截与实体键盘隔离
+
+- 状态：本机连击、跳格和菜单双触发修复通过；2026-09-12 按用户要求对该范围收口。
+  其它边界保留待实测，不与本机结果混用。根因、协议 4 修正、自动检查和加载来源
+  见 `MAINTENANCE.md` 的“HID 完成缓冲区提前拦截”。旧观察版仍连跳不算修复版结果。
+- 第一轮：当前源码服务连接后，返回键一次唤醒，等两秒；单按右方向、菜单、TV，
+  再按实体键盘右方向，各间隔三秒。期望每次映射只执行一次，遥控器原键不再并行
+  进入 Windows；实体键盘右方向正常，菜单不额外弹出原生右键菜单。
+- 对照：核对源报告在复制入口包含原 usage、复制返回为 neutral，映射持有原报告，
+  来源绑定已验证；用报告编号和手势编号分别统计，不用相邻日志推定同一次操作。
+  用户观察 TV 画面仍是必需项，不能仅凭一批 Ctrl+Alt+Tab 返回成功标为通过。
+- 后续受影响边界：快速按两次、按住及松开、键盘与遥控器方向重叠操作、停止服务
+  后恢复原键、重新启动及断连后再连接。启动时未接管的首次旧按住须先完整放行，
+  不能吞其松开造成残留；未验证来源或共享宿主时不接管，不全局禁用同名键。
+- 2026-09-11 首轮用户确认：方向不再跳格，菜单映射导航时不再同时触发原生菜单；
+  手动打开 Windows 应用切换窗口后，遥控器方向也不再跳格。对应日志会话
+  `5d36b4d024a04727b1e03dd1808dd064`：22:22:07 方向和 22:22:28 菜单的复制前
+  usage 非零、返回 neutral；后续映射保持原 usage。只确认这些真实结果，不视为
+  实体键盘重叠操作、长期运行或所有设备场景均通过。
+- 首轮历史遗留（TV 后续已恢复，见下文）：TV 单击打不开应用切换，22:22:49 至 22:23:20 的八次动作在无发送记录
+  时报 `delivery_failed`，不能用“不再跳”掩盖动作未执行；微信主窗口导航请求
+  送达但用户看不到导航框，尚未证明原因。先单独定位，不回退已确认的提前拦截。
+- 22:37 仅正常重启应用加载发送前拒绝细节，未重启 HID 设备。新会话
+  `a0b9e2b044c7466a8a7cfb599155d427`，保留协议 4 和原映射。微信只读扫描时曾处于
+  最小化，零目标结果不作为故障证据。
+- 22:41 用户反馈与新日志核实：遥控器现在能唤出应用切换，之后用方向选窗口不
+  连击；遥控映射也能唤出元素导航，方向移动不跳格。新会话 seq 36、339 的
+  `app_switcher` 均成功，与此次体验一致，未再记录发送前拒绝。旧失败尚无具体
+  错误类型，重启后恢复不能写成其原因已经查清；不继续要求重复整套基本操作。
+- 用户补充当前正常；上一轮曾识别到 Codex 窗口外的 Quicker 悬浮动作，明确暂缓
+  处理。登记为导航目标范围疑点，不计作按键重复复发，不调整范围或排序，不追加
+  实测。微信此前专属入口没有单独确认恢复，不从其它窗口的导航成功推定微信通过。
+- 当前使用源码开发版，无独立 ZIP；本机常用重复按键流程已收口。异机 Windows/蓝牙
+  驱动组合、共享宿主、睡眠唤醒/断连重连、快速连按/长按和键盘同键重叠仍留在后续
+  边界验证，不阻止本次已通过问题关闭，也不据此承诺跨电脑稳定性。
+
+### CHECK-HID-LOG-001 HID 失败分因与普通日志
+
+#### 2026-10-12 小米源码授权修复（本机通过）
+
+- 来源与授权：用户明确要求双击开发版可正常申请小米权限，并处理反复提示重启、先在本机验证。
+  从正式 `main/db86dd4` 继续，程序版本保持 `1.0.89-candidate.89 / source-tree`。修改源码普通权限
+  分支、取消及失败状态和现有设备页操作；冻结安装任务、目标核验、Gadget 协议和真实配置格式不变。
+  新权限边界及生命周期见架构账目 8.1，不创建持久任务或以管理员权限重开整个界面。
+- 原生成功：2026-10-12 15:09:51 经现有桌面开发快捷方式的 Shell 入口启动 PID 208424，
+  15:09:52.021 子进程 182608 完成授权注入；15:13:22 切换谷歌 run `a968b5142f8b`，
+  接收与语音能力就绪，15:18:15 正常退出；15:18:16.620 切回小米时子进程 223124 再次成功。
+  最终源码于 15:24:56 重新经同快捷方式启动 PID 229284，15:24:57.687 子进程 235976 成功。
+  三轮小米主进程均 `elevated=false`，子进程均 `worker_elevated=true / exit_code=0 / stage=complete`，
+  宿主 PID 3208；三轮均完成协议 4、脚本哈希匹配、来源入口核验和 enable 确认。最终真实窗口显示
+  小米 `544FC3`、按键接收“正常”、服务“已连接”，无重启提示；没有用替身结果冒充这些成功。
+- 失败和取消：固定 Python 3.12.10 的真实命名管道／进程验证，故意无效目标 4294967295 返回
+  `host_lookup / exit_code=4`，没有实际注入；以阻塞替身替代注入操作后，运行中取消和超时分别
+  在 0.828／0.359 秒返回具体原因且子进程退出，原生管道断开也确认子进程退出。Windows UAC
+  取消错误 1223、迟到授权回收、身份不符、结果错配、授权等待超时及宿主变化后不自动重试由隔离
+  测试覆盖，未操作系统授权弹窗制造取消。真实 offscreen QML 验证两种失败状态、无自动重启建议、
+  “重新授权”按钮确实进入显式重试。源码普通权限、已提权源码和冻结助手各路由分别回归。
+- 去重检查：626 项受影响检查完成，清单保存在临时证据目录；复用首轮 611 项中的有效结果，
+  修正新状态所需的测试替身及权限边界预期后，55 项定向复验全部通过。源码导入与 diff 检查通过。
+  一次过宽的整组 Qt 检查未完成，缩小后只验本次消费者，不声称全项目检查通过；没有重复制作程序包。
+- 导出证据：15:25:47 使用现有 `log_export.export_logs` 生成最终日志 ZIP，6 个日志成员加导出清单，
+  SHA-256 `1f43c09ef8f089ea8146fc2725757a94bd6838a3fa23c224c1bb5b98117bf742`；审计脚本确认成员全部
+  可读、无截断、`incomplete=false / snapshot_stable=true`。本次指定窗口从 15:09:50 起，完整应用
+  日志 765 行，读取至 15:25:28；详细流及轮转全部解析，无非法 JSON。两个主进程的四个会话分别
+  49／4／41／24 条，均从序号 1 连续，前三个 `session_finished / dropped=0`，最后仍在运行。
+  每轮设备身份取同轮启动 `device_context`，依次小米、谷歌、小米、小米；旧故障摘要与 9 月助手
+  日志不算本轮失败。审计器 run 索引只列谷歌，未用它代替三轮小米的完整应用日志与 tap/session 核对。
+  谷歌附加取证中的进程查询权限失败与接收器就绪分别记录，不把附加取证失败当成此次小米授权失败。
+- 人工验收：修复提交 `fff4706` 后，用户对“小米短按一次遥控器方向键，确认电脑能否响应”的
+  本机会话问题明确回复“按键正常”。结合上述授权、注入、握手、真实界面及正常切换／退出验证，
+  本次开发版小米授权与重复重启提示修复通过。实体响应依据为用户确认；前述 15:25:47 日志 ZIP
+  的采集窗口尚无实体按键报告，不倒填日志证据，也不扩展为全部映射或语音验收。
+  证据和临时脚本集中在 `.build/xiaomi-authorization-20261012`，由本任务产生并读取，不纳入 Git 或
+  程序包，可随构建缓存清理；开发版保留运行在小米模式，未改变系统安全设置。
+
+#### 2026-10-12 开发版切换小米后反复提示重启（修复前诊断，已由上节续接）
+
+- 来源与范围：用户反馈最近从谷歌切换小米后反复重启。2026-10-12 只读核对本机进程与日志，
+  当前为正式主目录 `main/93786de` 的源码开发入口，PID 201336，13:38:39 启动；程序标识仍为
+  `1.0.89-candidate.89 / source-tree`，不等同桌面冻结包。未给精确测试时间，以该次启动至
+  13:45:14 取样上界作为候选窗口，13:41:19 的 `device_change` 与反馈吻合；没有混入旧 PID 222356。
+- 材料核对：本机日志目录六个现有成员全部复制并记录大小与 SHA-256；应用日志及轮转中
+  窗口内 763 行，详细流及轮转全部 1598 行，JSON 解析失败为零。当前 PID 有 529 个事件，
+  谷歌及四轮小米共五个 session 的序号均从 1 连续；前四轮有 `session_finished/dropped=0`，
+  最后一轮仍在运行。三组故障摘要各累计四次失败，`before_limited=true`、`dropped_after`
+  分别为 26/23/22，不能用摘要代替完整应用日志和详细流。`hid-helper.log` 最后写入为 9 月 20 日，
+  不作为此次助手运行证据。此次是运行中分文件快照而非用户导出 ZIP，不声称跨文件原子一致。
+- 切换前谷歌 run `1ac5adbbf1fc` 的按键及语音通道已就绪，后台接收进程记录 `elevated=1`；
+  13:41:19 切换时注入脚本卸载、会话分离、语音订阅撤销、设备关闭均完成，无退出崩溃证据。
+  小米四轮启动时间为 13:41:19.630、13:41:25.829、13:41:31.731、13:41:59.341；
+  均以同轮启动设备上下文关联短引用 `544fc3b2b0ca`，Raw Input 唯一接口及宿主 PID 3208 均找到，
+  蓝牙语音能力也均返回。每轮按键注入在 `debug_privilege / AdjustTokenPrivileges` 失败，
+  `winerror=1300 / exit_code=4 / worker_elevated=false / execution_route=direct_child`。
+  失败发生在目标注入之前，原始方向键仍可检测但自定义映射旁路，不能当作完整接管成功。
+- 三次停止原因为 `user_restart`，均 `stopped=True`，未见 `automatic_restart` 或进程反复崩溃。
+  该标签只能证明普通重启入口被调用，不能单凭日志断言每次具体鼠标操作；源码中的权限组件
+  操作完成回调也复用该入口，但本轮无组件操作记录。
+- 根因：`frida_compat.run_injector_subprocess` 仅在冻结且未提权时调用注册助手；源码直接
+  启动子进程，本轮继承普通权限。开发快捷方式不提权，小米注入器则明确要求调用方已具备权限。
+  `pipe_windows.launch_worker` 会为固定后台接收器申请权限，两者路径不同。
+  源码界面又不开放冻结包的权限修复入口，`DevicePage.buttonReceiverStateCode` 把该组合判为
+  `original_only`，按键接收和服务两行都要求重启；权限不变，因此重启稳定重复同一失败。
+- 验证与边界：固定 `.venv` Python 3.12.10，隔离替身核对源码普通权限、冻结普通权限、冻结
+  已提权三种注入路由；QJSEngine 执行实际 QML 状态函数，复现 `original_only`、重启操作可见及
+  两行“点击重启服务”。未安装/修复权限、提权、注入真实宿主、重启在用程序或修改用户配置。
+  冻结包走不同分支，本轮不能证明其存在同一故障，也没有验证修复后的实体小米。
+  临时快照、核对及隔离脚本位于 `.build/xiaomi-restart-20261012`，仅本任务本机证据，
+  不纳入 Git 或发布包，后续可随构建缓存清理；当时只记录结论，后续授权及修复结果见上节。
+
+#### 2026-10-08 小米设备发现失败分因（检查点待实测）
+
+- 来源与范围：用户先报当天 10 点前后小米遥控器 `10F398` 无按键通道，后报 `.86` 可用、
+  `.87` 不可用。已对 `MoteDeck日志-20261008-100550.zip` 和
+  `MoteDeck日志-20261008-160703.zip` 运行 `scripts/audit_log_bundle.py`，核对全部成员、
+  CRC、导出清单、轮转及采集状态；两包均为 7 个成员，无导出截断，`incomplete=false`、
+  `snapshot_stable=true`。新包由 `.86` 导出但包含 `.87` 历史，未以导出时间/版本代替测试范围。
+  SHA-256 分别为 `a1f38398a433c7338d1534c59f489d5b46342ae1231a824e082e23f7c40d3adb`、
+  `f7892f55753411ef3af376e9b8ce8925762001fce8962259c3948b8b217d96c7`，核验日期 2026-10-08。
+- 从原窗口补齐同轮启动与前后重试，并为版本对照扩展到当天 `.87` 的 8 次小米桥接运行：
+  09:59:41–10:01:10、10:01:21–10:02:12、10:03:20–10:06:22、
+  10:06:22–10:06:33、10:06:33–10:11:35、11:31:40–11:32:12、
+  11:32:57–12:23:34、12:31:52–12:35:06；均未找到 Raw Input 路径，宿主查询
+  `matched_services=1 / host_pid_unavailable`，未进入注入或握手。10:06 权限重装后仍失败。
+  同期另一次谷歌运行不混入；小米旧日志无独立 `run` 字段，按桥接启动/退出关联，
+  审计脚本的 `run_count=0` 不代表没有运行。
+- `.86` 对照为 16:03:01 启动至导出时仍运行的一轮（最后活动 16:06:43），约 0.096 秒找到
+  宿主，16:03:03 注入及握手成功、16:03:12 身份核实就绪；42 个按键边沿、14 次语音，
+  其中 4 次微信返回 `host_confirmed_audio_ok` 且有非零音频，不把它当文字上屏证明。
+  两版相关记录的设备引用均为 `10f39844cadf`。新版导出中详细流仅保留 `.86` 的
+  session `74aef26fb1ec4a039b1e050426795f71`、seq 165–1145，起始 164 条已轮转覆盖；
+  `.86` 普通日志保留启动，但缺少启动前详细设备上下文，不能用 16:04 记录替最初身份定案。
+  `.87` 最后运行的故障摘要保留 session `90c336952bd94d7fb232c3692f1fe518` 的启动前设备
+  上下文及 36 条事件，无摘要丢弃；其它旧事件只用于追因和缺口核对。
+- 尚缺 12:35–16:03 之间的系统/配对操作记录。用户 PowerShell 回显中的几个离线 PnP 节点
+  不能证明全部当前节点不存在；后一次空报告由采集脚本依赖上一窗口的 `$micDevices`
+  变量造成，不能当“系统没有设备”的证据。暂不要求用户再跑零散命令。
+- 版本核对：`.86` 发布源 `5f23c3b` 与 `.87` 的 `27c9076` 在小米发现、身份、宿主和接入
+  实现上同源；正式包 Python 归档及小米核心原生模块内容一致（PE 构建元数据单独归一化），
+  差异落在更新、音频、导航及导出模块。结合相同失败的隔离回放，目前只能定位到设备发现
+  阶段，不能认定 `.87` 回归或某个驱动原因。本次源码基线为正式主目录 `main` 的 `b879af8`，
+  该主线已经包含未发布修改，不等同 `.87` 正式产物。
+- 确认并修复的诊断缺陷：`selected_raw_path` 吞掉身份读取错误，
+  `find_rc003_hidogatt_host_pid` 将身份不符、读取失败、HostPid 缺失/无效及多个宿主混记。
+  现在分别记录枚举数量、匹配数量、身份结果、选中实例数量、宿主结果、失败步骤和数字错误码；
+  Configuration Manager 的 `configret` 与 Win32 的 `winerror` 分开保存。每次查询最多 3 个错误
+  样本，额外错误保留计数；不记录原始设备路径、ContainerID、注册表值或异常正文。
+- 日志路径：Raw Input 新增 `hid_raw_input_lookup`，宿主沿用 `hid_host_lookup`；原 PID
+  返回和设备筛选/重试规则不变，旧 `reason` 兼容，详细分因使用 `lookup_outcome`。
+  按结果变化记录，普通日志始终保留摘要；失败进入既有故障窗口，详细流启用时同时保存上下文。
+  故障窗口仍只保留最近 3 组，不能声称无限保留全部历史；`path_selected` 仅指接口选择成功，
+  不表示监听或整个按键通道已经就绪。无新增用户操作、配置或日志文件。
+- 2026-10-08 固定 `.venv` Python 3.12.10：受影响用例去重 833 项，830 通过、3 项按平台
+  条件跳过（非 Windows 输入门禁 1 项、仅 POSIX 的 SIGTERM 场景 2 项）。覆盖新增
+  `test_hid_discovery_diagnostics` 14 项及选择、Raw Input、应用接线、HID tap/注入/重载、
+  谷歌共享枚举、Windows 诊断、日志落盘/导出/隐私、停止生命周期；另含 12 项设置页检测入口
+  和 1 项真实只读 Raw Input 枚举。已有未变结果复用，没有执行全项目完整自检。
+- 隔离原生验证通过：在子进程自有临时 HKCU 键中以受限句柄触发真实 `ERROR_ACCESS_DENIED=5`，
+  真实无效 Raw Input 句柄返回 `ERROR_INVALID_HANDLE=6`，不存在接口返回非零 CONFIGRET；
+  固定失败步骤和错误码保留，临时键清理完成，不改真实设备、权限或配对。
+  新增实际导出 ZIP 验证覆盖详细诊断开/关、失败/恢复、正常退出、日志轮转后的故障摘要；
+  原有取消、超时、异常退出及读写/flush 失败验证通过，采集失败仍标记不完整而非设备不存在。
+  日志异常不改变输入结果，源码 `--dry-run` 与 diff 检查通过。
+- 交付边界：只修源码和记录，未构建、打包、发布或重启用户程序；现有 `.87` EXE 不含本修复。
+  下一次有新程序时，只需原反馈电脑确认正常连接和失败时新分因确实启用；已有的开发侧故障矩阵
+  不交给用户重复。连接故障的最终根因仍待该环境的有效证据，不能承诺一轮必定定位。
+
+#### 2026-09-11 原 HID 拦截日志批次（历史记录）
+
+- 状态：检查点待实测；源码和隔离验证完成，本轮未重启主程序/RC003 HID 宿主，
+  不把旧组件的运行结果算作新诊断已启用。
+- 自动结果：2026-09-11，当前工作区 Python 3.12.10，`test_hid_tap_diagnostics`、
+  `test_hid_copy_probe`、`test_hid_copy_interception`、`test_frida_compat`、
+  `test_app_wiring`、`test_diagnostic_trace`、`test_logging_setup_location` 和
+  `test_privacy_contract` 共 352 项，351 通过、1 跳过。普通日志临时文件落盘、
+  关闭详细诊断、错误内容白名单、原日志隐私过滤、写入失败隔离均有覆盖。
+- 实际 JS 回调在自有隔离子进程验证复制失败/候选失败、源缓冲区恢复、错误码保留、
+  计数和首错限流、续租不清零、重新接管清零，以及不向旧客户端发送新消息；保留
+  原有其它句柄、长度、复制方向、旧按住交接和租约测试。未向 Windows 发送按键。
+- 人工入口：用户允许短暂中断时，正常退出主程序，按现有流程更新 Gadget 脚本并
+  只重载 RC003 HID 宿主，再启动更新后的源码。检查普通日志中的实际
+  `loaded_diagnostic_revision=1` 与 `diagnostics_available=true`；否则继续记为
+  未启用完整底层诊断，不能要求用户重复测试后再把缺失日志解释为设备故障。
+- 加载后仅需确认一轮正常映射仍可用、普通日志有宿主核实及健康摘要；不重复已通过
+  的全套基本按键测试。真实共享宿主/休眠/重连故障留给对应环境验证，不为制造日志
+  修改系统配置。异机反馈优先提供失败时间与同轮 `app.log`，涉及逐次重复判定时再
+  提供提前开启的 `diagnostic-trace.jsonl`；日志不自动上传。
+- 完整原因码、判断限制及性能边界见 `MAINTENANCE.md` 的“HID 拦截失败日志补全”。
+
+### CHECK-VOICE-026 微信主动刷新读取真实设置与失败保护
+
+- 状态：检查点待实测；范围仅微信快捷键刷新。豆包、搜狗的读取与发送路径不变，微信重复上屏不因本项读取成功而通过。
+- 当前流程：只在主动点击刷新时打开或调出微信设置，自动切到语音输入页并读取按住说话值；进入页面、重复选择程序和重新激活MoteDeck不弹微信设置、不读取隐藏旧提示。读到并保存成功才显示成功；失败保留旧值及手动/自动来源，仍可手动录入。不自动关闭设置窗口。
+- 自动与本机证据：见 `MAINTENANCE.md` 的“微信快捷键主动刷新改读真实设置页”。381 项受影响检查已完成，含真实 QML 刷新按钮点击与保存；真实设置关闭后重开、语音页读回、临时原子保存及 Windows Qt 后台线程/150% 缩放路径通过，真实用户配置未改。
+- 人工步骤：重开当前源码运行的MoteDeck，在微信已设置左 Ctrl + 左 Win 的前提下点击刷新，等待完成后回MoteDeck确认值和成功提示；无需再修改微信设置。离开语音页再进入不应弹微信设置。可在刷新过程中切到其它程序或关闭微信设置，失败应明确提示、保留原值且不继续点击。
+- 后续独立对照：用遥控器在记事本说一句话后松手，核对是否仍切到搜狗、是否只保留一份文字。该步骤验证先前重复上屏问题，不用刷新成功替代语音结果。
+
+### CHECK-DESKTOP-025 candidate.31 未保护本地测试包
+
+- 核验日期：2026-09-12。来源为 `9a15669261aab9718420477fb0347d1b7eb94f42`
+  加构建前工作区全部现有改动（含微信主动刷新读取设置），以及本次 VERSION/版本说明更新。
+  主程序、助手和 ZIP 内版本统一为 `0.2.0-candidate.31`。只作本地测试，不签名、不发布。
+- 使用当前 `.venv` Python 3.12.10，直接从 `src` 执行 PyInstaller，未运行 Cython；
+  微信设置读取、快捷键同步与 QML 三个测试模块共 58 项通过，源码导入检查通过。
+  产物主程序 `--dry-run`、`--qt-runtime-check` 和 HID 助手 `--self-check` 退出码均为 0；
+  ZIP 包结构、版本与逐文件一致性检查通过。不含权限模块 Cython 扩展和误收集的 ICU DLL。
+- 构建前后及打包后输入指纹一致：231 个文件，SHA-256 为
+  `AEE3CE39DDAED1E392031C9AF9524E5DDBC418927174CDCEBE2E08A6F8C7E23F`。
+  产物指纹为 `224423C11A8D5D29674C956AF9E147EA254452C6363E63B98CBE04681ECE9722`。
+- 文件：项目总目录下的 `MoteDeck-Windows-0.2.0-candidate.31-免安装.zip`，149,168,860 字节；
+  ZIP SHA-256：`35A88FA6967953DD4F0A898C48B85C99EACEBAAFFF2012C6E479F5962EB2A067`；
+  主 EXE SHA-256：`AB146E9028B2A1F20140A6D1ABC9EB139EE720ADBCAF00A8E2956BCCAED6183F`。
+- 本次临时编排与日志位于 RC003 `.build/`，封装缓存位于 `build/smoke-work-candidate31/`；
+  均为当前任务生成、供本地复核使用、Git 忽略且不进入 ZIP，可在不再复核时清理。
+  上次构建目录保留在 `dist/RemoteMicRC003-candidate30-unprotected/`，既有 ZIP 未覆盖。
+- 状态：检查点待实测。完全退出旧程序后解压到新文件夹，确认窗口版本，再检查遥控器
+  连接、普通按键、微信主动刷新以及按住说话/松手收尾。真实输入法、设备与窗口视觉未由
+  本次无界面自检验收；未操作现有运行实例、真实配置、驱动或设备。
+
+### CHECK-DESKTOP-026 candidate.32 未保护本地测试包
+
+- 核验时间：2026-09-12 14:25。来源为 `da51d2d6ec60fb9f10f087788a636e7520426715`
+  加构建开始时工作区全部现有改动，含旧助手升级、配置流程修复和微信主动刷新读取设置。
+  本次版本接续为 `0.2.0-candidate.32`，不运行 Cython，直接从 `src` 封装。
+- 当前 `.venv` Python 3.12.10；源码导入、配置流程与升级页面 10 项定向检查通过。
+  主程序 `--dry-run`、`--qt-runtime-check`、助手 `--self-check` 均返回 0；ZIP 的
+  顶层结构、内置版本及逐文件一致性通过。没有权限模块 Cython 扩展或误带的 ICU DLL。
+- 构建前后、打包后输入指纹一致（233 个文件）：
+  `7A6891B0D6FC72A590D05D1DBA4A2F4D5B5D9FE6FDD262756AAE98DB840976E1`。
+  产物指纹：`CEE82D5850035BC7FC0477B013E0FB35F26A05BBC24583AE34A636F4D4FA0B93`。
+- 项目总目录中的 `MoteDeck-Windows-0.2.0-candidate.32-免安装.zip` 为 149,167,657 字节。
+  ZIP SHA-256：`EF1ADC3017C04530E7C34DA10350BF955F46BC0AFD0789E96C2A6E79AF7CAA2B`；
+  主 EXE SHA-256：`AB4152DA68455FDC5603724F11F74A8BBB85CF0D8C532C633BD0A26EB7D35C5B`。
+- 临时编排、来源快照和日志在 `.build/`，缓存在 `build/smoke-work-candidate32/`，
+  由本任务生成、仅用于本地复核、Git 忽略且不入包，可在不再需要复核时清理。
+  旧构建保留在 `dist/RemoteMicRC003-candidate31-unprotected/`，旧 ZIP 未覆盖。
+- 状态：未签名本地测试包，检查点待实测。解压到新目录，完全退出旧程序后确认窗口版本；
+  按 `CHECK-CONFIG-FLOW-001`、`CHECK-HID-UPGRADE-001` 验证实际设备与配置流程。
+  本次没有修改真实配置、重启运行实例或操作设备，也没有合并提交其它任务的未提交内容。
+
+### CHECK-DESKTOP-027 candidate.33 按键热重载本地测试包
+
+- 核验时间：2026-09-12 20:31；来源 `ff9d7dba0c787ffd612614f939675f58f591e5bc`
+  加当前工作区现有改动，包含本次按键生命周期修复、先前配置流程及输入法修复。
+  版本 `0.2.0-candidate.33`，当前 `.venv` Python 3.12.10 直接封装源码，未运行 Cython。
+- 基础检查：源码导入及本次 274 项受影响检查通过；实际主程序 `--dry-run`、
+  `--qt-runtime-check` 和助手 `--self-check` 返回 0，ZIP 结构/版本/逐文件内容一致性通过。
+  从主 EXE 与助手 EXE 分别读取冻结代码，运行组件、注入入口、助手、宿主重载模块均
+  匹配当前源码；助手代际均为 10，脚本 SHA-256 均为
+  `450f0c4d670d6acf0415d510af6227049f98361d602d662857755272e82a7358`。
+- 236 个输入文件的构建前后及打包后指纹一致：
+  `F2B4F7EE147143CAE9CC11BEB611CD566EE73B42A3327DC17948CCB7911541D0`。
+  主 EXE SHA-256：`89FD88CCDC95DBD4D121C3167D89594D7F3284CE4A2AF7832E59939D64BCA19F`。
+- 项目总目录 `MoteDeck-Windows-0.2.0-candidate.33-免安装.zip`，149,184,376 字节；
+  SHA-256：`D088D4BF39174C81B8AD9521362DE87FC93900323EECD2CDEB6AB8C0195717CE`。
+  `.build/local-test-candidate33.ps1`、`.build/candidate33-result.json`、PyInstaller 日志及
+  `build/smoke-work-candidate33/` 是本地复核材料，Git 忽略、不入包，可在不再复核时清理。
+  旧构建保留于 `dist/RemoteMicRC003-candidate32-unprotected/`，旧 ZIP 保留。
+- 状态：未签名本地测试包、检查点待实测；用户先不重启 Windows，完全退出旧程序，
+  解压新包并按提示更新按键组件，再按 `CHECK-HID-RELOAD-001` 验证。未操作真实设备、
+  配置或运行实例，不把隔离组件测试与无界面自检当成异机升级已经通过。
+
+### CHECK-DESKTOP-028 candidate.34 设备选择与共享宿主来源识别本地测试包
+
+- 核验时间：2026-09-13 00:40；来源 `94fe2172f6f1ed63f98be35f3a292298972f5ab3`
+  加当前工作区既有配置、输入法及配套改动；版本 `0.2.0-candidate.34`。固定 `.venv`
+  Python 3.12.10 直接封装源码，未运行 Cython。复用 `CHECK-HID-SOURCE-001` 源码结果，
+  本次不重跑全项目测试。
+- 基础检查：实际主程序 `--dry-run`、`--qt-runtime-check` 和助手 `--self-check` 返回 0；
+  ZIP 单一顶层、唯一主入口、内置助手、VERSION 和全部文件数量、长度、SHA-256 校验通过。
+  从两个 EXE 的 PYZ 分别读取设备规则、实体选择、运行脚本、注入、助手和宿主重载模块，
+  主程序另核对连接模块；冻结代码逐项与当前源码一致。协议为 4、来源能力为 1、助手代际为 12，
+  运行脚本 SHA-256：`1ddd348ad7f0dd8ad0fcc8868c469c576ae8b3e5c0a2cbead01a4df5db4dead8`。
+- 240 个构建输入在构建前后、暂存复制及打包后核对一致，指纹为
+  `903CE745E517AA570CE65C69675354BB59AE8F4263B6B58C59876C0360AADB9E`。
+  主 EXE SHA-256：`3C53DB6D453CC0C22D7CADB61EEA284E7F5427338B81B6ACC36D49FDF0D8203B`；
+  助手 SHA-256：`32B105861050E74312C48B6166289F0A64D4DF2F5F492811FFBF2950A22CDCED`。
+- 项目总目录 `MoteDeck-Windows-0.2.0-candidate.34-免安装.zip`，149,871,239 字节；
+  SHA-256：`87514B8A8A7F7D7678C5C0E031514E962301CC54753DB7AC173F1A41BFC998CB`。
+  构建输出为 `dist/local-test-candidate34/RemoteMicRC003`；旧输出和旧 ZIP 均原样保留。
+- 本地证据：`.build/candidate34-baseline/`、`local-test-candidate34.ps1`、
+  `package-candidate34.ps1`、`audit-candidate34.py`、`candidate34-frozen-audit.json`、
+  `candidate34-result.json`、对应 PyInstaller/打包日志均位于 `.build/`；构建中间文件为
+  `build/smoke-work-candidate34/`。由本轮打包产生，仅供复核，Git 忽略且不入 ZIP，
+  无需复核时可清理。临时包装脚本复用正式脚本，仅适配独立输出和清理路径检查。
+- 状态：未签名本地测试包、检查点待实测。解压后运行根目录 `RemoteMicRC003.exe`，
+  确认窗口显示 candidate.34；首次在设备页添加并使用已配对的小米，按提示更新按键组件。
+  双遥控依次及同时按键、所选设备状态恢复、旧驻留组件迁移仍按 `CHECK-HID-SOURCE-001`
+  实测。未操作真实配置、设备或运行组件，不把包自检当作异机硬件问题已经通过。
+
+### CHECK-DEVICE-SELECT-002 candidate.34 设备下拉显示与旧组件处理指引
+
+- 核验日期：2026-09-13；用户 candidate.34 实测确认添加/使用设备可以完成，但展开
+  列表出现三项内部对象名称，启动后旧组件迁移未完成。`CHECK-DESKTOP-028` 原包自检
+  不覆盖此弹出列表显示，也不证明用户机器上旧组件已释放。
+- 修复前：扩展真实 QML 添加、使用、切换、移除流程，实际打开下拉弹层，精确复现
+  三项 `[object V4ReferenceObject]`。修复后核对已配对/已添加两组列表的实际项文字，
+  覆盖两个支持设备、一个未适配设备、空列表及添加后列表刷新；未适配设备仍不能添加，
+  添加不会自动使用。设备页和语音页均提供重启电脑及重新打开程序的明确指引。
+- 最终受影响检查 34 项通过：`test_remote_selection`、`test_hid_runtime_upgrade_qml`、
+  `test_voice_program_qml` 和 `SelectionComboBoxBehaviorTests`。随后给隔离截图入口加载
+  中文字体，单独复跑升级页面检查 1 项通过；弹层及两页截图文字可读、无重叠。
+  无设备操作；不重复完整构建或全项目测试。
+- 证据：系统临时目录 `rc003-selection-feedback-8501f89f078143e4af0d9d2bdd69a632` 保存
+  原文件、用户日志副本、截图；`.build/selection-feedback-before.log`、
+  `selection-feedback-qml.log`、`selection-feedback-final.log`、`selection-feedback-render.log`
+  及本轮暂存补丁仅作本地证据，Git 忽略、不随包分发，无需复核时可清理。
+- 状态：源码修复检查点待实测，既有 candidate.34 包未更新。当前软件无法安全自动
+  清除用户该次旧组件，现有可靠恢复流程需要重启电脑；双遥控按键效果留待之后实测。
+
+## 当前真机验收口径
+
+
+以下内容只限制“当前按键映射与按住说话已经通过本机真机验收”这一结论，不是普通
+代码、文档、提交或本地测试包的统一门禁。
+
+- 自动检查全部通过，只能把本批次标为“检查点待实测”。
+- 最新 HOLD-only 候选必须完成 `TEST-UI-002`、`TEST-KEY-003`、
+  `TEST-KEY-004` 和 `TEST-VOICE-005`；同时 `TEST-KEY-001`、
+  `TEST-KEY-002`、`TEST-VOICE-001` 的既有结论需要在该候选上回归。全部通过后，
+  才可写“当前按键映射与按住说话通过本机真机验收”。
+- 选择微信输入法时还必须完成 `TEST-VOICE-009`，才能单独写“微信输入法语音通过真机
+  验收”。
+- 选择豆包输入法时还必须完成 `TEST-VOICE-010`，才能单独写“豆包输入法语音通过真机
+  验收”。
+- 休眠恢复、长期运行、杀软兼容和未签名程序提示继续按各自结果单独记录。
