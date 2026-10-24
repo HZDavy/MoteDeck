@@ -39,6 +39,8 @@ MoteDeck 是一个开源的 Windows 小工具：把**小米蓝牙语音遥控器
 
 ## 联动预告：用遥控器控制米家设备
 
+<img src="./assets/readme/integration-banner.svg" width="100%" alt="联动预告：MoteDeck 把遥控器按键变成设备指令，经本机回环 HTTP 交给 OpenMexia，由 OpenMexia 完成米家登录与设备控制">
+
 正在与同作者的智能家居控制中枢 [OpenMexia](https://github.com/HZDavy/OpenMexia) 对接：以后可以直接用 RC003 的按键开关灯、调亮度与色温，不必先走到电脑前。
 
 分工保持清晰——MoteDeck 只负责「按键 → 指令」，米家登录、设备状态与通信全部由 OpenMexia 承担。两者通过本机回环 HTTP 通信（仅监听 `127.0.0.1`，每次启动随机 token 校验），MoteDeck 不会接触你的米家凭据，也不会上传任何设备数据。
