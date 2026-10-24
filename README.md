@@ -3,11 +3,11 @@
 </p>
 
 <p align="center">
-  <a href="https://hzdavy.github.io/MoteDeck/"><img src="https://img.shields.io/badge/%E5%AE%98%E7%BD%91-hzdavy.github.io%2FMoteDeck-0B0F15?style=flat-square&logo=githubpages&logoColor=7FB4FF" alt="官网"></a>
-  <a href="https://github.com/HZDavy/MoteDeck/releases/latest"><img src="https://img.shields.io/github/v/release/HZDavy/MoteDeck?style=flat-square&label=release&color=0B0F15&labelColor=2E4A6B" alt="最新版本"></a>
-  <a href="https://github.com/HZDavy/MoteDeck/releases"><img src="https://img.shields.io/github/downloads/HZDavy/MoteDeck/latest/total?style=flat-square&label=%E4%B8%8B%E8%BD%BD&color=0B0F15&labelColor=2E4A6B" alt="下载量"></a>
-  <img src="https://img.shields.io/badge/Windows%2010%2F11-x64-0B0F15?style=flat-square&labelColor=2E4A6B" alt="平台">
-  <a href="LICENSE.md"><img src="https://img.shields.io/github/license/HZDavy/MoteDeck?style=flat-square&label=license&color=0B0F15&labelColor=2E4A6B" alt="许可"></a>
+  <a href="https://hzdavy.github.io/MoteDeck/"><img src="https://img.shields.io/badge/%E5%AE%98%E7%BD%91-hzdavy.github.io%2FMoteDeck-111111?style=flat-square&logo=githubpages&logoColor=FFFFFF" alt="官网"></a>
+  <a href="https://github.com/HZDavy/MoteDeck/releases/latest"><img src="https://img.shields.io/github/v/release/HZDavy/MoteDeck?style=flat-square&label=release&color=111111&labelColor=55534F" alt="最新版本"></a>
+  <a href="https://github.com/HZDavy/MoteDeck/releases"><img src="https://img.shields.io/github/downloads/HZDavy/MoteDeck/latest/total?style=flat-square&label=%E4%B8%8B%E8%BD%BD&color=111111&labelColor=55534F" alt="下载量"></a>
+  <img src="https://img.shields.io/badge/Windows%2010%2F11-x64-111111?style=flat-square&labelColor=55534F" alt="平台">
+  <a href="LICENSE.md"><img src="https://img.shields.io/github/license/HZDavy/MoteDeck?style=flat-square&label=license&color=111111&labelColor=55534F" alt="许可"></a>
 </p>
 
 MoteDeck 是一个开源的 Windows 小工具：把**小米蓝牙语音遥控器 2 Pro**（RC003）的按键和话筒接进电脑，隔着房间控制应用、按住说话把文字送进当前输入框。

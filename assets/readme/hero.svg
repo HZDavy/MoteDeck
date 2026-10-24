@@ -1,83 +1,128 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="344" viewBox="0 0 1200 344" role="img" aria-labelledby="heroTitle heroDesc">
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="420" viewBox="0 0 1200 420" role="img" aria-labelledby="heroTitle heroDesc">
   <title id="heroTitle">MoteDeck：把小米蓝牙语音遥控器 2 Pro 变成 Windows 的快捷键和麦克风</title>
-  <desc id="heroDesc">深色标题板。左侧是项目名、一句话说明和版本信息；右侧是一支遥控器示意图，并标注电源、方向、语音三个按键可以映射成什么。</desc>
+  <desc id="heroDesc">浅色标题板。左侧是项目图标、名称、一句话说明和三个特性标签；右侧是一支银色小米遥控器 2 Pro，语音键、方向环、音量键和 TV 键分别连到映射卡片：按住说话、方向键、Vol 加减、应用切换。</desc>
 
   <defs>
-    <linearGradient id="remoteBody" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#232B36"/>
-      <stop offset="0.55" stop-color="#141A22"/>
-      <stop offset="1" stop-color="#0A0E13"/>
+    <linearGradient id="alu" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#9C9993"/>
+      <stop offset="0.22" stop-color="#D3D1CC"/>
+      <stop offset="0.5" stop-color="#E3E1DD"/>
+      <stop offset="0.8" stop-color="#CCCAC5"/>
+      <stop offset="1" stop-color="#A09D97"/>
     </linearGradient>
-    <linearGradient id="markBody" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#39424F"/>
-      <stop offset="0.4" stop-color="#1B212A"/>
-      <stop offset="1" stop-color="#05080B"/>
-    </linearGradient>
-    <linearGradient id="markPill" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#FFFFFF"/>
-      <stop offset="1" stop-color="#D7E1EE"/>
-    </linearGradient>
+    <radialGradient id="ring" cx="0.5" cy="0.4" r="0.6">
+      <stop offset="0" stop-color="#2A2A2A"/>
+      <stop offset="1" stop-color="#121212"/>
+    </radialGradient>
   </defs>
 
-  <rect width="1200" height="344" rx="28" fill="#0B0F15"/>
+  <rect width="1200" height="420" rx="28" fill="#EEEDEA"/>
 
-  <g id="identity">
-    <g transform="translate(64 44)">
-      <rect width="44" height="44" rx="10" fill="url(#markBody)"/>
-      <g transform="rotate(45 22 22)">
-        <rect x="16.5" y="10" width="11" height="24" rx="5.5" fill="url(#markPill)"/>
-      </g>
+  <g id="identity" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif">
+    <g transform="translate(64 60)">
+      <rect width="48" height="48" rx="12" fill="#111111"/>
+      <rect x="18" y="10" width="12" height="28" rx="6" fill="#FFFFFF" transform="rotate(45 24 24)"/>
     </g>
-    <text x="124" y="73" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="18" letter-spacing="2" fill="#8C9AAB">WINDOWS · 蓝牙语音遥控器</text>
+    <text x="128" y="92" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="18" letter-spacing="2" fill="#6B6A66">WINDOWS · RC003</text>
 
-    <text x="64" y="146" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="62" font-weight="700" letter-spacing="-0.5" fill="#F4F7FB">MoteDeck</text>
+    <text x="62" y="196" font-size="78" font-weight="800" letter-spacing="-1.5" fill="#111111">MoteDeck</text>
 
-    <text x="64" y="196" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="26" fill="#CBD5E1">把小米蓝牙语音遥控器 2 Pro</text>
-    <text x="64" y="232" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="26" fill="#CBD5E1">变成 Windows 的快捷键和麦克风</text>
+    <text x="64" y="252" font-size="28" fill="#3A3936">把小米蓝牙语音遥控器 2 Pro</text>
+    <text x="64" y="292" font-size="28" fill="#3A3936">变成 Windows 的快捷键和麦克风</text>
 
-    <line x1="64" y1="262" x2="520" y2="262" stroke="#1E2732" stroke-width="1"/>
-
-    <text x="64" y="294" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="17" fill="#77869A">本机运行 · 不上传录音 · GPL-3.0 · Windows 10/11 x64</text>
+    <g font-size="18" fill="#55534F">
+      <rect x="64" y="326" width="100" height="36" rx="18" fill="#FFFFFF" stroke="#DCDAD5"/>
+      <text x="114" y="350" text-anchor="middle">本机运行</text>
+      <rect x="174" y="326" width="118" height="36" rx="18" fill="#FFFFFF" stroke="#DCDAD5"/>
+      <text x="233" y="350" text-anchor="middle">不上传录音</text>
+      <rect x="302" y="326" width="168" height="36" rx="18" fill="#FFFFFF" stroke="#DCDAD5"/>
+      <text x="386" y="350" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">Win 10/11 x64</text>
+    </g>
   </g>
 
-  <line x1="660" y1="48" x2="660" y2="296" stroke="#1A222C" stroke-width="1"/>
+  <g id="remote">
+    <ellipse cx="700" cy="396" rx="54" ry="6" fill="#000000" opacity="0.08"/>
+    <rect x="654" y="36" width="92" height="352" rx="22" fill="url(#alu)" stroke="#8F8C86" stroke-width="1"/>
 
-  <g id="remote-proof">
-    <g id="remote">
-      <rect x="1014" y="24" width="132" height="296" rx="24" fill="url(#remoteBody)" stroke="#2B3543" stroke-width="1.5"/>
-      <circle cx="1044" cy="54" r="8" fill="#0A0E13" stroke="#5C6A7E" stroke-width="1.5"/>
-      <circle cx="1116" cy="54" r="8" fill="#0A0E13" stroke="#5C6A7E" stroke-width="1.5"/>
+    <circle cx="676" cy="64" r="12" fill="#D6D4CF" stroke="#8F8C86"/>
+    <path d="M672 60.5 A5.5 5.5 0 1 0 680 60.5" fill="none" stroke="#2A2A2A" stroke-width="1.6" stroke-linecap="round"/>
+    <line x1="676" y1="57" x2="676" y2="63" stroke="#2A2A2A" stroke-width="1.6" stroke-linecap="round"/>
 
-      <circle cx="1080" cy="152" r="52" fill="#0A0E13" stroke="#39424F" stroke-width="1.5"/>
-      <circle cx="1080" cy="152" r="19" fill="#1C242E" stroke="#4E5C70" stroke-width="1.5"/>
-      <path d="M1080 106 L1091 121 L1069 121 Z" fill="#8695A9"/>
-      <path d="M1080 198 L1069 183 L1091 183 Z" fill="#8695A9"/>
-      <path d="M1034 152 L1049 141 L1049 163 Z" fill="#8695A9"/>
-      <path d="M1126 152 L1111 163 L1111 141 Z" fill="#8695A9"/>
+    <circle cx="724" cy="64" r="12" fill="#D6D4CF" stroke="#8F8C86"/>
+    <rect x="721.5" y="57" width="5" height="9" rx="2.5" fill="#2A2A2A"/>
+    <path d="M719 64 A5 5 0 0 0 729 64" fill="none" stroke="#2A2A2A" stroke-width="1.4"/>
+    <line x1="724" y1="69" x2="724" y2="71" stroke="#2A2A2A" stroke-width="1.4"/>
 
-      <rect x="1104" y="212" width="14" height="58" rx="7" fill="#222B37" stroke="#3B4757" stroke-width="1"/>
-      <line x1="1107" y1="230" x2="1115" y2="230" stroke="#93A2B6" stroke-width="1.5"/>
-      <line x1="1111" y1="226" x2="1111" y2="234" stroke="#93A2B6" stroke-width="1.5"/>
-      <line x1="1107" y1="252" x2="1115" y2="252" stroke="#93A2B6" stroke-width="1.5"/>
+    <circle cx="700" cy="118" r="35" fill="url(#ring)"/>
+    <circle cx="700" cy="118" r="19" fill="#1B1B1B" stroke="#333333"/>
 
-      <circle cx="1080" cy="298" r="15" fill="#1C242E" stroke="#4E5C70" stroke-width="1.5"/>
-      <rect x="1077.5" y="291" width="5" height="9" rx="2.5" fill="#C9D4E2"/>
-      <path d="M1075 300 A5 5 0 0 0 1085 300" fill="none" stroke="#C9D4E2" stroke-width="1.5"/>
-      <line x1="1080" y1="305" x2="1080" y2="307" stroke="#C9D4E2" stroke-width="1.5"/>
+    <g fill="#141414">
+      <circle cx="678" cy="172" r="12"/>
+      <circle cx="678" cy="201" r="12"/>
+      <circle cx="678" cy="230" r="12"/>
+      <rect x="709" y="160" width="26" height="54" rx="13"/>
+      <circle cx="722" cy="230" r="12"/>
+    </g>
+    <g fill="none" stroke="#E8E8E8" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M680 168 L676 172 L680 176"/>
+      <path d="M673 203 V199 L678 195 L683 199 V203 Z"/>
+      <path d="M673.5 227 H682.5 M673.5 230 H682.5 M673.5 233 H682.5"/>
+      <path d="M718 172 H726 M722 168 V176"/>
+      <path d="M718 202 H726"/>
+      <rect x="716.5" y="226" width="11" height="8" rx="1.5"/>
+    </g>
+  </g>
+
+  <g id="leaders" fill="none" stroke="#B4B2AC" stroke-width="1.5">
+    <path d="M736 64 C770 64, 770 76, 800 76"/>
+    <path d="M735 118 C770 118, 770 150, 800 150"/>
+    <path d="M735 187 C770 187, 770 224, 800 224"/>
+    <path d="M734 230 C770 230, 765 298, 800 298"/>
+  </g>
+  <g fill="#111111">
+    <circle cx="736" cy="64" r="3"/>
+    <circle cx="735" cy="118" r="3"/>
+    <circle cx="735" cy="187" r="3"/>
+    <circle cx="734" cy="230" r="3"/>
+  </g>
+
+  <g id="mappings" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif">
+    <g transform="translate(800 48)">
+      <rect width="336" height="56" rx="14" fill="#FFFFFF" stroke="#111111" stroke-width="1.5"/>
+      <rect x="12" y="8" width="64" height="40" rx="10" fill="#111111"/>
+      <text x="44" y="35" text-anchor="middle" font-size="20" font-weight="700" fill="#FFFFFF">语音</text>
+      <rect x="90" y="10" width="180" height="36" rx="8" fill="#F6F5F2" stroke="#E1DFDA"/>
+      <text x="180" y="35" text-anchor="middle" font-size="20" fill="#111111">按住说话</text>
+      <text x="320" y="35" text-anchor="end" font-size="18" fill="#8A8883">按住</text>
     </g>
 
-    <g id="callouts" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" text-anchor="end">
-      <line x1="950" y1="68" x2="1006" y2="68" stroke="#2A3543" stroke-width="1"/>
-      <circle cx="1010" cy="68" r="3" fill="#7FB4FF"/>
-      <text x="940" y="76" font-size="22" font-weight="600" fill="#E6EDF6">电源 <tspan fill="#6E7C8E">→</tspan> <tspan fill="#9AA8B9" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="20">Esc</tspan></text>
-
-      <line x1="950" y1="152" x2="1006" y2="152" stroke="#2A3543" stroke-width="1"/>
-      <circle cx="1010" cy="152" r="3" fill="#7FB4FF"/>
-      <text x="940" y="160" font-size="22" font-weight="600" fill="#E6EDF6">方向 <tspan fill="#6E7C8E">→</tspan> <tspan fill="#9AA8B9" font-size="20">方向键 / 鼠标</tspan></text>
-
-      <line x1="950" y1="290" x2="1006" y2="290" stroke="#2A3543" stroke-width="1"/>
-      <circle cx="1010" cy="290" r="3" fill="#7FB4FF"/>
-      <text x="940" y="298" font-size="22" font-weight="600" fill="#E6EDF6">语音 <tspan fill="#6E7C8E">→</tspan> <tspan fill="#9AA8B9" font-size="20">按住说话</tspan></text>
+    <g transform="translate(800 122)">
+      <rect width="336" height="56" rx="14" fill="#FFFFFF" stroke="#DCDAD5"/>
+      <rect x="12" y="8" width="64" height="40" rx="10" fill="#F1F0EC" stroke="#DAD8D3"/>
+      <text x="44" y="35" text-anchor="middle" font-size="20" font-weight="700" fill="#111111">方向</text>
+      <rect x="90" y="10" width="180" height="36" rx="8" fill="#F6F5F2" stroke="#E1DFDA"/>
+      <text x="180" y="35" text-anchor="middle" font-size="20" fill="#111111">↑ ↓ ← →</text>
+      <text x="320" y="35" text-anchor="end" font-size="18" fill="#8A8883">单击</text>
     </g>
+
+    <g transform="translate(800 196)">
+      <rect width="336" height="56" rx="14" fill="#FFFFFF" stroke="#DCDAD5"/>
+      <rect x="12" y="8" width="64" height="40" rx="10" fill="#F1F0EC" stroke="#DAD8D3"/>
+      <text x="44" y="35" text-anchor="middle" font-size="20" font-weight="700" fill="#111111">音量</text>
+      <rect x="90" y="10" width="180" height="36" rx="8" fill="#F6F5F2" stroke="#E1DFDA"/>
+      <text x="180" y="35" text-anchor="middle" font-size="20" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" fill="#111111">Vol + / Vol −</text>
+      <text x="320" y="35" text-anchor="end" font-size="18" fill="#8A8883">单击</text>
+    </g>
+
+    <g transform="translate(800 270)">
+      <rect width="336" height="56" rx="14" fill="#FFFFFF" stroke="#DCDAD5"/>
+      <rect x="12" y="8" width="64" height="40" rx="10" fill="#F1F0EC" stroke="#DAD8D3"/>
+      <text x="44" y="35" text-anchor="middle" font-size="20" font-weight="700" fill="#111111">TV</text>
+      <rect x="90" y="10" width="180" height="36" rx="8" fill="#F6F5F2" stroke="#E1DFDA"/>
+      <text x="180" y="35" text-anchor="middle" font-size="20" fill="#111111">应用切换</text>
+      <text x="320" y="35" text-anchor="end" font-size="18" fill="#8A8883">单击</text>
+    </g>
+
+    <text x="800" y="364" font-size="18" fill="#8A8883">单击 · 双击 · 长按，每个键可各设一个动作</text>
   </g>
 </svg>
