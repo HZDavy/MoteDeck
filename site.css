@@ -126,6 +126,8 @@ h2{font-family:var(--display);font-size:44px;line-height:1.25;font-weight:700;le
 .band-in{display:flex;align-items:center;gap:24px;padding:26px 30px;border:1px solid var(--line);border-radius:20px;background:var(--panel)}
 .band-logo{width:56px;height:56px;flex:none;border-radius:16px;background:var(--bg);display:grid;place-items:center;color:#374151}
 .band-logo svg{width:28px;height:28px;fill:currentColor}
+.band-logo.om{background:none}
+.band-logo.om svg{width:56px;height:56px;fill:none}
 .band-copy h3{font-family:var(--display);font-size:22px;line-height:1.35;font-weight:600;letter-spacing:-.01em}
 .band-copy p{margin-top:6px;font-size:16px;line-height:1.6;color:var(--text2)}
 .band-link{margin-left:auto;padding-bottom:2px;font-size:15px;white-space:nowrap;border-bottom:1px solid currentColor}
