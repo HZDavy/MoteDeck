@@ -14,6 +14,8 @@ MoteDeck 是一个开源的 Windows 小工具：把**小米蓝牙语音遥控器
 
 程序常驻通知区域，全部在本机运行，不上传遥控器地址、按键记录、录音或个人数据。
 
+本项目是基于 GPL-3.0 的 [`nijez/open-voice-bridge`](https://github.com/nijez/open-voice-bridge) Windows 实现的改造版本（Windows 实现的历史仓库为 [`ZSTDJan/windows-remote-mic-app`](https://github.com/ZSTDJan/windows-remote-mic-app)）；上游归属、改动范围与 GPL-3.0 §5(a) 修改声明见 [ATTRIBUTION.md](apps/windows/rc003/ATTRIBUTION.md)。
+
 ---
 
 ## 界面预览

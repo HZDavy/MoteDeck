@@ -4295,6 +4295,51 @@ class SettingsControllerTests(unittest.TestCase):
 
         save_pair.assert_called_once()
 
+    def test_voice_mode_cycle_saves_as_a_primary_action(self):
+        from PySide6.QtCore import QCoreApplication
+
+        app = QCoreApplication.instance() or QCoreApplication([])
+        controller, model = self._make_controller()
+        controller.setVoiceOtherKeySwitch(True)
+
+        model.setActionTextAt(model.index_of("ok"), "语音模式切换")
+        self._wait_for_qt(
+            app,
+            lambda: not controller.mappingDirty,
+            "voice mode cycle edit did not auto-save",
+        )
+
+        saved = config.load_key_bindings(
+            config.key_bindings_path(config.config_root())
+        )
+        action = key_mapping.ButtonAction.from_dict(saved["bindings"]["ok"])
+        self.assertEqual(action.kind, key_mapping.ActionKind.VOICE_MODE_CYCLE)
+        self.assertIn("按键映射已自动保存", controller.statusMessage)
+
+    def test_voice_mode_cycle_saves_as_a_long_press_action(self):
+        from PySide6.QtCore import QCoreApplication
+
+        app = QCoreApplication.instance() or QCoreApplication([])
+        controller, model = self._make_controller()
+        controller.setVoiceOtherKeySwitch(True)
+
+        model.setSecondaryActionTextAt(
+            model.index_of("power"), "long_press", "语音模式切换"
+        )
+        self._wait_for_qt(
+            app,
+            lambda: not controller.mappingDirty,
+            "voice mode cycle long press did not auto-save",
+        )
+
+        saved = config.load_key_bindings(
+            config.key_bindings_path(config.config_root())
+        )
+        action = key_mapping.ButtonAction.from_dict(
+            saved["secondary_bindings"]["power"]["long_press"]
+        )
+        self.assertEqual(action.kind, key_mapping.ActionKind.VOICE_MODE_CYCLE)
+
     def test_failed_mapping_auto_save_keeps_the_edit_and_can_retry(self):
         from PySide6.QtCore import QCoreApplication
 

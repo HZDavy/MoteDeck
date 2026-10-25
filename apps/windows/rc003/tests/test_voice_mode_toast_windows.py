@@ -41,5 +41,44 @@ class VoiceModeToastComposeTests(unittest.TestCase):
         self.assertLess(mirrored[0], 60)
 
 
+class VoiceModeToastInkOffsetTests(unittest.TestCase):
+    WIDTH = 40
+    HEIGHT = 24
+    PALETTE = {"fill": (18, 18, 20), "border": (92, 92, 98), "text": (255, 255, 255)}
+
+    def _mask_with_rows(self, rows):
+        mask = bytearray(self.WIDTH * self.HEIGHT * 4)
+        for row in rows:
+            mask_row = self.HEIGHT - 1 - row
+            for column in range(self.WIDTH):
+                mask[(mask_row * self.WIDTH + column) * 4] = 0xFF
+        return bytes(mask)
+
+    def _pixel(self, pixels, visual_row, column):
+        offset = ((self.HEIGHT - 1 - visual_row) * self.WIDTH + column) * 4
+        return tuple(pixels[offset : offset + 4])
+
+    def test_ink_below_center_asks_to_move_up(self):
+        # 墨迹 14..17 的中心是 16，比盒子中心 12 低 4 行。
+        mask = self._mask_with_rows(range(14, 18))
+        offset = VoiceModeToast._ink_vertical_offset(self.WIDTH, self.HEIGHT, mask)
+        self.assertEqual(offset, 4)
+
+    def test_empty_mask_needs_no_shift(self):
+        mask = bytes(self.WIDTH * self.HEIGHT * 4)
+        offset = VoiceModeToast._ink_vertical_offset(self.WIDTH, self.HEIGHT, mask)
+        self.assertEqual(offset, 0)
+
+    def test_compose_moves_the_text_up_by_the_offset(self):
+        mask = self._mask_with_rows(range(14, 18))
+        pixels = VoiceModeToast._compose_pixels(
+            self.WIDTH, self.HEIGHT, mask, self.PALETTE, 1, 4
+        )
+        moved = self._pixel(pixels, 10, self.WIDTH // 2)
+        original = self._pixel(pixels, 14, self.WIDTH // 2)
+        self.assertGreater(moved[0], 200)
+        self.assertLess(original[0], 60)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -88,6 +88,8 @@ Source: "..\..\..\..\ASSET_LICENSES.md"; DestDir: "{app}"; DestName: "ASSET_LICE
 Source: "..\..\..\..\THIRD_PARTY_LICENSES\*"; DestDir: "{app}\THIRD_PARTY_LICENSES"; Flags: recursesubdirs createallsubdirs ignoreversion
 Source: "..\..\..\..\LICENSE.md"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion
 Source: "..\..\..\..\COPYRIGHT.md"; DestDir: "{app}"; DestName: "COPYRIGHT.txt"; Flags: ignoreversion
+; GPL-3.0 §5(a) 要求派生版本随二进制一并提供修改声明与上游归属。
+Source: "..\ATTRIBUTION.md"; DestDir: "{app}"; DestName: "ATTRIBUTION.txt"; Flags: ignoreversion
 ; stop-app.ps1 is shipped TWICE on purpose, for two different lifecycles:
 ;   - the "dontcopy" entry below makes it available to ExtractTemporaryFile
 ;     in PrepareToInstall, so an in-place upgrade can stop a running instance

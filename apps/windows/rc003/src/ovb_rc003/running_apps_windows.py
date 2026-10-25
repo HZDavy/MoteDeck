@@ -11,12 +11,15 @@ non-Windows platform returns an empty list. Nothing here raises for the caller.
 from __future__ import annotations
 
 import ctypes
+import json
 import os
 import sys
+import tempfile
 from ctypes import wintypes
 from pathlib import Path
 
 _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+_EXECUTABLE_CACHE_NAME = "app-executables.json"
 
 
 def _query_image_path(kernel32, pid: int) -> str:
@@ -88,15 +91,12 @@ def file_description(executable: str) -> str:
     return _file_description(version_api, executable)
 
 
-def executable_for_process(process: str) -> str:
+def _registry_executable(name: str) -> str:
     """Installed path of a process name from the registry's App Paths keys."""
-    if sys.platform != "win32" or not process:
+    if sys.platform != "win32" or not name:
         return ""
     import winreg
 
-    name = process_name_from_path(process)
-    if not name:
-        return ""
     sub_keys = (
         f"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\{name}",
         f"SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\App Paths\\{name}",
@@ -112,6 +112,147 @@ def executable_for_process(process: str) -> str:
             if path and Path(path).is_file():
                 return path
     return ""
+
+
+def _executable_cache_path(cache_root) -> Path | None:
+    if not cache_root:
+        return None
+    try:
+        return Path(cache_root) / _EXECUTABLE_CACHE_NAME
+    except (TypeError, ValueError):
+        return None
+
+
+def _read_executable_cache(cache_root) -> dict:
+    """Persisted process name (casefolded) → executable path pairs."""
+    path = _executable_cache_path(cache_root)
+    if path is None:
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    pairs = {}
+    for key, value in data.items():
+        if isinstance(key, str) and isinstance(value, str) and key.strip() and value.strip():
+            pairs[key.strip().casefold()] = value.strip()
+    return pairs
+
+
+def _write_executable_cache(cache_root, executables: dict) -> None:
+    path = _executable_cache_path(cache_root)
+    if path is None:
+        return
+    temporary = ""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handle, temporary = tempfile.mkstemp(
+            dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            json.dump(executables, stream, ensure_ascii=False, indent=2, sort_keys=True)
+        os.replace(temporary, path)
+        temporary = ""
+    except (OSError, ValueError):
+        return
+    finally:
+        if temporary:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+
+
+def remember_executables(cache_root, executables: dict) -> None:
+    """Persist process name → executable path pairs for later icon lookups.
+
+    Icons are extracted from an executable path, but application profiles only
+    record the process name. Many applications (Electron/Store/user-scope
+    installs) never register under App Paths, so without this cache their icon
+    would disappear as soon as the window that revealed the path is gone.
+    """
+    if not cache_root or not executables:
+        return
+    stored = _read_executable_cache(cache_root)
+    changed = False
+    for process, executable in executables.items():
+        key = str(process or "").strip().casefold()
+        value = str(executable or "").strip()
+        if not key or not value:
+            continue
+        if stored.get(key) == value:
+            continue
+        stored[key] = value
+        changed = True
+    if changed:
+        _write_executable_cache(cache_root, stored)
+
+
+def resolve_executables(processes, cache_root=None) -> dict:
+    """Resolve process names to executable paths.
+
+    Lookup order: registry App Paths → executable cache persisted under
+    ``cache_root`` → one scan of currently visible windows (which also refreshes
+    the cache). Returns a mapping of casefolded process name → path; unknown
+    names are simply absent.
+    """
+    wanted: list[str] = []
+    seen: set[str] = set()
+    for process in processes or ():
+        name = process_name_from_path(str(process or ""))
+        key = name.casefold()
+        if not name or key in seen:
+            continue
+        seen.add(key)
+        wanted.append(name)
+    if not wanted:
+        return {}
+
+    stored = _read_executable_cache(cache_root)
+    resolved: dict[str, str] = {}
+    missing: list[str] = []
+    for name in wanted:
+        key = name.casefold()
+        path = _registry_executable(name)
+        if not path:
+            candidate = stored.get(key, "")
+            if candidate and Path(candidate).is_file():
+                path = candidate
+        if path:
+            resolved[key] = path
+        else:
+            missing.append(name)
+
+    if missing and sys.platform == "win32":
+        try:
+            listed = list_running_applications()
+        except Exception:  # noqa: BLE001 - enumeration is best effort
+            listed = []
+        found = {}
+        for row in listed:
+            key = str(row.get("process", "")).casefold()
+            path = str(row.get("executable", ""))
+            if key and path and key not in found:
+                found[key] = path
+        learned = {}
+        for name in missing:
+            key = name.casefold()
+            path = found.get(key, "")
+            if path:
+                resolved[key] = path
+                learned[key] = path
+        if learned:
+            remember_executables(cache_root, learned)
+    return resolved
+
+
+def executable_for_process(process: str, cache_root=None) -> str:
+    """Executable path of a process name, or "" when it cannot be resolved."""
+    name = process_name_from_path(str(process or ""))
+    if not name:
+        return ""
+    return resolve_executables([name], cache_root).get(name.casefold(), "")
 
 
 def list_running_applications() -> list[dict]:

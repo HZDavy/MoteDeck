@@ -7680,6 +7680,46 @@ class VoiceRemoteMicrophoneModeTests(_AppWiringTestCase):
         )
         self.assertIsNone(self.app._voice_cycle_slot)
 
+    def test_other_key_switch_runs_from_real_button_events(self):
+        # 回归：用户把「语音模式切换」映射到别的按键后，短按/长按都必须真的
+        # 切槽。这条用例从 HID 边沿入口走完整链路，覆盖 _on_button_trigger
+        # 里的动作分发——直调 _switch_voice_mode_by_button 的用例覆盖不到它。
+        stored_config = config.load_config(self.app._config_path)
+        stored_config["voice_other_key_switch"] = True
+        _stamp_voice_key(stored_config, 2, hotkey="lalt")
+        config.save_config(self.app._config_path, stored_config)
+
+        bindings = config.default_key_bindings()
+        bindings["bindings"]["ok"] = key_mapping.ButtonAction(
+            key_mapping.ActionKind.VOICE_MODE_CYCLE
+        ).to_dict()
+        bindings["bindings"]["power"] = key_mapping.ButtonAction(
+            key_mapping.ActionKind.DISABLED
+        ).to_dict()
+        bindings["secondary_bindings"]["power"] = {
+            "long_press": key_mapping.ButtonAction(
+                key_mapping.ActionKind.VOICE_MODE_CYCLE
+            ).to_dict()
+        }
+        config.save_key_bindings(self.app._bindings_path, bindings)
+        self.app._reload_settings_if_changed()
+
+        timers = []
+        self.app._button_gestures._timer_factory = (
+            lambda _delay, callback: timers.append(_ManualTimer(callback)) or timers[-1]
+        )
+
+        self.app._on_button_event("ok", True, event_source="hid")
+        self.app._on_button_event("ok", False, event_source="hid")
+        self.assertEqual(self.app._voice_cycle_slot, 2, "单击映射必须真的切槽")
+
+        self.app._on_button_event("power", True, event_source="hid")
+        self.assertEqual(len(timers), 1, "长按必须先等手势判定")
+        while timers:
+            timers.pop(0).fire()
+        self.app._on_button_event("power", False, event_source="hid")
+        self.assertEqual(self.app._voice_cycle_slot, 1, "长按映射必须真的切槽")
+
     def test_short_press_dismiss_option_is_ignored_in_local_microphone_mode(self):
         self.app._config["voice_short_press_dismiss"] = True
         _stamp_voice_mode(self.app._config, config.VOICE_INPUT_SOURCE_LOCAL)

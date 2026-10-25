@@ -8,6 +8,8 @@ alpha 才正确（GDI 只写 RGB、不动 alpha）。
 
 窗口样式带 ``WS_EX_LAYERED|TOOLWINDOW|TOPMOST|TRANSPARENT|NOACTIVATE``，
 所以它不抢焦点、不进任务栏、也不挡鼠标；显示后由 ``WM_TIMER`` 自动隐藏。
+输入法候选气泡同样是 TOPMOST 窗口，单次置顶会被它盖住，所以在气泡可见期间
+用一个高频定时器反复重申 HWND_TOPMOST，把气泡压回所有 TOPMOST 窗口之上。
 消息泵跑在自己的线程上，``show()`` 只是投递一条 ``WM_TOAST_SHOW``，不会阻塞
 输入处理。
 """
@@ -61,9 +63,13 @@ DT_NOPREFIX = 0x00000800
 DT_END_ELLIPSIS = 0x00008000
 
 TIMER_ID = 1
+# 气泡可见期间的中途重申置顶定时器：输入法候选窗口也是 TOPMOST，
+# 只有不断把气泡重新压到 TOPMOST 组最前面，它才不会被候选气泡盖住。
+TIMER_RAISE_ID = 2
 # wintypes 里没有 UINT_PTR，SetTimer/KillTimer 的定时器 id 按指针宽度传。
 UINT_PTR = ctypes.c_size_t
 _TOAST_DURATION_MS = 1400
+_TOAST_RAISE_INTERVAL_MS = 120
 _TOAST_CLASS_NAME = "MoteDeckVoiceModeToast"
 _FONT_FACE_PRIMARY = "Microsoft YaHei UI"
 _FONT_FACE_FALLBACK = "Microsoft YaHei"
@@ -316,8 +322,7 @@ class VoiceModeToast:
                         self._draw(hwnd, pending[0], pending[1])
                     continue
                 if message.message == WM_TIMER and message.hWnd == hwnd:
-                    user32.KillTimer(hwnd, TIMER_ID)
-                    user32.ShowWindow(hwnd, SW_HIDE)
+                    self._handle_timer(hwnd, message.wParam)
                     continue
                 user32.TranslateMessage(ctypes.byref(message))
                 user32.DispatchMessageW(ctypes.byref(message))
@@ -336,15 +341,42 @@ class VoiceModeToast:
     def _wndproc(self, hwnd, message, wparam, lparam):  # noqa: ANN001 - ctypes
         try:
             if message == WM_TIMER:
-                user32 = ctypes.windll.user32  # type: ignore[attr-defined]
-                user32.KillTimer(hwnd, TIMER_ID)
-                user32.ShowWindow(hwnd, SW_HIDE)
+                self._handle_timer(hwnd, wparam)
                 return 0
         except Exception:  # noqa: BLE001 - never break the window proc
             pass
         return ctypes.windll.user32.DefWindowProcW(  # type: ignore[attr-defined]
             hwnd, message, wparam, lparam
         )
+
+    def _handle_timer(self, hwnd, timer_id) -> None:  # noqa: ANN001 - ctypes
+        """重申置顶或收尾隐藏；两个定时器共用这条路径。"""
+
+        user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+        if int(timer_id) == TIMER_RAISE_ID:
+            self._raise(hwnd)
+            return
+        user32.KillTimer(hwnd, TIMER_ID)
+        user32.KillTimer(hwnd, TIMER_RAISE_ID)
+        user32.ShowWindow(hwnd, SW_HIDE)
+
+    @staticmethod
+    def _raise(hwnd) -> None:  # noqa: ANN001 - ctypes
+        """把气泡重新压到 TOPMOST 组最前面，避免被输入法候选窗口盖住。"""
+
+        try:
+            user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+            user32.SetWindowPos(
+                hwnd,
+                HWND_TOPMOST,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+            )
+        except Exception:  # noqa: BLE001 - raising is best effort
+            pass
 
     def _bind_win32(self):
         user32 = ctypes.windll.user32  # type: ignore[attr-defined]
@@ -626,12 +658,17 @@ class VoiceModeToast:
             gdi32.SelectObject(mask_dc, previous_mask_font)
             gdi32.SelectObject(mask_dc, previous_mask)
 
+            # DT_VCENTER 对齐的是字体行高，不是字形墨迹；中文字形的墨迹中心
+            # 比行高中线略低（175% 缩放下低 1~2px），气泡看上去上留白偏多。
+            # 合成时把蒙版上移这段差值，文字的视觉中心才落在胶囊中线上。
+            mask_offset = self._ink_vertical_offset(width, height, mask_bytes)
             pixels = self._compose_pixels(
                 width,
                 height,
                 mask_bytes,
                 palette,
                 border_px,
+                mask_offset,
             )
 
             mem_dc = gdi32.CreateCompatibleDC(monitor_dc)
@@ -657,15 +694,9 @@ class VoiceModeToast:
             ):
                 self._warn("voice mode toast UpdateLayeredWindow failed")
                 return
-            user32.SetWindowPos(
-                hwnd,
-                HWND_TOPMOST,
-                0,
-                0,
-                0,
-                0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
-            )
+            self._raise(hwnd)
+            # 气泡可见期间持续重申置顶（防止被输入法候选气泡盖住），到点再隐藏。
+            user32.SetTimer(hwnd, TIMER_RAISE_ID, _TOAST_RAISE_INTERVAL_MS, None)
             user32.SetTimer(hwnd, TIMER_ID, self._duration_ms, None)
         finally:
             if destination_dc:
@@ -729,12 +760,38 @@ class VoiceModeToast:
         return bitmap, bits.value
 
     @staticmethod
+    def _ink_vertical_offset(
+        width: int,
+        height: int,
+        mask: bytes,
+        threshold: int = 16,
+    ) -> int:
+        """Return how many pixels the mask ink has to move up to look centered."""
+
+        first = None
+        last = None
+        for row in range(height):
+            # 蒙版自底向上，视觉第 row 行在缓冲区的倒数第 row 行。
+            base = (height - 1 - row) * width * 4
+            for column in range(width):
+                if mask[base + column * 4] > threshold:
+                    if first is None:
+                        first = row
+                    last = row
+                    break
+        if first is None:
+            return 0
+        ink_center = (first + last + 1) / 2.0
+        return int(round(ink_center - height / 2.0))
+
+    @staticmethod
     def _compose_pixels(
         width: int,
         height: int,
         mask: bytes,
         palette: dict,
         border_px: int,
+        mask_offset: int = 0,
     ) -> bytearray:
         """Composite fill + border + text into premultiplied BGRA, bottom-up."""
 
@@ -772,8 +829,13 @@ class VoiceModeToast:
                 red = fill[0] * inner + border[0] * ring
                 premultiplied = alpha
                 # 蒙版 DIB 也是自底向上：第 row 行对应缓冲区的倒数第 row 行。
-                mask_row = height - 1 - row
-                coverage = mask[(mask_row * width + column) * 4] / 255.0
+                # mask_offset > 0 表示把文字整体上移（由 _ink_vertical_offset 得出）。
+                mask_row = height - 1 - row - mask_offset
+                coverage = (
+                    mask[(mask_row * width + column) * 4] / 255.0
+                    if 0 <= mask_row < height
+                    else 0.0
+                )
                 if coverage > 0.0 and inner > 0.0:
                     text_alpha = coverage * inner
                     keep = 1.0 - text_alpha

@@ -137,6 +137,23 @@ SettingsDialog {
                 value: qsTr("查看说明")
                 onClicked: SettingsController.openUsageGuide()
             }
+            LinkRow {
+                objectName: "aboutLicenseLink"
+                label: qsTr("许可证")
+                value: "GPL-3.0-only"
+                onClicked: SettingsController.openLicense()
+            }
+        }
+
+        // GPL-3.0 §5(a)：派生版本必须保留上游归属与修改声明。
+        UiLabel {
+            objectName: "aboutAttributionLabel"
+            tokens: root.tokens
+            kind: noteKind
+            Layout.fillWidth: true
+            wrapMode: Text.WordWrap
+            color: root.tokens.textTertiary
+            text: qsTr("基于 open-voice-bridge（ZSTDJan/windows-remote-mic-app）的 Windows 实现改造，GPL-3.0-only；完整归属与改动声明见安装目录的 ATTRIBUTION 文档。")
         }
     }
 }

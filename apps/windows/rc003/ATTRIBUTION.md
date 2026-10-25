@@ -31,6 +31,22 @@ PyInstaller/Inno Setup 构建流程。本仓库在 GPL-3.0-only 条件下保留�
 它不是用户看到的应用名称。上游源码及其 GPL 许可适用于本目录中的派生代码，
 本仓库根目录的 [`LICENSE.md`](../../../LICENSE.md) 是随源码发布的完整许可证。
 
+## 修改声明（GPL-3.0 §5(a)）
+
+本目录的 Windows RC003 客户端是上游项目的**修改版本**，按 GPL-3.0 第 5(a) 条声明如下：
+
+- 修改方：MoteDeck 项目维护者（HZDavy），修改后仓库为
+  [`HZDavy/MoteDeck`](https://github.com/HZDavy/MoteDeck)。
+- 上游基线：`nijez/open-voice-bridge` 仓库 `apps/windows/rc003/` 目录的公开源码
+  （Windows 实现的历史仓库为
+  [`ZSTDJan/windows-remote-mic-app`](https://github.com/ZSTDJan/windows-remote-mic-app)），
+  以本项目开始改造时的上游 `main` 分支状态为准。
+- 修改时间：2026-10。
+- 修改范围：见上文中列出的本仓库改动；逐文件差异可用上游同目录源码与本仓库
+  `apps/windows/rc003/` 的提交历史直接比对。
+- 许可：上游代码与本目录的派生代码均按 `GPL-3.0-only` 分发，完整许可见仓库根目录
+  [`LICENSE.md`](../../../LICENSE.md)；上游原始版权声明归上游作者所有。
+
 ## 其他参考来源
 
 - `scripts/voice_hotkey_probe.py` 的手动扫描码对照参考

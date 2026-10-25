@@ -1612,6 +1612,7 @@ def _load_qt_classes() -> dict:
             self._mapping_auto_save_scheduled = False
             self._mapping_auto_save_running = False
             self._mapping_auto_save_retry_available = False
+            self._mapping_blocked_log_at = 0.0
             self._mapping_auto_save_timer = QTimer(self)
             self._mapping_auto_save_timer.setSingleShot(True)
             self._mapping_auto_save_timer.timeout.connect(
@@ -3027,8 +3028,14 @@ def _load_qt_classes() -> dict:
             self._set_mapping_dirty(True)
             self._set_settings_dirty(True)
 
+        def _mapping_log(self):
+            return logging_setup.get_logger(self._config_root)
+
         def _queue_mapping_auto_save(self, delay_ms: int = 0) -> None:
             if self.configurationReadOnly:
+                self._mapping_log().warning(
+                    "mapping auto save skipped: configuration is read-only"
+                )
                 return
             self._set_mapping_auto_save_retry_available(False)
             if self._mapping_auto_save_scheduled or self._mapping_auto_save_running:
@@ -3038,6 +3045,10 @@ def _load_qt_classes() -> dict:
 
         def _on_mapping_edited(self) -> None:
             if self.configurationReadOnly:
+                self._mapping_log().warning(
+                    "mapping edit ignored: configuration is read-only; "
+                    "model reloaded from disk"
+                )
                 self._load_bindings_into_model()
                 return
             self._mark_mapping_dirty()
@@ -3057,6 +3068,21 @@ def _load_qt_classes() -> dict:
                 or self._endpoint_preflight_busy
                 or _driver_action_active_event.is_set()
             )
+
+        def _mapping_auto_save_block_reason(self) -> str:
+            if self._settings_save_busy:
+                return "settings_save_busy"
+            if self._voice_hotkey_busy:
+                return "voice_hotkey_busy"
+            if _vb_cable_test_active_event.is_set():
+                return "vb_cable_test_active"
+            if self._get_bridge_launch_busy():
+                return "bridge_launch_busy"
+            if self._endpoint_preflight_busy:
+                return "endpoint_preflight_busy"
+            if _driver_action_active_event.is_set():
+                return "driver_action_active"
+            return ""
 
         def _mapping_save_status_suffix(self) -> str:
             if not self._mapping_dirty:
@@ -3098,14 +3124,29 @@ def _load_qt_classes() -> dict:
                 or self._application_exit_intent.is_set()
                 or self._save_then_exit_requested
             ):
+                self._mapping_log().info(
+                    "mapping auto save deferred: application exit in progress"
+                )
                 return
-            if self._mapping_auto_save_temporarily_blocked():
+            block_reason = self._mapping_auto_save_block_reason()
+            if block_reason:
+                now = time.monotonic()
+                if now - self._mapping_blocked_log_at >= 5.0:
+                    self._mapping_blocked_log_at = now
+                    self._mapping_log().info(
+                        "mapping auto save postponed: busy=%s", block_reason
+                    )
                 self._queue_mapping_auto_save(150)
                 return
 
             attempt_revision = self._settings_revision
             self._mapping_auto_save_running = True
             completion_called = False
+            self._mapping_log().info(
+                "mapping auto save started: revision=%d target=%s",
+                attempt_revision,
+                self._mapping_edit_target or "key_bindings.json",
+            )
 
             def finish(saved: bool) -> None:
                 nonlocal completion_called
@@ -3115,6 +3156,14 @@ def _load_qt_classes() -> dict:
                 self._mapping_auto_save_running = False
                 if saved:
                     self._set_mapping_auto_save_retry_available(False)
+                    if self._mapping_dirty:
+                        # An edit landed while this save was running; the
+                        # queue call it made was dropped, so re-arm here or
+                        # the new mapping would never reach disk.
+                        self._mapping_log().info(
+                            "mapping changed during save; re-scheduling auto save"
+                        )
+                        self._queue_mapping_auto_save()
                     return
                 if self._settings_revision != attempt_revision:
                     self._queue_mapping_auto_save()
@@ -4040,6 +4089,9 @@ def _load_qt_classes() -> dict:
                 return bool(result)
 
             if self.configurationReadOnly:
+                self._mapping_log().warning(
+                    "mapping save skipped: configuration is read-only"
+                )
                 return finish(False)
 
             saved_voice_hotkeys = self._config.get("voice_hotkeys", {})
@@ -4101,6 +4153,11 @@ def _load_qt_classes() -> dict:
                     f"{title}：{exc.message}",
                     self._BUTTONS_PAGE_INDEX,
                 )
+                self._mapping_log().warning(
+                    "mapping save rejected: button=%s message=%s",
+                    exc.button_id or "-",
+                    exc.message,
+                )
                 return finish(False)
 
             if replacement is not None:
@@ -4116,6 +4173,11 @@ def _load_qt_classes() -> dict:
                         f"保存失败：{exc}",
                         self._BUTTONS_PAGE_INDEX,
                     )
+                    self._mapping_log().warning(
+                        "mapping save failed: target=app_profile:%s error=%s",
+                        self._mapping_edit_target,
+                        exc,
+                    )
                     return finish(False)
                 self._set_mapping_dirty(False)
                 self._set_mapping_auto_save_retry_available(False)
@@ -4124,6 +4186,11 @@ def _load_qt_classes() -> dict:
                     self._refresh_mapping_presets()
                 except Exception:  # noqa: BLE001 - the save already committed
                     pass
+                self._mapping_log().info(
+                    "mapping saved: target=app_profile:%s buttons=%d",
+                    self._mapping_edit_target,
+                    len(new_bindings.get("bindings", {})),
+                )
                 self._set_status_message(
                     f"「{app_name}」的按键映射已自动保存；切换到该应用时生效。",
                     self._BUTTONS_PAGE_INDEX,
@@ -4144,6 +4211,9 @@ def _load_qt_classes() -> dict:
                 self._set_error_message(
                     f"保存失败：{exc}",
                     self._BUTTONS_PAGE_INDEX,
+                )
+                self._mapping_log().warning(
+                    "mapping save failed: target=key_bindings.json error=%s", exc
                 )
                 return finish(False)
 
@@ -4167,6 +4237,10 @@ def _load_qt_classes() -> dict:
                 status += "其它设置仍未保存。"
             else:
                 status += "将在下一次按键时应用。"
+            self._mapping_log().info(
+                "mapping saved: target=key_bindings.json buttons=%d",
+                len(self._bindings.get("bindings", {})),
+            )
             self._set_status_message(status, self._BUTTONS_PAGE_INDEX)
             return finish(True)
 
@@ -7539,7 +7613,8 @@ def _load_qt_classes() -> dict:
             if key not in self._app_executable_cache:
                 try:
                     self._app_executable_cache[key] = (
-                        running_apps_windows.executable_for_process(process))
+                        running_apps_windows.executable_for_process(
+                            process, self._config_root))
                 except Exception:  # noqa: BLE001 - icon lookup is best effort
                     self._app_executable_cache[key] = ""
             return self._app_executable_cache[key]
@@ -7577,6 +7652,19 @@ def _load_qt_classes() -> dict:
                 entries = app_profiles.AppProfileStore(self._config_root).list_apps()
             except Exception:  # noqa: BLE001 - an unreadable store must not break the panel
                 entries = []
+            # Resolve every saved process in one pass: a single window scan can
+            # recover paths for applications that never register under App Paths.
+            try:
+                resolved = running_apps_windows.resolve_executables(
+                    [entry["process"] for entry in entries], self._config_root)
+            except Exception:  # noqa: BLE001 - icon lookup is best effort
+                resolved = None
+            if resolved is not None:
+                # Cache misses too, so the row loop below does not re-scan.
+                for entry in entries:
+                    key = str(entry["process"] or "").casefold()
+                    if key:
+                        self._app_executable_cache[key] = resolved.get(key, "")
             rows: List[dict] = []
             for entry in entries:
                 executable = self._executable_for_app(entry["process"])
@@ -7671,6 +7759,7 @@ def _load_qt_classes() -> dict:
             except Exception:  # noqa: BLE001 - enumeration is best effort
                 listed = []
             rows: List[dict] = []
+            learned: dict = {}
             for item in listed:
                 process = str(item.get("process", ""))
                 if not process or process.casefold() == own_process:
@@ -7678,6 +7767,7 @@ def _load_qt_classes() -> dict:
                 executable = str(item.get("executable", ""))
                 if executable:
                     self._app_executable_cache[process.casefold()] = executable
+                    learned[process] = executable
                 rows.append({
                     "process": process,
                     "name": str(item.get("name") or process),
@@ -7688,6 +7778,12 @@ def _load_qt_classes() -> dict:
                 })
             self._running_applications = rows
             self.runningApplicationsChanged.emit()
+            # Remember the paths so icons still render after a restart, even for
+            # applications that do not register themselves under App Paths.
+            try:
+                running_apps_windows.remember_executables(self._config_root, learned)
+            except Exception:  # noqa: BLE001 - caching is best effort
+                pass
             return {"ok": True, "id": "", "message": ""}
 
         @Slot(str, str, result="QVariantMap")
@@ -7719,6 +7815,12 @@ def _load_qt_classes() -> dict:
                     identity = existing["id"]
                 else:
                     executable = raw if is_file else self._executable_for_app(process)
+                    if executable:
+                        try:
+                            running_apps_windows.remember_executables(
+                                self._config_root, {process: executable})
+                        except Exception:  # noqa: BLE001 - caching is best effort
+                            pass
                     # A window title or file description may carry control
                     # characters and WILL be rejected by the store, so normalise
                     # the caller's label before it is saved.
@@ -8065,6 +8167,12 @@ def _load_qt_classes() -> dict:
         @Slot(result=bool)
         def openAuthorPage(self) -> bool:
             result = shell_targets.open_external_target(application_update.AUTHOR_URL)
+            self._report_external_target(result, self._DEVICE_PAGE_INDEX)
+            return result.outcome is shell_targets.ExternalTargetOutcome.OPENED
+
+        @Slot(result=bool)
+        def openLicense(self) -> bool:
+            result = shell_targets.open_external_target(application_update.LICENSE_URL)
             self._report_external_target(result, self._DEVICE_PAGE_INDEX)
             return result.outcome is shell_targets.ExternalTargetOutcome.OPENED
 
