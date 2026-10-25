@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./assets/readme/hero.svg" width="100%" alt="MoteDeck：把小米蓝牙语音遥控器 2 Pro 变成 Windows 的快捷键和麦克风">
+  <img src="./assets/readme/hero.svg" width="100%" alt="MoteDeck：把电视遥控器变成 Windows 的快捷键和麦克风">
 </p>
 
 <p align="center">
