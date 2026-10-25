@@ -63,6 +63,10 @@ Vokie 原生支持外接语音设备，MoteDeck 按它的插件协议做了适�
 - Vokie 的语音模式会同步到 MoteDeck 的语音键配置，遥控器上按一下就能切换
 - 安装：在 MoteDeck「语音」页点「下载插件」，把 [MoteDeck2Vokie-0.1.0.zip](https://github.com/HZDavy/MoteDeck/releases/download/v0.1.1/MoteDeck2Vokie-0.1.0.zip) 装进 Vokie 的插件目录，再在插件里点「开启连接」
 
+<img src="./assets/readme/plugin-flow.svg" width="660" alt="插件语音通路总图：左边不开插件时走 CABLE Input、CABLE Output 到输入框，右边开插件后经本机回环 TCP 直连，短按只切换语音模式、长按才唤醒 Vokie 会话；下方是插件与 MoteDeck 的连接流程和语音键同步">
+
+这是插件界面里的通路总图：左边是不开插件时的虚拟声卡链路，右边是开插件后的直连链路，下方是两者的连接与语音键同步流程。
+
 ---
 
 ## 语音是怎么走的

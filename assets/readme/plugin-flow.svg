@@ -1,0 +1,139 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="708" height="838" viewBox="0 0 708 838" role="img" aria-labelledby="flowTitle flowDesc">
+  <title id="flowTitle">MoteDeck 语音通路总图与插件连接流程</title>
+  <desc id="flowDesc">上图：遥控器话筒在不开插件时走 CABLE Input、CABLE Output 到输入框；开插件后经本机回环 TCP 直连，短按只切换语音模式，长按才唤醒 Vokie 会话并补发缓存。下图：MoteDeck 开启插件连接后建立回环服务，插件页连上后断线自动重连，并同步 Vokie 语音模式到语音键配置。</desc>
+
+  <style>
+    text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+    .box{fill:#FFFFFF;stroke:#DCDAD5;stroke-width:1.2}
+    .box-on{fill:#FFFFFF;stroke:#111111;stroke-width:1.6}
+    .t{fill:#111111;font-size:12.5px;font-weight:600}
+    .s{fill:#5B5B5B;font-size:10.5px}
+    .n{fill:#6B6A66;font-size:10px}
+    .ln{fill:none;stroke:#A9A7A1;stroke-width:1.3}
+    .ln-on{stroke:#111111;stroke-width:1.5}
+    .dash{stroke-dasharray:5 4}
+    .pill{fill:#EEEDEA;stroke:#C9C7C1;stroke-width:1}
+    .pill-on{fill:#EEEDEA;stroke:#111111;stroke-width:1.2}
+    .pill-t{fill:#5B5B5B;font-size:10px}
+    .divider{fill:none;stroke:#D5D3CE;stroke-width:1;stroke-dasharray:2 6}
+  </style>
+
+  <rect width="708" height="838" rx="28" fill="#EEEDEA"/>
+
+  <g transform="translate(24 24)">
+    <defs>
+      <marker id="mmArrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto">
+        <path d="M0,0 L8,4 L0,8 Z" fill="#A9A7A1"/>
+      </marker>
+      <marker id="mmArrowOn" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto">
+        <path d="M0,0 L8,4 L0,8 Z" fill="#111111"/>
+      </marker>
+    </defs>
+
+    <!-- 设备与两条支线 -->
+    <rect class="box" x="180" y="14" width="240" height="54" rx="12"/>
+    <text class="t" x="300" y="34" text-anchor="middle">小米蓝牙语音遥控器 2 Pro</text>
+    <text class="s" x="300" y="51" text-anchor="middle">麦克风 + 按键</text>
+
+    <path class="ln" d="M300,68 V84"/>
+    <path class="ln" d="M94,84 H408"/>
+    <path class="ln" d="M94,84 V134" marker-end="url(#mmArrow)"/>
+    <path class="ln" d="M408,84 V110" marker-end="url(#mmArrow)"/>
+
+    <rect class="pill" x="36" y="71" width="116" height="26" rx="13"/>
+    <text class="pill-t" x="94" y="88" text-anchor="middle">不开插件</text>
+    <rect class="pill" x="350" y="71" width="116" height="26" rx="13"/>
+    <text class="pill-t" x="408" y="88" text-anchor="middle">开插件</text>
+
+    <!-- 左：虚拟声卡通路 -->
+    <rect class="box" x="12" y="134" width="164" height="54" rx="10"/>
+    <text class="t" x="94" y="155" text-anchor="middle">CABLE Input</text>
+    <text class="s" x="94" y="172" text-anchor="middle">MoteDeck 写入</text>
+    <path class="ln" d="M94,188 V214" marker-end="url(#mmArrow)"/>
+    <rect class="box" x="12" y="214" width="164" height="54" rx="10"/>
+    <text class="t" x="94" y="235" text-anchor="middle">CABLE Output</text>
+    <text class="s" x="94" y="252" text-anchor="middle">输入法读取</text>
+    <path class="ln" d="M94,268 V294" marker-end="url(#mmArrow)"/>
+    <rect class="box" x="12" y="294" width="164" height="48" rx="10"/>
+    <text class="t" x="94" y="323" text-anchor="middle">当前输入框</text>
+
+    <!-- 右：插件直连 -->
+    <rect class="pill-on" x="323" y="110" width="170" height="30" rx="15"/>
+    <text class="pill-t" x="408" y="129" text-anchor="middle">按下语音键</text>
+    <path class="ln ln-on" d="M408,140 V160" marker-end="url(#mmArrowOn)"/>
+
+    <rect class="box" x="248" y="160" width="320" height="64" rx="10"/>
+    <text class="t" x="408" y="184" text-anchor="middle">① 麦克风开启，声音先轻轻缓存</text>
+    <text class="s" x="408" y="204" text-anchor="middle">此时 Vokie 完全不知情</text>
+
+    <path class="ln" d="M408,224 V248"/>
+    <path class="ln" d="M284,248 H478"/>
+    <path class="ln" d="M284,248 V282" marker-end="url(#mmArrow)"/>
+    <path class="ln" d="M478,248 V282" marker-end="url(#mmArrow)"/>
+
+    <rect class="pill" x="226" y="235" width="116" height="26" rx="13"/>
+    <text class="pill-t" x="284" y="252" text-anchor="middle">松手 &lt; 0.35s</text>
+    <rect class="pill" x="420" y="235" width="116" height="26" rx="13"/>
+    <text class="pill-t" x="478" y="252" text-anchor="middle">按住 ≥ 0.35s</text>
+
+    <rect class="box" x="196" y="282" width="176" height="64" rx="10"/>
+    <text class="t" x="284" y="306" text-anchor="middle">② 只切换语音模式</text>
+    <text class="s" x="284" y="326" text-anchor="middle">缓冲丢弃，Vokie 不启动</text>
+
+    <rect class="box-on" x="388" y="282" width="180" height="64" rx="10"/>
+    <text class="t" x="478" y="306" text-anchor="middle">③ 唤醒 Vokie 会话</text>
+    <text class="s" x="478" y="326" text-anchor="middle">从这一刻起才开始识别</text>
+
+    <path class="ln ln-on" d="M478,346 V378" marker-end="url(#mmArrowOn)"/>
+    <rect class="box-on" x="388" y="378" width="180" height="64" rx="10"/>
+    <text class="t" x="478" y="402" text-anchor="middle">④ 补发缓存 + 实时推流</text>
+    <text class="s" x="478" y="422" text-anchor="middle">开头第一个字也不会丢</text>
+
+    <path class="ln ln-on" d="M478,442 V474" marker-end="url(#mmArrowOn)"/>
+    <rect class="box" x="388" y="474" width="180" height="60" rx="10"/>
+    <text class="t" x="478" y="498" text-anchor="middle">⑤ 松手：结束会话</text>
+    <text class="s" x="478" y="517" text-anchor="middle">一定回一条结束信号</text>
+
+    <!-- 预录缓存回补 -->
+    <path class="ln ln-on dash" d="M568,192 H612 V410 H568" marker-end="url(#mmArrowOn)"/>
+    <rect class="pill-on" x="574" y="288" width="76" height="24" rx="12"/>
+    <text class="pill-t" x="612" y="304" text-anchor="middle">补发缓存</text>
+
+    <!-- 下：连接流程 -->
+    <path class="divider" d="M12,552 H648"/>
+    <text class="n" x="12" y="544">连接流程</text>
+
+    <rect class="box" x="12" y="572" width="142" height="54" rx="10"/>
+    <text class="t" x="83" y="596" text-anchor="middle">MoteDeck</text>
+    <text class="s" x="83" y="613" text-anchor="middle">开启插件连接</text>
+    <path class="ln" d="M154,599 H176" marker-end="url(#mmArrow)"/>
+
+    <rect class="box" x="176" y="572" width="176" height="54" rx="10"/>
+    <text class="t" x="264" y="592" text-anchor="middle">本机回环服务</text>
+    <text class="s" x="264" y="609" text-anchor="middle">127.0.0.1 · 随机 token</text>
+    <path class="ln" d="M352,599 H374" marker-end="url(#mmArrow)"/>
+
+    <rect class="box" x="374" y="572" width="132" height="54" rx="10"/>
+    <text class="t" x="440" y="596" text-anchor="middle">插件页</text>
+    <text class="s" x="440" y="613" text-anchor="middle">开启连接</text>
+    <path class="ln" d="M506,599 H528" marker-end="url(#mmArrow)"/>
+
+    <rect class="box-on" x="528" y="572" width="64" height="54" rx="10"/>
+    <text class="t" x="560" y="603" text-anchor="middle">已连接</text>
+
+    <path class="ln dash" d="M440,626 V648 H264 V626" marker-end="url(#mmArrow)"/>
+    <text class="n" x="352" y="666" text-anchor="middle">断线后自动重连</text>
+
+    <!-- 下：语音键同步 -->
+    <text class="n" x="12" y="684">语音键同步</text>
+    <rect class="box" x="12" y="700" width="150" height="48" rx="10"/>
+    <text class="t" x="87" y="729" text-anchor="middle">Vokie 语音模式</text>
+    <path class="ln ln-on dash" d="M162,724 H206" marker-end="url(#mmArrowOn)"/>
+    <text class="n" x="184" y="714" text-anchor="middle">同步</text>
+    <rect class="box-on" x="206" y="700" width="196" height="48" rx="10"/>
+    <text class="t" x="304" y="720" text-anchor="middle">MoteDeck 语音键配置</text>
+    <text class="s" x="304" y="737" text-anchor="middle">长按唤起对应模式</text>
+
+    <text class="n" x="12" y="776">短按只切模式，不惊动 Vokie；长按才开会话。</text>
+  </g>
+</svg>
