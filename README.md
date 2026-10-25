@@ -53,6 +53,18 @@ MoteDeck 是一个开源的 Windows 小工具：把**小米蓝牙语音遥控器
 
 ---
 
+## 原生支持 Vokie
+
+<img src="./assets/readme/vokie-support.svg" width="100%" alt="原生支持 Vokie：MoteDeck 通过本机回环 TCP 把遥控器话筒的声音交给 Vokie 插件，由 Vokie 整理成文字后自动上屏">
+
+Vokie 原生支持外接语音设备，MoteDeck 按它的插件协议做了适配，配套插件 [MoteDeck2Vokie](https://github.com/HZDavy/MoteDeck/tree/main/plugins/MoteDeck2Vokie) 已随 0.1.1 发布。装上之后，遥控器就是 Vokie 自己的语音设备：按住话筒键说话，音频由插件推进 Vokie 会话，松手后整理成完整文字再落进输入框。
+
+- 不用再配虚拟声卡和模拟快捷键：插件与 MoteDeck 走本机回环 `127.0.0.1` 直连（随机端口 + 共享 token），控制指令和音频都从这里过
+- Vokie 的语音模式会同步到 MoteDeck 的语音键配置，遥控器上按一下就能切换
+- 安装：在 MoteDeck「语音」页点「下载插件」，把 [MoteDeck2Vokie-0.1.0.zip](https://github.com/HZDavy/MoteDeck/releases/download/v0.1.1/MoteDeck2Vokie-0.1.0.zip) 装进 Vokie 的插件目录，再在插件里点「开启连接」
+
+---
+
 ## 语音是怎么走的
 
 <img src="./assets/readme/voice-path.svg" width="100%" alt="语音通路示意：遥控器话筒进入 CABLE Input 输出端点，输入法从 CABLE Output 读取麦克风，文字落进当前输入框">

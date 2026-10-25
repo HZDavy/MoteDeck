@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 300" width="1200" height="300" role="img" aria-labelledby="t d">
+  <title id="t">MoteDeck 原生支持 Vokie</title>
+  <desc id="d">Vokie 原生支持外接语音设备，MoteDeck 按它的插件协议做了适配：遥控器话筒的声音经本机回环交给插件，再由插件推进 Vokie 会话，整理好的文字落进当前输入框。</desc>
+  <defs>
+    <linearGradient id="glassBody" x1="3.2" y1="0.8" x2="21" y2="23.2" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#39424F"/>
+      <stop offset="0.36" stop-color="#1B212A"/>
+      <stop offset="0.74" stop-color="#0B0F15"/>
+      <stop offset="1" stop-color="#05080B"/>
+    </linearGradient>
+    <radialGradient id="glassSheen" cx="6.2" cy="3" r="15.8" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.22"/>
+      <stop offset="0.52" stop-color="#FFFFFF" stop-opacity="0.06"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glassFloor" cx="12" cy="23.8" r="12.2" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.16"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="pillBody" x1="9" y1="4.2" x2="15" y2="17.6" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="0.46" stop-color="#F3F7FC"/>
+      <stop offset="1" stop-color="#D7E1EE"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1200" height="300" rx="18" fill="#EEEDEA"/>
+
+  <text x="64" y="52" font-family="'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace" font-size="18" letter-spacing="1.6" fill="#6B6862">原生支持 · NATIVE SUPPORT</text>
+  <text x="1136" y="52" text-anchor="end" font-family="'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace" font-size="18" fill="#8A867F">MoteDeck2Vokie · v0.1.0</text>
+
+  <g transform="translate(64 120) scale(2.6667)">
+    <rect width="24" height="24" rx="5.4" fill="url(#glassBody)"/>
+    <rect width="24" height="24" rx="5.4" fill="url(#glassSheen)"/>
+    <rect width="24" height="24" rx="5.4" fill="url(#glassFloor)"/>
+    <g transform="rotate(45 12 12)">
+      <path fill="url(#pillBody)" fill-rule="evenodd" d="M12 4.125A3.375 3.375 0 0 1 15.375 7.5V16.5A3.375 3.375 0 0 1 8.625 16.5V7.5A3.375 3.375 0 0 1 12 4.125ZM12 6.9375A1.6875 1.6875 0 1 1 12 10.3125A1.6875 1.6875 0 1 1 12 6.9375Z"/>
+    </g>
+  </g>
+
+  <text x="64" y="210" font-family="'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace" font-size="18" fill="#6B6862">遥控器话筒键</text>
+
+  <line x1="210" y1="152" x2="928" y2="152" stroke="#B9B5AD" stroke-width="2"/>
+  <path d="M940 152 L928 146 L928 158 Z" fill="#B9B5AD"/>
+
+  <rect x="445" y="130" width="220" height="44" rx="22" fill="#111111"/>
+  <text x="555" y="158" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI Variable Text', 'Segoe UI', 'Microsoft YaHei UI', 'PingFang SC', sans-serif" font-size="18" fill="#FFFFFF">本机回环 <tspan font-family="'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace">TCP</tspan></text>
+
+  <rect x="952" y="120" width="64" height="64" rx="16" fill="#FFFFFF" stroke="#E2DFD8"/>
+  <g transform="translate(966 134) scale(1.5)">
+    <path fill="#374151" d="M12.1641 2C13.4754 2 14.54 3.04215 14.54 4.32617V6.2002C14.8387 5.25011 15.7427 4.55879 16.8105 4.55859C18.1219 4.55859 19.1865 5.60079 19.1865 6.88477V8.76855C19.4852 7.81815 20.3899 7.12695 21.458 7.12695C22.7692 7.12711 23.833 8.1692 23.833 9.45312V14.5654C23.833 15.8494 22.7692 16.8914 21.458 16.8916C20.3895 16.8916 19.4849 16.1999 19.1865 15.249V16.5938C19.1865 17.8778 18.1219 18.9199 16.8105 18.9199V18.916C15.7425 18.9158 14.8386 18.2238 14.54 17.2734V19.6738C14.54 20.9578 13.4754 22 12.1641 22C10.8528 21.9999 9.78906 20.9578 9.78906 19.6738V17.29C9.48667 18.2343 8.58612 18.9199 7.52246 18.9199V18.916C6.21126 18.916 5.14671 17.8737 5.14648 16.5898V15.249C4.84815 16.1998 3.94429 16.8914 2.87598 16.8916C1.56463 16.8916 0.5 15.8494 0.5 14.5654V9.45312C0.5 8.16911 1.56463 7.12695 2.87598 7.12695C3.94394 7.12711 4.84785 7.81831 5.14648 8.76855V6.88477C5.14653 5.60079 6.21115 4.55859 7.52246 4.55859C8.58564 4.55865 9.48627 5.2439 9.78906 6.1875V4.32617C9.78906 3.04223 10.8528 2.00012 12.1641 2ZM10.8291 9.58789C9.86348 9.58791 9.08105 10.3543 9.08105 11.2998V12.4951C9.08105 13.4406 9.86348 14.207 10.8291 14.207C11.7947 14.207 12.5771 13.4406 12.5771 12.4951V11.2998C12.5771 10.3543 11.7947 9.58789 10.8291 9.58789ZM15.8701 8.86719C14.9045 8.86727 14.1221 9.63363 14.1221 10.5791V11.7744C14.1221 12.7199 14.9046 13.4862 15.8701 13.4863C16.8357 13.4863 17.6191 12.7199 17.6191 11.7744V10.5791C17.6191 9.63358 16.8358 8.86719 15.8701 8.86719Z"/>
+  </g>
+  <text x="1136" y="164" text-anchor="end" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI Variable Text', 'Segoe UI', 'Microsoft YaHei UI', 'PingFang SC', sans-serif" font-size="34" font-weight="600" letter-spacing="-0.3" fill="#111111">Vokie</text>
+
+  <text x="1136" y="210" text-anchor="end" font-family="'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace" font-size="18" fill="#6B6862">整理成文字 · 自动上屏</text>
+
+  <text x="600" y="262" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI Variable Text', 'Segoe UI', 'Microsoft YaHei UI', 'PingFang SC', sans-serif" font-size="18" fill="#55524C">Vokie 原生支持外接语音设备；插件装好，遥控器话筒键就是它的语音键</text>
+</svg>
