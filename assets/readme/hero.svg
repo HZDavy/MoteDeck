@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="420" viewBox="0 0 1200 420" role="img" aria-labelledby="heroTitle heroDesc">
   <title id="heroTitle">MoteDeck：把小米蓝牙语音遥控器 2 Pro 变成 Windows 的快捷键和麦克风</title>
-  <desc id="heroDesc">浅色标题板，右侧为按官方外观绘制的银色遥控器：顶部电源与话筒键、圆形方向触摸环、左侧返回/主页/菜单键、右侧音量拨键与底部 TV 键，下方有柔和投影。左侧是项目图标、名称、一句话说明和三个特性标签：本机运行、不上传录音、Win 10/11 x64。</desc>
+  <desc id="heroDesc">浅色标题板，右侧为手绘矢量风格的五支不同遥控器：米白、鼠尾草绿、雾蓝、芥黄、陶粉，圆角机身配深色描边和扁平按键，彼此倾斜叠放并点缀少量手绘小符号。左侧是项目图标、名称、一句话说明和三个特性标签：本机运行、不上传录音、Win 10/11 x64。</desc>
 
   <defs>
     <linearGradient id="glassBody" x1="3.2" y1="0.8" x2="21" y2="23.2" gradientUnits="userSpaceOnUse">
@@ -19,98 +19,95 @@
       <stop offset="0.46" stop-color="#F3F7FC"/>
       <stop offset="1" stop-color="#D7E1EE"/>
     </linearGradient>
-
-    <!-- 遥控器机身：银色金属 -->
-    <linearGradient id="metal" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#ABA8A1"/>
-      <stop offset="0.05" stop-color="#CBC8C1"/>
-      <stop offset="0.22" stop-color="#E9E6E0"/>
-      <stop offset="0.4" stop-color="#F1EFE9"/>
-      <stop offset="0.56" stop-color="#D9D6CF"/>
-      <stop offset="0.8" stop-color="#BEBAB3"/>
-      <stop offset="0.93" stop-color="#A6A39C"/>
-      <stop offset="1" stop-color="#96938D"/>
-    </linearGradient>
-    <linearGradient id="sheen" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0"/>
-      <stop offset="0.5" stop-color="#FFFFFF" stop-opacity="0.28"/>
-      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
-    </linearGradient>
-
-    <!-- 按键面：哑光黑 -->
-    <radialGradient id="btnFace" cx="0.4" cy="0.28" r="0.88">
-      <stop offset="0" stop-color="#3C3A37"/>
-      <stop offset="0.52" stop-color="#242220"/>
-      <stop offset="1" stop-color="#121110"/>
-    </radialGradient>
-
-    <clipPath id="bodyClip">
-      <rect x="-46" y="-160" width="92" height="320" rx="15"/>
-    </clipPath>
-    <filter id="softShadow" x="-60%" y="-120%" width="220%" height="340%">
-      <feGaussianBlur stdDeviation="7"/>
-    </filter>
   </defs>
 
   <rect width="1200" height="420" rx="28" fill="#EEEDEA"/>
 
-  <!-- 右侧：按官方外观绘制的遥控器 -->
-  <g id="illustration">
-    <ellipse cx="888" cy="384" rx="60" ry="10" fill="#191919" opacity="0.14" filter="url(#softShadow)"/>
-    <ellipse cx="888" cy="379" rx="34" ry="4" fill="#191919" opacity="0.18"/>
+  <!-- 右侧：手绘矢量风格的遥控器群像 -->
+  <g id="illustration" stroke-linecap="round" stroke-linejoin="round">
+    <!-- 鼠尾草绿遥控器（后层） -->
+    <g transform="translate(1006 158) rotate(12)">
+      <rect x="-32" y="-100" width="70" height="206" rx="18" fill="#2E2C29" opacity="0.08"/>
+      <rect x="-35" y="-103" width="70" height="206" rx="18" fill="#CFDCD1" stroke="#2E2C29" stroke-width="3"/>
+      <circle cx="-18" cy="-82" r="8" fill="#2E2C29"/>
+      <circle cx="18" cy="-82" r="8" fill="#2E2C29"/>
+      <circle cx="0" cy="-32" r="24" fill="#2E2C29"/>
+      <circle cx="0" cy="-32" r="7" fill="#F7F4EC"/>
+      <g fill="none" stroke="#2E2C29" stroke-width="2.6">
+        <circle cx="-16" cy="20" r="8.5"/>
+        <circle cx="16" cy="20" r="8.5"/>
+        <circle cx="-16" cy="54" r="8.5"/>
+        <circle cx="16" cy="54" r="8.5"/>
+      </g>
+      <rect x="-20" y="80" width="40" height="11" rx="5.5" fill="#2E2C29"/>
+    </g>
 
-    <g transform="translate(888 210) scale(1.08)">
-      <!-- 银色机身 -->
-      <rect x="-46" y="-160" width="92" height="320" rx="15" fill="url(#metal)" stroke="#8F8C86" stroke-opacity="0.65" stroke-width="1.2"/>
-      <g clip-path="url(#bodyClip)">
-        <rect x="-30" y="-160" width="20" height="320" fill="url(#sheen)"/>
-      </g>
+    <!-- 米白主遥控器 -->
+    <g transform="translate(872 200) rotate(-8)">
+      <rect x="-43" y="-133" width="92" height="272" rx="23" fill="#2E2C29" opacity="0.08"/>
+      <rect x="-46" y="-136" width="92" height="272" rx="23" fill="#F7F4EC" stroke="#2E2C29" stroke-width="3"/>
+      <circle cx="-23" cy="-110" r="10" fill="#2E2C29"/>
+      <circle cx="23" cy="-110" r="10" fill="#2E2C29"/>
+      <circle cx="0" cy="-50" r="33" fill="#2E2C29"/>
+      <circle cx="0" cy="-50" r="20" fill="none" stroke="#F7F4EC" stroke-width="1.8" opacity="0.45"/>
+      <circle cx="0" cy="-50" r="5" fill="#F7F4EC"/>
+      <circle cx="-27" cy="12" r="9.5" fill="#2E2C29"/>
+      <circle cx="-27" cy="46" r="9.5" fill="#2E2C29"/>
+      <circle cx="-27" cy="80" r="9.5" fill="#2E2C29"/>
+      <rect x="10" y="0" width="29" height="64" rx="14.5" fill="#2E2C29"/>
+      <path d="M17 21 H32 M24.5 13.5 V28.5" fill="none" stroke="#F7F4EC" stroke-width="2.4"/>
+      <path d="M17 45 H32" fill="none" stroke="#F7F4EC" stroke-width="2.4"/>
+      <circle cx="24.5" cy="92" r="9.5" fill="#2E2C29"/>
+    </g>
 
-      <!-- 电源 / 话筒 -->
-      <circle cx="-26" cy="-136" r="9" fill="url(#btnFace)"/>
-      <g fill="none" stroke="#F4F2EC" stroke-width="1.4" stroke-linecap="round">
-        <path d="M-29.1 -139.1 A4.4 4.4 0 1 0 -22.9 -139.1"/>
-        <path d="M-26 -142 V-136.4"/>
+    <!-- 雾蓝小遥控器 -->
+    <g transform="translate(1076 300) rotate(14)">
+      <rect x="-39" y="-72" width="84" height="150" rx="21" fill="#2E2C29" opacity="0.08"/>
+      <rect x="-42" y="-75" width="84" height="150" rx="21" fill="#D6E1EC" stroke="#2E2C29" stroke-width="3"/>
+      <rect x="-22" y="-62" width="44" height="10" rx="5" fill="#2E2C29"/>
+      <g fill="#2E2C29">
+        <rect x="-33" y="-40" width="18" height="14" rx="5"/>
+        <rect x="-9" y="-40" width="18" height="14" rx="5"/>
+        <rect x="15" y="-40" width="18" height="14" rx="5"/>
+        <rect x="-33" y="-18" width="18" height="14" rx="5"/>
+        <rect x="-9" y="-18" width="18" height="14" rx="5"/>
+        <rect x="15" y="-18" width="18" height="14" rx="5"/>
       </g>
-      <circle cx="26" cy="-136" r="9" fill="url(#btnFace)"/>
-      <g stroke="#F4F2EC" stroke-linecap="round">
-        <rect x="23.7" y="-140.2" width="4.6" height="7.4" rx="2.3" fill="#F4F2EC" stroke="none"/>
-        <path d="M22.1 -136.8 A4.3 4.3 0 0 0 29.9 -136.8" fill="none" stroke-width="1.4"/>
-        <path d="M26 -131.6 V-129.8" fill="none" stroke-width="1.4"/>
-      </g>
+      <circle cx="0" cy="30" r="15" fill="none" stroke="#2E2C29" stroke-width="2.8"/>
+      <circle cx="0" cy="30" r="4" fill="#2E2C29"/>
+    </g>
 
-      <!-- 方向触摸环 -->
-      <circle cx="0" cy="-68" r="33" fill="url(#btnFace)"/>
-      <circle cx="0" cy="-68" r="32" fill="none" stroke="#F4F2EC" stroke-opacity="0.1" stroke-width="1"/>
-      <circle cx="0" cy="-68" r="21" fill="none" stroke="#565350" stroke-width="1.4"/>
-      <circle cx="0" cy="-68" r="4.4" fill="#F4F2EC"/>
+    <!-- 芥黄迷你遥控器 -->
+    <g transform="translate(1108 128) rotate(-6)">
+      <rect x="-20" y="-55" width="46" height="116" rx="13" fill="#2E2C29" opacity="0.08"/>
+      <rect x="-23" y="-58" width="46" height="116" rx="13" fill="#F0E0BE" stroke="#2E2C29" stroke-width="3"/>
+      <circle cx="0" cy="-34" r="7.5" fill="#2E2C29"/>
+      <circle cx="0" cy="-6" r="7.5" fill="#2E2C29"/>
+      <circle cx="0" cy="22" r="7.5" fill="#2E2C29"/>
+      <rect x="-10" y="40" width="20" height="9" rx="4.5" fill="#2E2C29"/>
+    </g>
 
-      <!-- 返回 / 主页 / 菜单 -->
-      <g fill="url(#btnFace)">
-        <circle cx="-25" cy="-10" r="10"/>
-        <circle cx="-25" cy="30" r="10"/>
-        <circle cx="-25" cy="70" r="10"/>
-      </g>
-      <g fill="none" stroke="#F4F2EC" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M-22.2 -14.4 L-27.4 -10 L-22.2 -5.6"/>
-        <path d="M-25 25.6 L-20.2 29.8 V34.4 H-29.8 V29.8 Z"/>
-        <path d="M-29.2 66.2 H-20.8 M-29.2 70 H-20.8 M-29.2 73.8 H-20.8"/>
-      </g>
+    <!-- 陶粉窄遥控器（前层） -->
+    <g transform="translate(812 306) rotate(-15)">
+      <rect x="-24" y="-82" width="54" height="170" rx="16" fill="#2E2C29" opacity="0.08"/>
+      <rect x="-27" y="-85" width="54" height="170" rx="16" fill="#F0DCD2" stroke="#2E2C29" stroke-width="3"/>
+      <circle cx="0" cy="-60" r="8" fill="#2E2C29"/>
+      <circle cx="0" cy="-28" r="8.5" fill="#2E2C29"/>
+      <circle cx="0" cy="4" r="8.5" fill="#2E2C29"/>
+      <circle cx="0" cy="36" r="8.5" fill="#2E2C29"/>
+      <rect x="-12" y="58" width="24" height="10" rx="5" fill="#2E2C29"/>
+    </g>
 
-      <!-- 音量拨键 -->
-      <rect x="10" y="-42" width="30" height="84" rx="15" fill="url(#btnFace)"/>
-      <path d="M11.6 0 H38.4" stroke="#0C0C0B" stroke-width="1" opacity="0.75"/>
-      <g fill="none" stroke="#F4F2EC" stroke-width="1.7" stroke-linecap="round">
-        <path d="M19.6 -22 H30.4 M25 -27.4 V-16.6"/>
-        <path d="M19.6 22 H30.4"/>
-      </g>
-
-      <!-- TV 键 -->
-      <circle cx="25" cy="70" r="10" fill="url(#btnFace)"/>
-      <g fill="none" stroke="#F4F2EC" stroke-width="1.5" stroke-linecap="round">
-        <rect x="20.6" y="64.8" width="8.8" height="6.4" rx="1.4"/>
-        <path d="M22.8 71.2 V73.6 M27.2 71.2 V73.6"/>
-      </g>
+    <!-- 手绘点缀 -->
+    <g fill="none" stroke="#2E2C29" stroke-width="2.2" opacity="0.5">
+      <path d="M948 52 v14 M941 59 h14"/>
+      <path d="M774 196 q7 -7 14 0"/>
+      <path d="M1146 344 q9 6 0 12"/>
+    </g>
+    <g fill="#2E2C29" opacity="0.45">
+      <circle cx="782" cy="176" r="2.6"/>
+      <circle cx="1160" cy="212" r="2.6"/>
+      <circle cx="1054" cy="384" r="2.6"/>
     </g>
   </g>
 
