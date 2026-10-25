@@ -174,6 +174,17 @@ def key_bindings_path(root: Path = None) -> Path:  # type: ignore[assignment]
     return (root or config_root()) / KEY_BINDINGS_FILENAME
 
 
+# 外部插件（Vokie）下发的语音键统一打这个标记：它们自带快捷键，只能排序、
+# 开关，不能改快捷键，也不能在插件仍然连接时删除。
+VOICE_KEY_PLUGIN_VOKIE = "vokie"
+
+
+def _normalize_plugin_id(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    return value.strip().lower()[:64]
+
+
 def _default_voice_key_config(
     *,
     slot: int = 1,
@@ -181,6 +192,8 @@ def _default_voice_key_config(
     hotkey: str = "",
     source: str = VOICE_INPUT_SOURCE_REMOTE,
     device: str = "",
+    enabled: bool = True,
+    plugin: str = "",
 ) -> Dict[str, Any]:
     return {
         "id": int(slot),
@@ -188,6 +201,11 @@ def _default_voice_key_config(
         "hotkey": hotkey,
         "source": source,
         "device": device,
+        # 关闭的语音键仍然保留在列表里，只是运行时会被跳过。排序和开关都
+        # 直接作用在列表顺序上，所以 id 不能再按大小重排。
+        "enabled": bool(enabled),
+        # 非空表示这条语音键由外部插件提供（当前只有 Vokie）。
+        "plugin": _normalize_plugin_id(plugin),
     }
 
 
@@ -244,6 +262,9 @@ def default_config() -> Dict[str, Any]:
         # Desktop-shell behavior. Windows login startup itself is owned by
         # the user's HKCU Run value and is deliberately not mirrored here.
         "launch_bridge_on_app_start": False,
+        # 记住用户离开时 Vokie 插件连接是开还是关：开着的话下次启动直接恢复
+        # 监听，不用再点一次「开启插件连接」；关着的话启动后也保持关闭。
+        "voice_plugin_auto_connect": False,
         "diagnostic_trace_enabled": False,
         "close_behavior": CLOSE_BEHAVIOR_HIDE_TO_TRAY,
         # A portable build offers each exact helper binary once. The explicit
@@ -629,11 +650,14 @@ def _normalize_voice_key_configs(config: Dict[str, Any]) -> None:
                 hotkey=_normalize_hotkey_text(raw_entry.get("hotkey", "")),
                 source=source,
                 device=device,
+                enabled=raw_entry.get("enabled", True) is not False,
+                plugin=raw_entry.get("plugin", ""),
             )
         )
     if not normalized:
         normalized = [_default_voice_key_config()]
-    normalized.sort(key=lambda entry: entry["id"])
+    # 列表本身就是顺序：语音键配置界面支持上下移动，插件项也要能和自定义项
+    # 混排，所以这里绝不能按 id 重排。
     config["voice_key_configs"] = normalized
 
     by_id = {entry["id"]: entry for entry in normalized}
@@ -661,7 +685,7 @@ def _normalize_voice_key_configs(config: Dict[str, Any]) -> None:
 
 
 def voice_key_configs(config_data: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Return every configured voice key, ordered by its stable id."""
+    """Return every configured voice key, in the order the user arranged them."""
 
     raw_entries = config_data.get("voice_key_configs")
     if not isinstance(raw_entries, list) or not raw_entries:
@@ -686,12 +710,28 @@ def voice_key_configs(config_data: Dict[str, Any]) -> List[Dict[str, Any]]:
                 hotkey=str(raw_entry.get("hotkey", "") or "").strip().lower(),
                 source=source,
                 device="" if source == VOICE_INPUT_SOURCE_REMOTE else device,
+                enabled=raw_entry.get("enabled", True) is not False,
+                plugin=raw_entry.get("plugin", ""),
             )
         )
-    entries.sort(key=lambda entry: entry["id"])
     if not entries:
         entries = [_default_voice_key_config()]
     return entries
+
+
+def enabled_voice_key_configs(config_data: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Return the voice keys the runtime may still fire, in list order."""
+
+    return [
+        entry for entry in voice_key_configs(config_data) if entry.get("enabled", True)
+    ]
+
+
+def voice_key_enabled(config_data: Dict[str, Any], slot: int) -> bool:
+    """Whether one voice key is switched on in the configuration list."""
+
+    entry = voice_key_config(config_data, slot)
+    return bool(entry and entry.get("enabled", True))
 
 
 def voice_key_config(
@@ -720,9 +760,14 @@ def voice_key_name(config_data: Dict[str, Any], slot: int) -> str:
         slot_number = int(slot)
     except (TypeError, ValueError):
         return ""
-    entry = voice_key_config(config_data, slot_number)
-    name = _normalize_voice_key_name(entry.get("name")) if entry else ""
-    return name or f"语音{slot_number}"
+    for position, entry in enumerate(voice_key_configs(config_data), start=1):
+        if entry["id"] != slot_number:
+            continue
+        name = _normalize_voice_key_name(entry.get("name"))
+        # 没起名的按键按它在列表里的位置叫语音1..n：上下移动之后名字跟着位置
+        # 重排，用户自己输入的名字则保持不变。
+        return name or f"语音{position}"
+    return f"语音{slot_number}"
 
 
 def voice_key_labels(config_data: Dict[str, Any]) -> Dict[int, str]:
@@ -734,9 +779,10 @@ def voice_key_labels(config_data: Dict[str, Any]) -> Dict[int, str]:
 
     labels: Dict[int, str] = {}
     used = set()
-    for entry in voice_key_configs(config_data):
+    for position, entry in enumerate(voice_key_configs(config_data), start=1):
         slot = entry["id"]
-        base = _normalize_voice_key_name(entry.get("name")) or f"语音{slot}"
+        # 默认名跟着列表位置走（语音1..n），自定义名字保持原样。
+        base = _normalize_voice_key_name(entry.get("name")) or f"语音{position}"
         label = base
         suffix = 2
         while label in used:
@@ -750,9 +796,10 @@ def voice_key_labels(config_data: Dict[str, Any]) -> Dict[int, str]:
 def voice_slot_hotkey(config_data: Dict[str, Any], slot: int) -> str:
     """Return one hold-to-talk slot's host shortcut.
 
-    The slot resolves purely from what the user recorded on the voice page, so an
-    empty slot stays empty instead of inheriting a legacy ``voice_hotkey`` mirror
-    or a provider default.
+    The slot resolves from what the user recorded on the voice page. Slot 1 is
+    the historical single voice key, so an empty recording there keeps using the
+    legacy shared hold shortcut - exactly what the settings page shows - instead
+    of claiming a key it never injects. Other slots stay empty when unrecorded.
     """
 
     try:
@@ -761,7 +808,15 @@ def voice_slot_hotkey(config_data: Dict[str, Any], slot: int) -> str:
         return ""
     entry = voice_key_config(config_data, slot_number)
     if entry is not None:
-        return str(entry.get("hotkey", "")).strip().lower()
+        recorded = str(entry.get("hotkey", "")).strip().lower()
+        if recorded or slot_number != 1 or entry.get("plugin"):
+            return recorded
+        shared = config_data.get("voice_hotkeys")
+        if isinstance(shared, dict):
+            legacy = str(shared.get("hold", "")).strip().lower()
+            if legacy:
+                return legacy
+        return str(config_data.get("voice_hotkey", "")).strip().lower()
     entries = config_data.get("voice_slot_hotkeys")
     if isinstance(entries, dict):
         candidate = str(entries.get(str(slot_number), "")).strip().lower()
@@ -855,12 +910,16 @@ def update_voice_key_config(
     hotkey: object = _VOICE_KEY_FIELD_UNSET,
     source: object = _VOICE_KEY_FIELD_UNSET,
     device: object = _VOICE_KEY_FIELD_UNSET,
+    enabled: object = _VOICE_KEY_FIELD_UNSET,
+    force: bool = False,
 ) -> Dict[str, Any]:
     """Return a copy with one voice key's fields replaced.
 
     Only the fields passed by the caller change, so a caller that renames a key
     can never rewrite its recorded shortcut. Unknown ids return an unchanged
-    copy instead of inventing an entry.
+    copy instead of inventing an entry. A plugin-provided key keeps its own
+    shortcut: the plugin ships it, so writing one here would desynchronise the
+    two ends.
     """
 
     entries = voice_key_configs(config_data)
@@ -873,8 +932,10 @@ def update_voice_key_config(
         return dict(config_data)
     if name is not _VOICE_KEY_FIELD_UNSET:
         target["name"] = _normalize_voice_key_name(name)
-    if hotkey is not _VOICE_KEY_FIELD_UNSET:
+    if hotkey is not _VOICE_KEY_FIELD_UNSET and (force or not target.get("plugin")):
         target["hotkey"] = _normalize_hotkey_text(hotkey)
+    if enabled is not _VOICE_KEY_FIELD_UNSET:
+        target["enabled"] = bool(enabled)
     if source is not _VOICE_KEY_FIELD_UNSET:
         target["source"] = _normalize_voice_source(source)
         if target["source"] == VOICE_INPUT_SOURCE_REMOTE:
@@ -904,14 +965,137 @@ def add_voice_key_config(config_data: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def remove_voice_key_config(
-    config_data: Dict[str, Any], slot: int
+    config_data: Dict[str, Any], slot: int, *, force: bool = False
 ) -> Dict[str, Any]:
-    """Return a copy without one voice key; the last remaining key is kept."""
+    """Return a copy without one voice key; the last remaining key is kept.
+
+    A plugin-provided key stays until the plugin itself is disconnected, so it
+    is skipped here and the caller decides how to report that. ``force`` lets
+    the settings window delete it once the plugin is no longer connected.
+    """
 
     entries = voice_key_configs(config_data)
-    remaining = [entry for entry in entries if entry["id"] != int(slot)]
+    remaining = [
+        entry
+        for entry in entries
+        if entry["id"] != int(slot) or (entry.get("plugin") and not force)
+    ]
     if not remaining or len(remaining) == len(entries):
         return dict(config_data)
+    return _with_voice_key_configs(config_data, remaining)
+
+
+def move_voice_key_config(
+    config_data: Dict[str, Any], slot: int, delta: int
+) -> Dict[str, Any]:
+    """Return a copy with one voice key moved ``delta`` places in the list."""
+
+    entries = voice_key_configs(config_data)
+    ids = [entry["id"] for entry in entries]
+    try:
+        index = ids.index(int(slot))
+    except ValueError:
+        return dict(config_data)
+    try:
+        offset = int(delta)
+    except (TypeError, ValueError):
+        return dict(config_data)
+    target = index + offset
+    if offset == 0 or target < 0 or target >= len(entries):
+        return dict(config_data)
+    entries[index], entries[target] = entries[target], entries[index]
+    return _with_voice_key_configs(config_data, entries)
+
+
+def set_voice_key_config_enabled(
+    config_data: Dict[str, Any], slot: int, enabled: bool
+) -> Dict[str, Any]:
+    """Return a copy with one voice key switched on or off."""
+
+    return update_voice_key_config(config_data, int(slot), enabled=bool(enabled))
+
+
+def apply_plugin_voice_keys(
+    config_data: Dict[str, Any],
+    plugin_id: str,
+    entries: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Merge the modes a connected plugin offers into the voice-key list.
+
+    The user's own keys are never touched: the plugin's modes are appended
+    after them and only the rows that plugin contributed earlier are replaced.
+    A mode that already had a row keeps that row's id and on/off state, so the
+    physical button bound to it survives a reconnect.
+    """
+
+    from . import key_mapping
+
+    plugin = _normalize_plugin_id(plugin_id)
+    if not plugin:
+        return dict(config_data)
+    existing = voice_key_configs(config_data)
+    merged: List[Dict[str, Any]] = [
+        entry
+        for entry in existing
+        if _normalize_plugin_id(entry.get("plugin")) != plugin
+    ]
+    reusable: Dict[str, Dict[str, Any]] = {}
+    for entry in existing:
+        if _normalize_plugin_id(entry.get("plugin")) != plugin:
+            continue
+        name = _normalize_voice_key_name(entry.get("name"))
+        if name and name not in reusable:
+            reusable[name] = entry
+    used_ids = {entry["id"] for entry in merged}
+    for raw_entry in entries:
+        if len(merged) >= key_mapping.MAX_VOICE_SLOTS:
+            break
+        if not isinstance(raw_entry, dict):
+            continue
+        name = _normalize_voice_key_name(raw_entry.get("name", ""))
+        hotkey = _normalize_hotkey_text(raw_entry.get("hotkey", ""))
+        if not name and not hotkey:
+            continue
+        previous = reusable.get(name) if name else None
+        slot = 0
+        if previous is not None and previous["id"] not in used_ids:
+            slot = previous["id"]
+        if slot <= 0:
+            for candidate in range(1, key_mapping.MAX_VOICE_SLOTS + 1):
+                if candidate not in used_ids:
+                    slot = candidate
+                    break
+        if slot <= 0:
+            break
+        used_ids.add(slot)
+        merged.append(
+            _default_voice_key_config(
+                slot=slot,
+                name=name,
+                hotkey=hotkey,
+                enabled=bool(previous.get("enabled", True)) if previous else True,
+                plugin=plugin,
+            )
+        )
+    return _with_voice_key_configs(config_data, merged)
+
+
+def release_plugin_voice_keys(
+    config_data: Dict[str, Any], plugin_id: str
+) -> Dict[str, Any]:
+    """Return a copy without the keys one plugin contributed."""
+
+    plugin = _normalize_plugin_id(plugin_id)
+    if not plugin:
+        return dict(config_data)
+    entries = voice_key_configs(config_data)
+    remaining = [
+        entry for entry in entries if _normalize_plugin_id(entry.get("plugin")) != plugin
+    ]
+    if len(remaining) == len(entries):
+        return dict(config_data)
+    if not remaining:
+        remaining = [_default_voice_key_config()]
     return _with_voice_key_configs(config_data, remaining)
 
 

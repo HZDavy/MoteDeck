@@ -9893,7 +9893,7 @@ result["voice_sections"] = all(
     for name in (
         "audioPrerequisiteSection",
         "voiceKeySection",
-        "voiceTestSection",
+        "externalAppsSection",
     )
 )
 
@@ -10684,8 +10684,8 @@ capture_page(
         "audioPrerequisiteSectionTitle",
         "voiceKeySection",
         "voiceKeySectionTitle",
-        "voiceTestSection",
-        "voiceTestSectionTitle",
+        "externalAppsSection",
+        "externalAppsSectionTitle",
         "voiceLevelRipple",
     ),
 )
@@ -10693,25 +10693,19 @@ result["voice_controls"] = {
     name: bounds(window, name)
     for name in (
         "installVirtualAudioButton",
-        "applyVirtualAudioButton",
         "endpointCombo",
         "openMicrophonePrivacyButton",
         "manageVoiceKeysButton",
         "voiceCycleShortPressSwitch",
-        "soundChannelTestDescription",
         "testVbCableChannelButton",
     )
 }
-result["voice_scroll"] = scroll_snapshot("voiceScroll", "voiceTestSection")
+result["voice_scroll"] = scroll_snapshot("voiceScroll", "externalAppsSection")
 result["voice_recovery_editor"] = {
-    "hidden_column": bounds(window, "soundChannelTestRow_editorColumn"),
     "hidden_button": bounds(window, "recoverBridgeButton"),
 }
 diagnostics_controller._set_vb_cable_bridge_recovery_needed(True)
 render(window, app)
-result["voice_recovery_editor"]["visible_column"] = bounds(
-    window, "soundChannelTestRow_editorColumn"
-)
 result["voice_recovery_editor"]["visible_button"] = bounds(
     window, "recoverBridgeButton"
 )
@@ -10940,7 +10934,7 @@ class SettingsShellSourceContractTests(unittest.TestCase):
         ):
             self.assertIn(f'titleObjectName: "{object_name}"', self.device_qml)
         self.assertIn(
-            'titleObjectName: "voiceTestSectionTitle"', self.voice_qml
+            'titleObjectName: "externalAppsSectionTitle"', self.voice_qml
         )
         for object_name in (
             "audioPrerequisiteSectionTitle",
@@ -11023,8 +11017,10 @@ class SettingsShellSourceContractTests(unittest.TestCase):
         self.assertNotIn('checkState("dictation")', self.voice_qml)
 
     def test_diagnostics_exposes_loopback_as_an_explicit_nonautomatic_action(self):
-        self.assertIn('objectName: "soundChannelTestRow"', self.voice_qml)
+        # 自检按钮跟「虚拟音频」放在同一行，不再单独占一行。
+        self.assertIn('objectName: "virtualAudioRow"', self.voice_qml)
         self.assertIn('objectName: "testVbCableChannelButton"', self.voice_qml)
+        self.assertIn('text: qsTr("测试")', self.voice_qml)
         self.assertIn(
             "DiagnosticsController.testVbCableChannelWithBridgeRestart()",
             self.voice_qml,
@@ -11337,9 +11333,10 @@ class SettingsShellSourceContractTests(unittest.TestCase):
         self.assertIn("renderType: Text.QtRendering", self.icon_glyph_qml)
         self.assertEqual(self.buttons_qml.count("DialogCloseButton {"), 1)
         # Voice page: driver confirm, bridge-test confirm, profile name,
-        # profile delete, the profile manager and the voice-key manager; the
-        # three file pickers reuse Qt's own FileDialog.
-        self.assertEqual(self.voice_qml.count("SettingsDialog {"), 6)
+        # profile delete, the profile manager, the voice-key manager and the
+        # external-application dialog; the three file pickers reuse Qt's own
+        # FileDialog.
+        self.assertEqual(self.voice_qml.count("SettingsDialog {"), 7)
 
     def test_tooltips_are_compact_and_follow_each_truncated_text(self):
         self.assertIn("ToolTip {", self.compact_tooltip_qml)
@@ -11481,7 +11478,12 @@ class SettingsShellSourceContractTests(unittest.TestCase):
         self.assertIn(
             'qsTr("请按下希望遥控器发送的键盘快捷键")', self.shortcut_recorder_qml
         )
-        self.assertIn('qsTr("点击“安装音频”")', self.voice_qml)
+        self.assertIn('qsTr("点击“安装”")', self.voice_qml)
+        # 未安装显示两字「安装」，已安装显示两字「卸载」。
+        self.assertRegex(
+            self.voice_qml,
+            r'text: root\.virtualAudioInstalled\s*\n\s*\?\s*qsTr\("卸载"\) : qsTr\("安装"\)',
+        )
         self.assertIn('qsTr("请重新选择端点")', self.voice_qml)
         self.assertIn('qsTr("点击“重新检查”")', self.voice_qml)
         self.assertIn('qsTr("请手动验证")', self.voice_qml)
@@ -11509,8 +11511,14 @@ class SettingsShellSourceContractTests(unittest.TestCase):
         self.assertNotIn("running_not_ready", self.voice_qml)
         self.assertIn("tokens.successColor", self.voice_qml)
         # A key that was never recorded shows a neutral hint, not a failure
-        # caption.
-        self.assertIn('placeholderText: qsTr("尚未录入")', self.voice_qml)
+        # caption; a key owned by a connected plugin explains where it comes
+        # from instead of inviting a manual capture.
+        squashed = " ".join(self.voice_qml.split())
+        self.assertIn(
+            'placeholderText: keyCard.pluginLocked ? qsTr("由插件提供") '
+            ': qsTr("尚未录入")',
+            squashed,
+        )
 
     def test_device_and_voice_guidance_use_the_shared_page_navigation(self):
         self.assertIn("signal openButtonsRequested()", self.device_qml)
@@ -11662,7 +11670,12 @@ class SettingsShellSourceContractTests(unittest.TestCase):
         self.assertNotIn('objectName: "comboActionEditor_" + buttonId', self.buttons_qml)
 
     def test_voice_hotkey_field_is_owned_by_the_voice_page(self):
-        self.assertIn('placeholderText: qsTr("尚未录入")', self.voice_qml)
+        self.assertIn('placeholderText: keyCard.pluginLocked', self.voice_qml)
+        self.assertIn(
+            'placeholderText: keyCard.pluginLocked ? qsTr("由插件提供") '
+            ': qsTr("尚未录入")',
+            " ".join(self.voice_qml.split()),
+        )
         self.assertIn('objectName: "voiceKeyHotkeyField"', self.voice_qml)
         self.assertIn('objectName: "recordVoiceHotkeyButton"', self.voice_qml)
         self.assertIn(
@@ -11717,7 +11730,7 @@ class SettingsShellSourceContractTests(unittest.TestCase):
         # 所以它自己收掉分隔线。
         key_block = self.voice_qml.split(
             'objectName: "voiceKeySection"', 1
-        )[1].split('objectName: "voiceTestSection"', 1)[0]
+        )[1].split('objectName: "externalAppsSection"', 1)[0]
         config_row = key_block.split('objectName: "voiceKeyConfigRow"', 1)[1]
         self.assertIn("showDivider: false", config_row)
 
@@ -11728,8 +11741,7 @@ class SettingsShellSourceContractTests(unittest.TestCase):
         )
         self.assertRegex(
             self.voice_qml,
-            r'(?s)objectName: "testVbCableChannelButton".*?'
-            r"Layout\.fillWidth: true",
+            r'(?s)objectName: "testVbCableChannelButton".*?text: qsTr\("测试"\)',
         )
 
     def test_conflicting_audio_work_locks_direct_writes_but_mapping_page_has_no_save_control(self):
@@ -11850,7 +11862,9 @@ class ThreePageSettingsSourceContractTests(unittest.TestCase):
             self.main_qml.index('id: globalStatusText')
         ]
         self.assertIn("radius: height / 2", status_bar_source)
-        self.assertIn("anchors.bottom: parent.bottom", status_bar_source)
+        # 提示气泡放在 Overlay 里，靠高 z 压在页面遮罩和弹窗之上
+        self.assertIn("parent: Overlay.overlay", status_bar_source)
+        self.assertIn("z: 1000", status_bar_source)
         self.assertIn("visible: (active && hasStatus) || hasKeyDetection", status_bar_source)
         self.assertIn("function onCurrentIndexChanged", status_bar_source)
         self.assertIn("function onStatusMessageChanged", status_bar_source)
@@ -11932,7 +11946,7 @@ class ThreePageSettingsSourceContractTests(unittest.TestCase):
         for object_name in (
             "audioPrerequisiteSection",
             "voiceKeySection",
-            "voiceTestSection",
+            "externalAppsSection",
         ):
             self.assertIn(f'objectName: "{object_name}"', self.voice_qml)
         self.assertIn('objectName: "voiceSlotHotkeyRepeater"', self.voice_qml)
@@ -11968,7 +11982,6 @@ class ThreePageSettingsSourceContractTests(unittest.TestCase):
         for object_name in (
             "installVirtualAudioButton",
             "endpointCombo",
-            "applyVirtualAudioButton",
             "openMicrophonePrivacyButton",
             "microphonePrivacyRow",
         ):
@@ -11978,11 +11991,9 @@ class ThreePageSettingsSourceContractTests(unittest.TestCase):
             "SettingsController.selectAndPersistOutputEndpointIndex(index)",
             self.voice_qml,
         )
-        self.assertIn(
-            "SettingsController.selectAndPersistOutputEndpointIndex(",
-            self.voice_qml,
-        )
-        self.assertIn('text: qsTr("选推荐端点")', self.voice_qml)
+        # 「选推荐端点」快捷按钮已去掉，推荐值只在下拉里标出。
+        self.assertNotIn('objectName: "applyVirtualAudioButton"', self.voice_qml)
+        self.assertNotIn('text: qsTr("选推荐端点")', self.voice_qml)
         self.assertIn(
             "SettingsController.selectedEndpointIndex",
             self.voice_qml,
@@ -12020,7 +12031,7 @@ class ThreePageSettingsSourceContractTests(unittest.TestCase):
         self.assertIn("voiceProfileManagerDialog.open()", self.voice_qml)
         # The profile cards live in the manager dialog, not inline on the page.
         inline_section = self.voice_qml.split('objectName: "voiceProfileSection"')[1]
-        inline_section = inline_section.split('objectName: "voiceTestSection"')[0]
+        inline_section = inline_section.split('objectName: "externalAppsSection"')[0]
         self.assertNotIn("voiceProfileRepeater", inline_section)
         self.assertNotIn("deleteVoiceProfileButton", inline_section)
         self.assertIn("SettingsController.voiceProfiles", self.voice_qml)
@@ -12043,7 +12054,7 @@ class ThreePageSettingsSourceContractTests(unittest.TestCase):
             self.voice_qml,
         )
         self.assertNotIn('objectName: "trySpeakingButton"', self.voice_qml)
-        self.assertIn('qsTr("检查虚拟声卡")', self.voice_qml)
+        self.assertIn('qsTr("测试")', self.voice_qml)
         self.assertIn("vbCableBridgeRecoveryNeeded", self.voice_qml)
 
     def test_button_page_keeps_real_cards_and_confirms_built_in_defaults(self):
@@ -12937,7 +12948,7 @@ class OffscreenQmlLoadTests(unittest.TestCase):
                     device_scroll["box"]["bottom"] + 1,
                 )
 
-                # 语音页：音频前置与语音键左右两栏并排，测试区横向贯穿在下方
+                # 语音页：音频前置与语音键左右两栏并排，外部应用程序支持横向贯穿在下方
                 voice_items = data["pages"]["voice"]["items"]
                 self.assertLess(
                     voice_items["audioPrerequisiteSection"]["right"],
@@ -12946,12 +12957,23 @@ class OffscreenQmlLoadTests(unittest.TestCase):
                 for section_name in ("audioPrerequisiteSection", "voiceKeySection"):
                     self.assertLessEqual(
                         voice_items[section_name]["bottom"],
-                        voice_items["voiceTestSection"]["y"] + 1,
+                        voice_items["externalAppsSection"]["y"] + 1,
                     )
+                self.assertGreater(
+                    voice_items["externalAppsSection"]["width"],
+                    voice_items["audioPrerequisiteSection"]["width"],
+                )
+                self.assertAlmostEqual(
+                    voice_items["externalAppsSection"]["width"],
+                    voice_items["audioPrerequisiteSection"]["width"]
+                    + voice_items["voiceKeySection"]["width"]
+                    + 16,
+                    delta=1.5,
+                )
                 for section_name, title_name in (
                     ("audioPrerequisiteSection", "audioPrerequisiteSectionTitle"),
                     ("voiceKeySection", "voiceKeySectionTitle"),
-                    ("voiceTestSection", "voiceTestSectionTitle"),
+                    ("externalAppsSection", "externalAppsSectionTitle"),
                 ):
                     self.assertGreaterEqual(
                         voice_items[title_name]["y"],
@@ -12984,9 +13006,7 @@ class OffscreenQmlLoadTests(unittest.TestCase):
                 )
 
                 recovery = data["voice_recovery_editor"]
-                self.assertFalse(recovery["hidden_column"]["visible"])
                 self.assertFalse(recovery["hidden_button"]["visible"])
-                self.assertTrue(recovery["visible_column"]["visible"])
                 self.assertTrue(recovery["visible_button"]["visible"])
 
                 nav = data["navigation_backgrounds"]

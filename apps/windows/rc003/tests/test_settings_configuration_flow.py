@@ -211,7 +211,7 @@ with mock.patch.object(controller, "restartBridge") as restart:
     find(window, "bridgeActionButton").clicked.emit()
     restart.assert_called_once_with()
 assert '点击“应用”' not in (m._qml_directory() / "VoicePage.qml").read_text(encoding="utf-8")
-assert '点击“选推荐端点”' in (m._qml_directory() / "VoicePage.qml").read_text(encoding="utf-8")
+assert '点击“选推荐端点”' not in (m._qml_directory() / "VoicePage.qml").read_text(encoding="utf-8")
 print(json.dumps({"warnings": [str(item) for item in warnings]}))
 window.hide()
 m._shutdown_diagnostics_workers()

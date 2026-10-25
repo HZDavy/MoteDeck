@@ -13,6 +13,11 @@ Item {
     property var tabTarget: null
     readonly property var firstFocusItem: installVirtualAudioButton
     readonly property var lastFocusItem: testVbCableChannelButton
+    // 虚拟声卡装好后「安装」变「卸载」：只认端点自检通过，启动安装程序本身不算装好。
+    readonly property bool virtualAudioInstalled: {
+        const row = root.checkResult("vb_cable_endpoints")
+        return !!row && String(row.status) === "pass"
+    }
     // 语音快捷键只在语音页录入：这个槽号指向正在录入的那条语音键。
     property int voiceRecorderSlot: 1
     // Status line of the saved-profile list; the C++ actions return {ok,message}.
@@ -61,7 +66,7 @@ Item {
             return qsTr("请手动验证")
         if (checkId === "vb_cable_endpoints")
             return String(row.detail || "").indexOf(qsTr("缺少")) >= 0
-                ? qsTr("点击“安装音频”") : qsTr("点击“重新检查”")
+                ? qsTr("点击“安装”") : qsTr("点击“重新检查”")
         if (checkId === "output_endpoint")
             return qsTr("请重新选择端点")
         return qsTr("点击“重新检查”")
@@ -71,7 +76,7 @@ Item {
         const state = checkState(checkId)
         if (state === qsTr("正常"))
             return tokens.successColor
-        if (state === qsTr("点击“安装音频”")
+        if (state === qsTr("点击“安装”")
                 || state === qsTr("点击“重新检查”")
                 || state === qsTr("请重新选择端点"))
             return tokens.errorColor
@@ -110,7 +115,7 @@ Item {
         tokens: root.tokens
         preferredWidth: 390
         objectName: "driverConfirmDialog"
-        title: qsTr("安装虚拟音频？")
+        title: root.virtualAudioInstalled ? qsTr("卸载虚拟音频？") : qsTr("安装虚拟音频？")
         modal: true
         standardButtons: Dialog.Ok | Dialog.Cancel
         onAccepted: DiagnosticsController.launchVbCableSetup()
@@ -119,7 +124,9 @@ Item {
             tokens: root.tokens
             kind: bodyKind
             wrapMode: Text.WordWrap
-            text: qsTr("将启动 VB-Audio 官方 VB-CABLE 安装程序并请求管理员权限。完成安装后需要重启电脑，再回到这里点击“选推荐端点”。")
+            text: root.virtualAudioInstalled
+                ? qsTr("将启动 VB-Audio 官方 VB-CABLE 程序并请求管理员权限；检测到已安装时，请在程序里点击“Remove Driver”完成卸载。卸载后需要重启电脑。")
+                : qsTr("将启动 VB-Audio 官方 VB-CABLE 安装程序并请求管理员权限。完成安装后需要重启电脑，再回到这里在“输出端点”里选择 CABLE Input。")
         }
     }
 
@@ -253,7 +260,7 @@ Item {
         tokens: root.tokens
         preferredWidth: 680
         title: qsTr("配置档案")
-        titleNote: qsTr("切换配置会同时切换按键映射、语音模式和麦克风")
+        titleNote: qsTr("切换配置会同时切换按键映射、全部语音键（含顺序与开关）和语音模式")
         closeButtonObjectName: "voiceProfileManagerCloseButton"
         dismissalEnabled: !root.configurationWriteBusy
         // 每次打开都按磁盘上的最新状态重建列表，避免拿到启动时的空缓存。
@@ -286,6 +293,7 @@ Item {
                         Rectangle {
                             id: profileRow
                             required property var modelData
+                            required property int index
                             readonly property bool automatic:
                                 Boolean(modelData.automatic)
                             readonly property bool applied:
@@ -511,9 +519,9 @@ Item {
         id: voiceKeyManagerDialog
         objectName: "voiceKeyManagerDialog"
         tokens: root.tokens
-        preferredWidth: 760
+        preferredWidth: 880
         title: qsTr("语音键配置")
-        titleNote: qsTr("每条语音键可单独设置名称、快捷键和麦克风")
+        titleNote: qsTr("可调整顺序、单独停用；插件提供的语音键只能改名")
         closeButtonObjectName: "voiceKeyManagerCloseButton"
         dismissalEnabled: !root.configurationWriteBusy
 
@@ -548,6 +556,11 @@ Item {
                             readonly property int slot: Number(modelData.id)
                             readonly property bool localSource:
                                 String(modelData.source) === "local"
+                            readonly property bool entryEnabled:
+                                modelData.enabled !== false
+                            // 插件带来的语音键固定由插件维护：快捷键不能改、也不能删。
+                            readonly property bool pluginLocked:
+                                Boolean(modelData.locked)
                             readonly property string slotHotkey: {
                                 const entries = SettingsController.voiceSlotHotkeys
                                 const value = entries[slot]
@@ -569,18 +582,34 @@ Item {
                                 anchors.topMargin: 10
                                 anchors.bottomMargin: 10
                                 spacing: root.tokens.spacingSmall
+                                // 停用的语音键整条变淡，一眼能看出这台遥控器不会触发它。
+                                opacity: keyCard.entryEnabled ? 1 : 0.5
 
                                 // 默认只占一行；只有选了“本地麦克风”才多出一行录音设备。
                                 RowLayout {
                                     Layout.fillWidth: true
                                     spacing: root.tokens.spacingSmall
 
+                                    CompactSwitch {
+                                        objectName: "voiceKeyEnabledSwitch"
+                                        tokens: root.tokens
+                                        Layout.alignment: Qt.AlignVCenter
+                                        checked: keyCard.entryEnabled
+                                        enabled: !root.configurationWriteBusy
+                                        Accessible.name: qsTr("启用这条语音键")
+                                        onToggled: {
+                                            if (checked !== keyCard.entryEnabled)
+                                                SettingsController.setVoiceKeyConfigEnabled(
+                                                    keyCard.slot, checked)
+                                        }
+                                    }
+
                                     CompactTextField {
                                         id: keyNameField
                                         objectName: "voiceKeyNameField"
                                         tokens: root.tokens
                                         Layout.fillWidth: true
-                                        Layout.minimumWidth: 0
+                                        Layout.minimumWidth: 96
                                         placeholderText: qsTr("名称，留空为 %1")
                                             .arg(String(keyCard.modelData.displayName))
                                         text: String(keyCard.modelData.name || "")
@@ -600,17 +629,40 @@ Item {
                                         id: keyHotkeyField
                                         objectName: "voiceKeyHotkeyField"
                                         tokens: root.tokens
-                                        Layout.preferredWidth: 152
+                                        Layout.preferredWidth: 140
                                         readOnly: true
                                         selectByMouse: false
                                         enabled: !root.voiceHotkeyBusy
                                             && !root.configurationWriteBusy
+                                            && !keyCard.pluginLocked
                                         text: keyCard.slotHotkey.length > 0
                                             ? SettingsController.formatHotkeyText(
                                                 keyCard.slotHotkey)
                                             : ""
-                                        placeholderText: qsTr("尚未录入")
+                                        placeholderText: keyCard.pluginLocked
+                                            ? qsTr("由插件提供")
+                                            : qsTr("尚未录入")
                                         Accessible.name: qsTr("录入语音快捷键")
+
+                                        // 插件语音键的说明跟在快捷键框后面同一行；
+                                        // 挂在框内、不参与行布局，名称框和快捷键框才能
+                                        // 和普通语音键保持对齐。横向居中于快捷键框和
+                                        // 右侧调整顺序按钮之间的空白。
+                                        UiLabel {
+                                            objectName: "voiceKeyPluginNote"
+                                            tokens: root.tokens
+                                            kind: noteKind
+                                            visible: keyCard.pluginLocked
+                                            x: Math.max(
+                                                keyHotkeyField.width
+                                                    + root.tokens.spacingSmall,
+                                                Math.round((keyMoveUpButton.x
+                                                    - keyHotkeyField.x
+                                                    + keyHotkeyField.width
+                                                    - implicitWidth) / 2))
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            text: qsTr("该按键来自Vokie，默认使用插件通信，不可编辑快捷键映射")
+                                        }
                                     }
 
                                     CompactButton {
@@ -619,7 +671,10 @@ Item {
                                         flat: true
                                         compactMinimumWidth: tokens.buttonWidth4Chars
                                         text: qsTr("录入")
-                                        enabled: !root.voiceHotkeyBusy
+                                        // 插件语音键不录快捷键：控件保留占位，名称框才和其他行一样长。
+                                        opacity: keyCard.pluginLocked ? 0 : 1
+                                        enabled: !keyCard.pluginLocked
+                                            && !root.voiceHotkeyBusy
                                             && !root.configurationWriteBusy
                                             && !root.voiceHotkeyRuntimeBusy
                                         onClicked: {
@@ -631,18 +686,22 @@ Item {
                                     UiLabel {
                                         tokens: root.tokens
                                         kind: noteKind
+                                        // 占位保留，名称框宽度和其他行保持一致。
+                                        opacity: keyCard.pluginLocked ? 0 : 1
                                         text: qsTr("麦克风")
                                     }
 
                                     SelectionComboBox {
                                         objectName: "voiceKeySourceCombo"
                                         tokens: root.tokens
-                                        Layout.preferredWidth: 128
+                                        Layout.preferredWidth: 120
+                                        opacity: keyCard.pluginLocked ? 0 : 1
                                         model: SettingsController.voiceSourceOptions
                                         currentIndex: Number(keyCard.modelData.sourceIndex)
                                         onActivated: SettingsController.setVoiceKeyConfigSourceIndex(
                                             keyCard.slot, index)
-                                        enabled: !root.configurationWriteBusy
+                                        enabled: !keyCard.pluginLocked
+                                            && !root.configurationWriteBusy
                                             && !root.voiceHotkeyBusy
                                         Accessible.name: qsTr("麦克风来源")
                                     }
@@ -652,10 +711,38 @@ Item {
                                         tokens: root.tokens
                                         compactMinimumWidth: tokens.buttonWidth4Chars
                                         text: qsTr("删除")
-                                        enabled: SettingsController.voiceKeyConfigs.length > 1
+                                        // 插件语音键不能删：隐藏按钮但保留占位。
+                                        opacity: keyCard.pluginLocked ? 0 : 1
+                                        enabled: !keyCard.pluginLocked
+                                            && SettingsController.voiceKeyConfigs.length > 1
                                             && !root.configurationWriteBusy
                                         onClicked: SettingsController.removeVoiceKeyConfig(
                                             keyCard.slot)
+                                    }
+
+                                    IconButton {
+                                        id: keyMoveUpButton
+                                        objectName: "voiceKeyMoveUpButton"
+                                        tokens: root.tokens
+                                        compact: true
+                                        iconName: "chevronUp"
+                                        enabled: keyCard.modelData.first !== true
+                                            && !root.configurationWriteBusy
+                                        Accessible.name: qsTr("上移")
+                                        onClicked: SettingsController.moveVoiceKeyConfig(
+                                            keyCard.slot, -1)
+                                    }
+
+                                    IconButton {
+                                        objectName: "voiceKeyMoveDownButton"
+                                        tokens: root.tokens
+                                        compact: true
+                                        iconName: "chevron"
+                                        enabled: keyCard.modelData.last !== true
+                                            && !root.configurationWriteBusy
+                                        Accessible.name: qsTr("下移")
+                                        onClicked: SettingsController.moveVoiceKeyConfig(
+                                            keyCard.slot, 1)
                                     }
                                 }
 
@@ -751,6 +838,259 @@ Item {
         }
     }
 
+    // 外部应用程序支持：两张卡片竖排、各占一整行，卡片右侧是官网 / 下载 / 连接三个操作。
+    // 「访问官网」「下载插件」用直角弱化样式，「连接插件」才是圆角主按钮。
+    SettingsDialog {
+        id: externalAppsDialog
+        objectName: "externalAppsDialog"
+        tokens: root.tokens
+        preferredWidth: 720
+        title: qsTr("外部应用程序支持")
+        titleNote: qsTr("连接后语音键会改用插件提供的语音模式")
+        closeButtonObjectName: "closeExternalAppsButton"
+
+        component PluginCard: Rectangle {
+            id: card
+            property string objectPrefix: ""
+            property string appName: ""
+            property string tagline: ""
+            property string description: ""
+            property string logoSource: ""
+            property string statusText: ""
+            property bool statusOk: false
+            property color statusColor: root.tokens.textSecondary
+            property string connectText: qsTr("连接插件")
+            property bool connectHighlighted: true
+            property bool connectEnabled: true
+            signal openWebsiteRequested()
+            signal downloadRequested()
+            signal connectRequested()
+
+            implicitHeight: cardRow.implicitHeight + 28
+            radius: root.tokens.cornerRadiusCard
+            color: root.tokens.surfaceMuted
+            border.width: root.tokens.hairlineWidth
+            border.color: cardHover.containsMouse
+                ? root.tokens.borderStrong : root.tokens.border
+            Behavior on border.color { ColorAnimation { duration: 80 } }
+
+            // 卡片本身只做悬停反馈，点击不跳官网；跳转必须点「访问官网」。
+            MouseArea {
+                id: cardHover
+                anchors.fill: parent
+                hoverEnabled: true
+            }
+
+            RowLayout {
+                id: cardRow
+                anchors.fill: parent
+                anchors.margins: 14
+                spacing: 12
+
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    Layout.alignment: Qt.AlignTop
+                    spacing: 8
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 10
+
+                        // 深色圆角块放原版图形 logo，深浅主题下都能看清。
+                        Rectangle {
+                            Layout.alignment: Qt.AlignTop
+                            width: 40
+                            height: 40
+                            radius: 10
+                            color: "#141414"
+
+                            Image {
+                                anchors.centerIn: parent
+                                source: card.logoSource
+                                sourceSize.width: 24
+                                sourceSize.height: 24
+                                width: 22
+                                height: 22
+                                smooth: true
+                                fillMode: Image.PreserveAspectFit
+                            }
+                        }
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            Layout.alignment: Qt.AlignVCenter
+                            spacing: 2
+
+                            Label {
+                                text: card.appName
+                                font.family: root.tokens.fontFamily
+                                font.pixelSize: root.tokens.fontSizeSection
+                                font.weight: Font.DemiBold
+                                color: root.tokens.textPrimary
+                            }
+
+                            Label {
+                                Layout.fillWidth: true
+                                text: card.tagline
+                                font.family: root.tokens.fontFamily
+                                font.pixelSize: root.tokens.fontSizeSmall
+                                color: root.tokens.textTertiary
+                                elide: Text.ElideRight
+                            }
+                        }
+                    }
+
+                    Label {
+                        Layout.fillWidth: true
+                        text: card.description
+                        font.family: root.tokens.fontFamily
+                        font.pixelSize: root.tokens.fontSizeControl
+                        lineHeight: 1.35
+                        lineHeightMode: Text.ProportionalHeight
+                        color: root.tokens.textSecondary
+                        wrapMode: Text.WordWrap
+                    }
+
+                    StatusPill {
+                        tokens: root.tokens
+                        label: card.statusText
+                        ok: card.statusOk
+                        dotColor: card.statusOk ? "transparent" : card.statusColor
+                    }
+                }
+
+                ColumnLayout {
+                    Layout.alignment: Qt.AlignTop
+                    // 三个动作按钮固定宽度：布局挤压时也不让文字被截成省略号。
+                    Layout.minimumWidth: 140
+                    Layout.preferredWidth: 140
+                    Layout.maximumWidth: 140
+                    spacing: 4
+
+                    // 三个动作按钮靠右对齐，宽度按文字自适应，不铺满整列。
+                    CompactButton {
+                        objectName: card.objectPrefix + "WebsiteButton"
+                        Layout.alignment: Qt.AlignRight
+                        tokens: root.tokens
+                        flat: true
+                        radiusless: true
+                        trailingIcon: "external"
+                        text: qsTr("访问官网")
+                        Accessible.name: card.appName + " " + qsTr("官网")
+                        onClicked: card.openWebsiteRequested()
+                    }
+
+                    CompactButton {
+                        objectName: card.objectPrefix + "DownloadButton"
+                        Layout.alignment: Qt.AlignRight
+                        tokens: root.tokens
+                        flat: true
+                        radiusless: true
+                        text: qsTr("下载插件")
+                        Accessible.name: card.appName + " " + qsTr("下载插件")
+                        onClicked: card.downloadRequested()
+                    }
+
+                    CompactButton {
+                        objectName: card.objectPrefix + "ConnectButton"
+                        Layout.alignment: Qt.AlignRight
+                        tokens: root.tokens
+                        text: card.connectText
+                        highlighted: card.connectHighlighted
+                        enabled: card.connectEnabled
+                        Accessible.name: card.appName + " " + card.connectText
+                        onClicked: card.connectRequested()
+                    }
+                }
+            }
+        }
+
+        contentItem: ColumnLayout {
+            spacing: root.tokens.spacingMedium
+
+            ColumnLayout {
+                Layout.fillWidth: true
+                spacing: 12
+
+                PluginCard {
+                    objectName: "vokiePluginCard"
+                    Layout.fillWidth: true
+                    objectPrefix: "vokie"
+                    appName: "Vokie"
+                    tagline: qsTr("AI 语音输入")
+                    description: SettingsController.voicePluginConnected
+                        ? qsTr("已接收 %1 个语音模式，语音键已由插件接管")
+                            .arg(SettingsController.voicePluginModeCount)
+                        : qsTr("语音输入、闪记、翻译输入与指令，都能用遥控器语音键触发")
+                    logoSource: Qt.resolvedUrl("assets/vokie-mark.svg")
+                    statusText: SettingsController.voicePluginConnected
+                        ? qsTr("已连接")
+                        : String(SettingsController.voicePluginState) === "listening"
+                            ? qsTr("等待连接") : qsTr("未连接")
+                    statusOk: SettingsController.voicePluginConnected
+                    statusColor: SettingsController.voicePluginConnected
+                        ? tokens.successColor
+                        : String(SettingsController.voicePluginState) === "listening"
+                            ? tokens.voiceAccent : tokens.textSecondary
+                    connectText: SettingsController.voicePluginConnected
+                        ? qsTr("断开连接")
+                        : String(SettingsController.voicePluginState) === "listening"
+                            ? qsTr("取消连接") : qsTr("连接插件")
+                    connectHighlighted: !SettingsController.voicePluginConnected
+                    onOpenWebsiteRequested: SettingsController.openVokieWebsite()
+                    onDownloadRequested: SettingsController.openVokiePluginDownload()
+                    onConnectRequested: {
+                        if (SettingsController.voicePluginConnected
+                                || String(SettingsController.voicePluginState) === "listening") {
+                            SettingsController.disconnectVoicePlugin()
+                        } else {
+                            SettingsController.connectVoicePlugin()
+                        }
+                    }
+                }
+
+                PluginCard {
+                    objectName: "openmexiaPluginCard"
+                    Layout.fillWidth: true
+                    objectPrefix: "openmexia"
+                    appName: "OpenMexia"
+                    tagline: qsTr("开源智能家居控制中枢")
+                    description: qsTr("把遥控器变成家里的控制面板，目前支持米家设备")
+                    logoSource: Qt.resolvedUrl("assets/openmexia-mark.svg")
+                    statusText: qsTr("即将发布")
+                    statusColor: tokens.textTertiary
+                    connectText: qsTr("即将发布")
+                    connectEnabled: false
+                    onOpenWebsiteRequested: SettingsController.openOpenMexiaWebsite()
+                    onDownloadRequested: SettingsController.openOpenMexiaDownload()
+                }
+            }
+
+            UiLabel {
+                objectName: "externalAppsNote"
+                tokens: root.tokens
+                kind: noteKind
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                text: qsTr("连接后，当前语音键会替换为插件提供的语音模式；插件语音键的快捷键由插件自带，只能改名，不能删除也不能改快捷键。")
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+
+                Item { Layout.fillWidth: true }
+
+                CompactButton {
+                    objectName: "closeExternalAppsDialogButton"
+                    tokens: root.tokens
+                    compactMinimumWidth: tokens.buttonWidth4Chars
+                    text: qsTr("关闭")
+                    onClicked: externalAppsDialog.reject()
+                }
+            }
+        }
+    }
+
     // 语音快捷键复用按键页的二级录入弹窗：只有这里能把快捷键写给语音键。
     ShortcutRecorderDialog {
         id: voiceShortcutRecorder
@@ -841,13 +1181,15 @@ Item {
                             stateColumnWidth: root.settingsStateColumnWidth
                             actionColumnWidth: root.settingsActionColumnWidth
                             titleText: qsTr("虚拟音频")
-                            descriptionText: DiagnosticsController.driverErrorMessage.length > 0
-                                ? DiagnosticsController.driverErrorMessage
-                                : DiagnosticsController.driverInfoMessage.length > 0
-                                    ? DiagnosticsController.driverInfoMessage
-                                    : qsTr("安装后提供虚拟声卡")
+                            descriptionText: DiagnosticsController.vbCableTestMessage.length > 0
+                                ? DiagnosticsController.vbCableTestMessage
+                                : DiagnosticsController.driverErrorMessage.length > 0
+                                    ? DiagnosticsController.driverErrorMessage
+                                    : DiagnosticsController.driverInfoMessage.length > 0
+                                        ? DiagnosticsController.driverInfoMessage
+                                        : qsTr("安装后提供虚拟声卡")
                             stateText: DiagnosticsController.driverErrorMessage.length > 0
-                                ? qsTr("点击“安装音频”")
+                                ? qsTr("点击“安装”")
                                 : DiagnosticsController.driverStatusMessage.length > 0
                                     ? qsTr("已安装")
                                     : DiagnosticsController.driverInfoMessage.length > 0
@@ -857,7 +1199,7 @@ Item {
                                             : DiagnosticsController.driverInfoMessage.indexOf(
                                                 qsTr("重启电脑")) >= 0
                                                 ? qsTr("请重启电脑")
-                                                : qsTr("点击“安装音频”"))
+                                                : qsTr("点击“安装”"))
                                         : root.checkState("vb_cable_endpoints") === qsTr("正常")
                                             ? qsTr("已安装")
                                             : root.checkState("vb_cable_endpoints")
@@ -875,26 +1217,37 @@ Item {
                                     objectName: "installVirtualAudioButton"
                                     tokens: root.tokens
                                     flat: true
-                                    text: qsTr("安装音频")
+                                    text: root.virtualAudioInstalled
+                                        ? qsTr("卸载") : qsTr("安装")
                                     enabled: !root.configurationWriteBusy
                                         && !root.voiceHotkeyBusy
                                     onClicked: driverConfirmDialog.open()
                                     KeyNavigation.backtab: root.backTabTarget
+                                },
+                                CompactButton {
+                                    id: testVbCableChannelButton
+                                    objectName: "testVbCableChannelButton"
+                                    tokens: root.tokens
+                                    flat: true
+                                    text: qsTr("测试")
+                                    enabled: !DiagnosticsController.isRefreshing
+                                        && !root.configurationWriteBusy
+                                        && !root.voiceHotkeyBusy
+                                    onClicked: SettingsController.bridgeRunning
+                                        ? bridgeTestConfirmDialog.open()
+                                        : DiagnosticsController.testVbCableChannel()
+                                    KeyNavigation.tab: root.tabTarget
                                 }
                             ]
                             CompactButton {
-                                objectName: "applyVirtualAudioButton"
+                                objectName: "recoverBridgeButton"
                                 tokens: root.tokens
-                                text: qsTr("选推荐端点")
+                                text: qsTr("启动服务")
                                 highlighted: true
-                                visible: SettingsController.recommendedEndpointIndex >= 0
-                                    && SettingsController.selectedEndpointIndex
-                                        !== SettingsController.recommendedEndpointIndex
+                                visible: DiagnosticsController.vbCableBridgeRecoveryNeeded
                                 enabled: !root.configurationWriteBusy
                                     && !root.voiceHotkeyBusy
-                                onClicked: SettingsController.selectAndPersistOutputEndpointIndex(
-                                    SettingsController.recommendedEndpointIndex
-                                )
+                                onClicked: SettingsController.startBridge()
                             }
                         }
 
@@ -933,7 +1286,6 @@ Item {
                             actionColumnWidth: root.settingsActionColumnWidth
                             titleText: qsTr("麦克风权限")
                             descriptionText: qsTr("允许语音程序访问麦克风")
-                            showDivider: false
 
                             CompactButton {
                                 objectName: "openMicrophonePrivacyButton"
@@ -1104,68 +1456,41 @@ Item {
                 }
             }
 
+            // 外部语音工具独占一整行：Vokie 插件连上后会把它的语音模式写进上面的语音键。
             SectionFrame {
+                objectName: "externalAppsSection"
+                tokens: root.tokens
                 Layout.fillWidth: true
                 Layout.topMargin: 16
-                objectName: "voiceTestSection"
-                tokens: root.tokens
-                horizontalPadding: 16
-                titleText: qsTr("测试验证")
-                titleObjectName: "voiceTestSectionTitle"
+                titleText: qsTr("外部应用程序支持")
+                titleObjectName: "externalAppsSectionTitle"
 
                 InlineSettingsRow {
-                    objectName: "soundChannelTestRow"
+                    objectName: "externalAppsRow"
                     tokens: root.tokens
-                    editorColumnVisible: DiagnosticsController.vbCableBridgeRecoveryNeeded
+                    titleText: qsTr("语音插件")
+                    descriptionText: SettingsController.voicePluginConnected
+                        ? qsTr("已接收 %1 个语音模式")
+                            .arg(SettingsController.voicePluginModeCount)
+                        : String(SettingsController.voicePluginState) === "listening"
+                            ? qsTr("等待 MoteDeck2Vokie 插件连接")
+                            : qsTr("接入第三方语音工具")
+                    stateText: SettingsController.voicePluginConnected
+                        ? qsTr("已连接")
+                        : String(SettingsController.voicePluginState) === "listening"
+                            ? qsTr("等待连接") : qsTr("未连接")
+                    stateColor: SettingsController.voicePluginConnected
+                        ? tokens.successColor
+                        : String(SettingsController.voicePluginState) === "listening"
+                            ? tokens.voiceAccent : tokens.textSecondary
                     showDivider: false
-                    titleText: qsTr("虚拟声卡")
-                    descriptionText: DiagnosticsController.vbCableTestMessage.length > 0
-                        ? DiagnosticsController.vbCableTestMessage
-                        : qsTr("只检查声音通路")
-                    descriptionObjectName: "soundChannelTestDescription"
-                    stateText: DiagnosticsController.vbCableBridgeRecoveryNeeded
-                        ? qsTr("点击“启动服务”")
-                        : DiagnosticsController.vbCableTestRunning
-                        ? qsTr("测试中")
-                        : DiagnosticsController.vbCableTestStatus === "pass"
-                            ? qsTr("正常")
-                            : DiagnosticsController.vbCableTestStatus === "fail"
-                                ? qsTr("检查未通过") : qsTr("就绪")
-                    stateColor: DiagnosticsController.vbCableBridgeRecoveryNeeded
-                        ? tokens.errorColor
-                        : DiagnosticsController.vbCableTestRunning
-                        ? tokens.voiceAccent
-                        : DiagnosticsController.vbCableTestStatus === "pass"
-                            ? tokens.successColor
-                            : DiagnosticsController.vbCableTestStatus === "fail"
-                                ? tokens.errorColor : tokens.textSecondary
 
-                    editorData: [
-                        CompactButton {
-                            objectName: "recoverBridgeButton"
-                            visible: DiagnosticsController.vbCableBridgeRecoveryNeeded
-                            tokens: root.tokens
-                            text: qsTr("启动服务")
-                            highlighted: true
-                            enabled: !root.configurationWriteBusy
-                                && !root.voiceHotkeyBusy
-                            onClicked: SettingsController.startBridge()
-                        }
-                    ]
                     CompactButton {
-                        id: testVbCableChannelButton
-                        objectName: "testVbCableChannelButton"
+                        objectName: "manageExternalAppsButton"
                         tokens: root.tokens
-                        Layout.fillWidth: true
-                        text: DiagnosticsController.vbCableTestRunning
-                            ? qsTr("检查中…") : qsTr("检查虚拟声卡")
-                        enabled: !DiagnosticsController.isRefreshing
-                            && !root.configurationWriteBusy
-                            && !root.voiceHotkeyBusy
-                        onClicked: SettingsController.bridgeRunning
-                            ? bridgeTestConfirmDialog.open()
-                            : DiagnosticsController.testVbCableChannel()
-                        KeyNavigation.tab: root.tabTarget
+                        text: qsTr("管理插件")
+                        enabled: !root.configurationWriteBusy
+                        onClicked: externalAppsDialog.open()
                     }
                 }
             }

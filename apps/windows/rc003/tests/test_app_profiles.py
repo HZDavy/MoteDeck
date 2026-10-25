@@ -84,11 +84,13 @@ class AppProfileStoreTests(unittest.TestCase):
         for entry in document["profiles"]:
             entry.pop("voice_input_source")
             entry.pop("voice_local_input_device")
+            entry.pop("voice_keys")
         self.store.path.write_text(json.dumps(document), encoding="utf-8")
 
         entry = self.store.load()[0]
         self.assertEqual((entry["id"], entry["voice_input_source"],
                           entry["voice_local_input_device"]), (identity, "remote", ""))
+        self.assertEqual(entry["voice_keys"], [])
         upgraded = json.loads(self.store.path.read_text(encoding="utf-8"))
         self.assertEqual(upgraded["schema_version"], app_profiles.SCHEMA_VERSION)
         self.assertEqual(set(upgraded["profiles"][0]), set(app_profiles.ENTRY_FIELDS))
@@ -330,10 +332,11 @@ class AppProfileStoreTests(unittest.TestCase):
         value = json.loads(export.read_text(encoding="utf-8"))
         self.assertEqual(set(value), {"format", "profile", "name", "mapping",
                                      "schema_version", "voice_input_source",
-                                     "voice_local_input_device"})
+                                     "voice_local_input_device", "voice_keys"})
         self.assertEqual(value["schema_version"], app_profiles.EXPORT_SCHEMA_VERSION)
         self.assertEqual((value["voice_input_source"], value["voice_local_input_device"]),
                          ("remote", ""))
+        self.assertEqual(value["voice_keys"], [])
         self.assertNotIn("id", value)
         self.assertNotIn("physical_bindings", value["mapping"])
 
@@ -485,15 +488,19 @@ class AppProfileStoreTests(unittest.TestCase):
         self.store.export_bundle(self.profile, self.mapping, [], export)
         self.assertEqual(json.loads(export.read_text(encoding="utf-8"))["apps"], [])
 
-    def test_library_export_carries_the_global_row_and_every_saved_profile(self):
+    def test_library_export_carries_only_whole_machine_profiles(self):
         first = self.create("本机麦", voice_input_source="local",
-                            voice_local_input_device="USB 麦克风")
-        second = self.store.create("浏览器", self.sparse(), scope="app",
-                                   process="chrome.exe")
+                            voice_local_input_device="USB 麦克风",
+                            voice_keys=[{"id": 1, "name": "麦克风键", "hotkey": "",
+                                         "source": "local", "device": "USB 麦克风",
+                                         "enabled": True, "plugin": ""}])
+        second = self.create("备用全局")
+        self.store.create("浏览器", self.sparse(), scope="app", process="chrome.exe")
         export = Path(self.tmp.name) / "library.json"
         count = self.store.export_library(
             export, self.profile, self.mapping,
             voice_input_source="remote", voice_local_input_device="USB 麦克风")
+        # 软件级配置由按键页单独导入导出，不进「配置档案」的整体备份。
         self.assertEqual(count, 2)
         document = json.loads(export.read_text(encoding="utf-8"))
         self.assertEqual(document["format"], app_profiles.LIBRARY_FORMAT)
@@ -504,6 +511,9 @@ class AppProfileStoreTests(unittest.TestCase):
             [(entry["voice_input_source"], entry["voice_local_input_device"])
              for entry in document["profiles"]],
             [("local", "USB 麦克风"), ("remote", "")])
+        self.assertEqual(document["profiles"][0]["voice_keys"][0]["name"], "麦克风键")
+        self.assertEqual(document["profiles"][1]["voice_keys"], [])
+        self.assertEqual(document["global"]["voice_keys"], [])
         self.assertEqual(document["global"]["mapping"]["bindings"]["ok"],
                          self.mapping["bindings"]["ok"])
         # 模式1 drops the device it was handed; the live row stays consistent.
@@ -590,6 +600,20 @@ class AppProfileStoreTests(unittest.TestCase):
         self.assertEqual(app_profiles.voice_conflicts(clean, "remote"), [])
         self.assertEqual(app_profiles.voice_conflict_message([]), "")
         self.assertIn("麦克风键", app_profiles.voice_conflict_message(["麦克风键"]))
+
+    def test_voice_conflicts_exempt_plugin_owned_voice_keys(self):
+        keys = [{"id": 1, "name": "麦克风键", "hotkey": "", "source": "remote",
+                 "device": "", "enabled": True, "plugin": ""},
+                {"id": 2, "name": "Vokie", "hotkey": "", "source": "remote",
+                 "device": "", "enabled": True, "plugin": "vokie"}]
+        # The plugin records its own audio, so 模式1 neither restricts the button
+        # nor limits it to 语音1.
+        second_slot = self.sparse(button="mic", action={"kind": "voice_hold_2", "keys": []})
+        self.assertEqual(app_profiles.plugin_slot_ids(keys), {2})
+        self.assertEqual(app_profiles.voice_conflicts(
+            second_slot, "remote", plugin_slots=app_profiles.plugin_slot_ids(keys)), [])
+        self.assertEqual(app_profiles.voice_conflicts(
+            second_slot, "remote", plugin_slots={1}), ["麦克风键"])
 
     def test_view_exposes_the_live_tag_and_the_conflict_warning(self):
         identity = self.store.create(

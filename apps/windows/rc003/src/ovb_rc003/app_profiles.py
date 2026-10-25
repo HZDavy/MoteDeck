@@ -1,6 +1,6 @@
 """Application profiles: a global layout plus per-process overrides.
 
-This module owns ``app_profiles.json`` (schema 5) under ``config_root``. It
+This module owns ``app_profiles.json`` (schema 6) under ``config_root``. It
 replaces the older ``mapping_presets.json`` library: on first read the legacy
 file, when it exists, is converted in memory and written to the new location.
 The legacy file itself is never modified or deleted, so a downgrade keeps
@@ -46,7 +46,8 @@ BUNDLE_APP_FIELDS = _BUNDLE_APP_V1_FIELDS | {"voice_input_source", "voice_local_
 # saved global-scope profiles (the copies), which never appear as application
 # entries, so the whole library can be kept as one backup file.
 LIBRARY_FORMAT = "RemoteMic.profile-library"
-LIBRARY_SCHEMA_VERSION = 1
+# Version 2 also carries each profile's complete voice-key list (order included).
+LIBRARY_SCHEMA_VERSION = 2
 MAX_BYTES = mapping_presets.MAX_BYTES
 MAX_PROFILES = mapping_presets.MAX_PRESETS
 MAPPING_FIELDS = mapping_presets.MAPPING_FIELDS
@@ -58,15 +59,22 @@ DEFAULT_SCOPE = mapping_presets.DEFAULT_SCOPE
 GLOBAL_ID = mapping_presets.AUTO_ID
 GLOBAL_NAME = mapping_presets.AUTO_NAME
 VOICE_FIELDS = ("voice_input_source", "voice_local_input_device")
-ENTRY_FIELDS = ("id", "name", "scope", "process", "hotkey", "mapping", *VOICE_FIELDS)
-SCHEMA_VERSION = 5
-PREVIOUS_SCHEMA_VERSIONS = (4,)
+# 一条语音键的完整快照：列表顺序就是用户排好的顺序，关闭的语音键也保留。
+VOICE_KEY_FIELDS = ("id", "name", "hotkey", "source", "device", "enabled", "plugin")
+VOICE_KEYS_FIELD = "voice_keys"
+ENTRY_FIELDS = ("id", "name", "scope", "process", "hotkey", "mapping",
+                *VOICE_FIELDS, VOICE_KEYS_FIELD)
+SCHEMA_VERSION = 6
+PREVIOUS_SCHEMA_VERSIONS = (4, 5)
 LEGACY_SCHEMA_VERSIONS = (1, 2, 3)
-# One portable single-profile export. Version 2 carries the voice mode too.
-EXPORT_SCHEMA_VERSION = 2
+# One portable single-profile export. Version 2 carries the voice mode, version
+# 3 adds the complete voice-key list.
+EXPORT_SCHEMA_VERSION = 3
 _EXPORT_V1_FIELDS = {"format", "schema_version", "name", "profile", "mapping"}
-EXPORT_FIELDS = _EXPORT_V1_FIELDS | set(VOICE_FIELDS)
-_V4_ENTRY_FIELDS = set(ENTRY_FIELDS) - set(VOICE_FIELDS)
+_EXPORT_V2_FIELDS = _EXPORT_V1_FIELDS | set(VOICE_FIELDS)
+EXPORT_FIELDS = _EXPORT_V2_FIELDS | {VOICE_KEYS_FIELD}
+_V4_ENTRY_FIELDS = set(ENTRY_FIELDS) - set(VOICE_FIELDS) - {VOICE_KEYS_FIELD}
+_V5_ENTRY_FIELDS = set(ENTRY_FIELDS) - {VOICE_KEYS_FIELD}
 VOICE_MODE_LABELS = {
     config.VOICE_INPUT_SOURCE_REMOTE: "模式1",
     config.VOICE_INPUT_SOURCE_LOCAL: "模式2",
@@ -149,13 +157,51 @@ def _voice_actions(mapping: dict) -> list[tuple[str, int]]:
     return found
 
 
+def validate_voice_keys(value: object) -> list[dict]:
+    """Validate one profile's complete voice-key snapshot, order included."""
+    if not isinstance(value, list) or len(value) > key_mapping.MAX_VOICE_SLOTS:
+        raise ValueError("配置里的语音键列表格式无效。")
+    result, ids = [], set()
+    for raw in value:
+        if not isinstance(raw, dict) or set(raw) != set(VOICE_KEY_FIELDS):
+            raise ValueError("配置里的语音键格式无效。")
+        try:
+            slot = int(raw["id"])
+        except (TypeError, ValueError):
+            raise ValueError("配置里的语音键编号无效。") from None
+        if slot < 1 or slot > key_mapping.MAX_VOICE_SLOTS or slot in ids:
+            raise ValueError("配置里的语音键编号无效。")
+        ids.add(slot)
+        name, hotkey, plugin = raw["name"], raw["hotkey"], raw["plugin"]
+        if (not isinstance(name, str) or len(name) > 64
+                or not isinstance(hotkey, str) or len(hotkey) > 128
+                or not isinstance(plugin, str) or len(plugin) > 64
+                or not isinstance(raw["enabled"], bool)):
+            raise ValueError("配置里的语音键内容无效。")
+        source, device = validate_voice(raw["source"], raw["device"])
+        result.append({"id": slot, "name": name.strip(),
+                       "hotkey": hotkey.strip().lower(), "source": source,
+                       "device": device, "enabled": raw["enabled"],
+                       "plugin": plugin.strip().lower()})
+    return result
+
+
+def plugin_slot_ids(voice_keys: "list[dict] | None") -> set[int]:
+    """Return the slots an external plugin owns, so 模式1 does not flag them."""
+    return {int(entry["id"]) for entry in (voice_keys or [])
+            if str(entry.get("plugin") or "").strip()}
+
+
 def voice_conflicts(mapping: dict, source: object = config.VOICE_INPUT_SOURCE_REMOTE,
-                    profile: str = device_catalog.RC003_ID) -> list[str]:
+                    profile: str = device_catalog.RC003_ID,
+                    plugin_slots: set[int] = frozenset()) -> list[str]:
     """Return the buttons 模式1 cannot honour, in remote-layout order.
 
     模式1 can only record while the physical microphone key is held and only
     drives 语音1, so a voice action on any other button (or on 语音2) would
     silently never fire. The list feeds the "change these keys first" warning.
+    Plugin-owned slots are exempt: the plugin records its own audio, so neither
+    the microphone key nor 语音1 applies to it.
     """
     if validate_voice(source)[0] != config.VOICE_INPUT_SOURCE_REMOTE:
         return []
@@ -163,6 +209,8 @@ def voice_conflicts(mapping: dict, source: object = config.VOICE_INPUT_SOURCE_RE
         raise ValueError("此配置的遥控器型号不受支持。")
     hits: set[str] = set()
     for button, slot in _voice_actions(mapping):
+        if slot in plugin_slots:
+            continue
         if button != "mic" or slot != 1:
             hits.add(button)
     names = remote_layout.display_names(profile)
@@ -295,13 +343,15 @@ def validate_export(value: dict) -> dict:
     Version 1 files predate the voice mode and import as 模式1.
     """
     if not isinstance(value, dict):
-        raise ValueError("请选择本软件导出的按键配置文件（版本 1 或 2）。")
+        raise ValueError("请选择本软件导出的按键配置文件（版本 1、2 或 3）。")
     version = value.get("schema_version")
-    fields = set(value)
     if (value.get("format") != FORMAT or type(version) is not int
-            or version not in (1, EXPORT_SCHEMA_VERSION)
-            or fields != (_EXPORT_V1_FIELDS if version == 1 else EXPORT_FIELDS)):
-        raise ValueError("请选择本软件导出的按键配置文件（版本 1 或 2）。")
+            or version not in (1, 2, EXPORT_SCHEMA_VERSION)):
+        raise ValueError("请选择本软件导出的按键配置文件（版本 1、2 或 3）。")
+    expected = {1: _EXPORT_V1_FIELDS, 2: _EXPORT_V2_FIELDS,
+                EXPORT_SCHEMA_VERSION: EXPORT_FIELDS}[version]
+    if set(value) != expected:
+        raise ValueError("请选择本软件导出的按键配置文件（版本 1、2 或 3）。")
     if version == 1:
         source, device = config.VOICE_INPUT_SOURCE_REMOTE, ""
     else:
@@ -310,7 +360,9 @@ def validate_export(value: dict) -> dict:
     return {"format": FORMAT, "schema_version": EXPORT_SCHEMA_VERSION,
             "name": _validate_name(value["name"]), "profile": value["profile"],
             "mapping": validate_mapping(value["mapping"], value["profile"], partial=True),
-            "voice_input_source": source, "voice_local_input_device": device}
+            "voice_input_source": source, "voice_local_input_device": device,
+            "voice_keys": (validate_voice_keys(value[VOICE_KEYS_FIELD])
+                           if version == EXPORT_SCHEMA_VERSION else [])}
 
 
 def read_export(path: Path, profile: str = device_catalog.RC003_ID) -> dict:
@@ -407,7 +459,8 @@ def read_bundle(path: Path, profile: str) -> dict:
 
 def build_library(profile: str, global_mapping: dict, entries: list[dict], *,
                   voice_input_source: str = config.VOICE_INPUT_SOURCE_REMOTE,
-                  voice_local_input_device: str = "") -> dict:
+                  voice_local_input_device: str = "",
+                  voice_keys: "list[dict] | None" = None) -> dict:
     """Build the "导出全部" document: the live global row plus every saved profile."""
     if profile not in PROFILES:
         raise ValueError("此配置的遥控器型号不受支持。")
@@ -430,6 +483,7 @@ def build_library(profile: str, global_mapping: dict, entries: list[dict], *,
                 entry["mapping"], profile, partial=scope == "app"),
             "voice_input_source": entry_source,
             "voice_local_input_device": entry_device,
+            "voice_keys": validate_voice_keys(entry.get(VOICE_KEYS_FIELD, [])),
         })
     return {
         "format": LIBRARY_FORMAT,
@@ -439,6 +493,7 @@ def build_library(profile: str, global_mapping: dict, entries: list[dict], *,
             "mapping": validate_mapping(global_mapping, profile),
             "voice_input_source": source,
             "voice_local_input_device": device,
+            "voice_keys": validate_voice_keys(voice_keys or []),
         },
         "profiles": profiles,
     }
@@ -462,7 +517,8 @@ class AppProfileStore:
                      "process": entry["process"], "hotkey": entry["hotkey"],
                      "mapping": entry["mapping"],
                      "voice_input_source": config.VOICE_INPUT_SOURCE_REMOTE,
-                     "voice_local_input_device": ""} for entry in legacy["presets"]]
+                     "voice_local_input_device": "",
+                     VOICE_KEYS_FIELD: []} for entry in legacy["presets"]]
         applied = legacy["applied_ids"].get(device_catalog.RC003_ID, GLOBAL_ID)
         return {"schema_version": SCHEMA_VERSION, "profiles": profiles, "applied": applied}
 
@@ -491,7 +547,8 @@ class AppProfileStore:
                 or not isinstance(value["profiles"], list)
                 or len(value["profiles"]) > MAX_PROFILES):
             raise ValueError("保存的应用配置库损坏或版本不受支持；原文件已保留。")
-        entry_fields = set(ENTRY_FIELDS) if version == SCHEMA_VERSION else _V4_ENTRY_FIELDS
+        entry_fields = {SCHEMA_VERSION: set(ENTRY_FIELDS), 5: _V5_ENTRY_FIELDS,
+                        4: _V4_ENTRY_FIELDS}[version]
         result, ids, names, processes, hotkeys = [], set(), set(), set(), set()
         for entry in value["profiles"]:
             if not isinstance(entry, dict) or set(entry) != entry_fields:
@@ -504,8 +561,14 @@ class AppProfileStore:
             if version == SCHEMA_VERSION:
                 source, device = validate_voice(entry["voice_input_source"],
                                                 entry["voice_local_input_device"])
+                voice_keys = validate_voice_keys(entry[VOICE_KEYS_FIELD])
+            elif version == 5:
+                source, device = validate_voice(entry["voice_input_source"],
+                                                entry["voice_local_input_device"])
+                voice_keys = []
             else:
                 source, device = config.VOICE_INPUT_SOURCE_REMOTE, ""
+                voice_keys = []
             name_key = name.casefold()
             if identity in ids or name_key in names:
                 raise ValueError("保存的配置含重复名称或标识；原文件已保留。")
@@ -522,7 +585,8 @@ class AppProfileStore:
             result.append({"id": identity, "name": name, "scope": scope, "process": process,
                            "hotkey": hotkey,
                            "mapping": validate_mapping(entry["mapping"], partial=scope == "app"),
-                           "voice_input_source": source, "voice_local_input_device": device})
+                           "voice_input_source": source, "voice_local_input_device": device,
+                           VOICE_KEYS_FIELD: voice_keys})
         applied = value["applied"]
         if not isinstance(applied, str) or (applied != GLOBAL_ID and applied not in ids):
             raise ValueError("配置库的应用标记无效；原文件已保留。")
@@ -536,17 +600,20 @@ class AppProfileStore:
 
     def view(self, bindings: dict, profile: str = device_catalog.RC003_ID, *,
              voice_input_source: str = config.VOICE_INPUT_SOURCE_REMOTE,
-             voice_local_input_device: str = "") -> list[dict]:
+             voice_local_input_device: str = "",
+             voice_keys: "list[dict] | None" = None) -> list[dict]:
         """Read list metadata even when the active mapping needs correction.
 
         The global row never owns a second saved mapping: it is the user's live
         ``key_bindings.json`` rendered as a row. An unreadable snapshot is
         display-only; copying/exporting must validate it separately. The live
-        voice mode is passed in because it lives in ``config.json``, not here.
+        voice mode and voice-key list are passed in because they live in
+        ``config.json``, not here.
         """
         if profile not in PROFILES:
             raise ValueError("此配置的遥控器型号不受支持。")
         live_source, live_device = validate_voice(voice_input_source, voice_local_input_device)
+        live_keys = validate_voice_keys(voice_keys or [])
         document = self._load_document()
         try:
             current = snapshot(bindings, profile)
@@ -569,7 +636,8 @@ class AppProfileStore:
         rows = [{"id": GLOBAL_ID, "name": GLOBAL_NAME, "scope": DEFAULT_SCOPE, "process": "",
                  "hotkey": "", "mapping": current,
                  "voice_input_source": live_source,
-                 "voice_local_input_device": live_device}, *entries]
+                 "voice_local_input_device": live_device,
+                 VOICE_KEYS_FIELD: live_keys}, *entries]
         result = []
         for entry in rows:
             conflicts: list[str] = []
@@ -582,7 +650,10 @@ class AppProfileStore:
                         effective = entry["mapping"]
                 if isinstance(effective, dict):
                     try:
-                        conflicts = voice_conflicts(effective, entry["voice_input_source"], profile)
+                        conflicts = voice_conflicts(
+                            effective, entry["voice_input_source"], profile,
+                            plugin_slots=plugin_slot_ids(
+                                entry.get(VOICE_KEYS_FIELD) or live_keys))
                     except ValueError:
                         conflicts = []
             result.append({**entry,
@@ -643,7 +714,8 @@ class AppProfileStore:
                scope: str = DEFAULT_SCOPE, process: str = "",
                hotkey: str = "",
                voice_input_source: str = config.VOICE_INPUT_SOURCE_REMOTE,
-               voice_local_input_device: str = "") -> str:
+               voice_local_input_device: str = "",
+               voice_keys: "list[dict] | None" = None) -> str:
         document = self._load_document()
         entries = document["profiles"]
         name = _validate_name(name)
@@ -666,7 +738,8 @@ class AppProfileStore:
         entries.append({"id": identity, "name": name, "scope": scope, "process": process,
                         "hotkey": hotkey,
                         "mapping": validate_mapping(mapping, partial=scope == "app"),
-                        "voice_input_source": source, "voice_local_input_device": device})
+                        "voice_input_source": source, "voice_local_input_device": device,
+                        VOICE_KEYS_FIELD: validate_voice_keys(voice_keys or [])})
         self._save(document)
         return identity
 
@@ -690,7 +763,8 @@ class AppProfileStore:
             f"{entry['name']} 副本")[:64]
         return self.create(label, mapping, unique=True, scope="global",
                            voice_input_source=entry["voice_input_source"],
-                           voice_local_input_device=entry["voice_local_input_device"])
+                           voice_local_input_device=entry["voice_local_input_device"],
+                           voice_keys=entry.get(VOICE_KEYS_FIELD))
 
     def update_voice(self, identity: str, source: str, device: str = "") -> None:
         """Replace one saved profile's voice mode without touching its mapping."""
@@ -702,13 +776,15 @@ class AppProfileStore:
 
     def update_content(self, identity: str, mapping: dict, *,
                        voice_input_source: str = config.VOICE_INPUT_SOURCE_REMOTE,
-                       voice_local_input_device: str = "") -> None:
+                       voice_local_input_device: str = "",
+                       voice_keys: "list[dict] | None" = None) -> None:
         """Overwrite one saved profile with the current mapping and voice mode."""
         document = self._load_document()
         entry = self._find(document["profiles"], identity)
         entry["mapping"] = validate_mapping(mapping, partial=entry["scope"] == "app")
         entry["voice_input_source"], entry["voice_local_input_device"] = validate_voice(
             voice_input_source, voice_local_input_device)
+        entry[VOICE_KEYS_FIELD] = validate_voice_keys(voice_keys or [])
         self._save(document)
 
     @staticmethod
@@ -827,7 +903,9 @@ class AppProfileStore:
                             "hotkey": hotkey,
                             "mapping": validate_mapping(app["mapping"], partial=True),
                             "voice_input_source": source,
-                            "voice_local_input_device": device})
+                            "voice_local_input_device": device,
+                            VOICE_KEYS_FIELD: validate_voice_keys(
+                                app.get(VOICE_KEYS_FIELD) or [])})
         document["profiles"] = [*kept, *created]
         if document["applied"] in replaced:
             document["applied"] = GLOBAL_ID
@@ -842,7 +920,8 @@ class AppProfileStore:
         return self.create(document["name"], document["mapping"], unique=True,
                            scope=scope, process=process, hotkey=hotkey,
                            voice_input_source=document["voice_input_source"],
-                           voice_local_input_device=document["voice_local_input_device"])
+                           voice_local_input_device=document["voice_local_input_device"],
+                           voice_keys=document[VOICE_KEYS_FIELD])
 
     def export_file(self, identity: str, path: Path,
                     profile: str = device_catalog.RC003_ID) -> None:
@@ -860,6 +939,7 @@ class AppProfileStore:
             "voice_input_source": entry.get("voice_input_source",
                                             config.VOICE_INPUT_SOURCE_REMOTE),
             "voice_local_input_device": entry.get("voice_local_input_device", ""),
+            VOICE_KEYS_FIELD: entry.get(VOICE_KEYS_FIELD, []),
         })
         config._save_json_atomic(destination, document)
 
@@ -877,16 +957,24 @@ class AppProfileStore:
 
     def export_library(self, path: Path, profile: str, global_mapping: dict,
                        voice_input_source: str = config.VOICE_INPUT_SOURCE_REMOTE,
-                       voice_local_input_device: str = "") -> int:
-        """Back up the global row and every saved profile; returns the count."""
+                       voice_local_input_device: str = "",
+                       voice_keys: "list[dict] | None" = None) -> int:
+        """Back up the global row and every global profile; returns the count.
+
+        Software-level profiles are excluded: 「配置档案」 only manages the
+        whole-machine setup, while per-application layouts are imported and
+        exported from the buttons page.
+        """
         destination = Path(path).resolve()
         if destination.is_relative_to(self.root.resolve()):
             raise ValueError("请导出到桌面等位置，不能覆盖软件的数据目录。")
-        entries = self._load_document()["profiles"]
+        entries = [entry for entry in self._load_document()["profiles"]
+                   if entry["scope"] != "app"]
         document = build_library(
             profile, global_mapping, entries,
             voice_input_source=voice_input_source,
-            voice_local_input_device=voice_local_input_device)
+            voice_local_input_device=voice_local_input_device,
+            voice_keys=voice_keys)
         config._save_json_atomic(destination, document)
         return len(document["profiles"])
 
@@ -896,9 +984,11 @@ __all__ = [
     "LIBRARY_FORMAT", "LIBRARY_SCHEMA_VERSION",
     "BUNDLE_SCHEMA_VERSION", "MAX_BYTES", "MAX_PROFILES", "MAPPING_FIELDS", "PROFILES",
     "SCOPES", "SCOPE_LABELS", "DEFAULT_SCOPE", "GLOBAL_ID", "GLOBAL_NAME", "ENTRY_FIELDS",
-    "VOICE_FIELDS", "SCHEMA_VERSION", "PREVIOUS_SCHEMA_VERSIONS", "LEGACY_SCHEMA_VERSIONS",
+    "VOICE_FIELDS", "VOICE_KEY_FIELDS", "VOICE_KEYS_FIELD", "SCHEMA_VERSION",
+    "PREVIOUS_SCHEMA_VERSIONS", "LEGACY_SCHEMA_VERSIONS",
     "EXPORT_SCHEMA_VERSION", "EXPORT_FIELDS", "VOICE_MODE_LABELS", "VOICE_DEVICE_MAX_LENGTH",
     "validate_mapping", "snapshot", "resolve_mapping", "apply_to", "validate_voice",
+    "validate_voice_keys", "plugin_slot_ids",
     "voice_mode_label", "mode_tag", "display_label", "voice_conflicts",
     "voice_conflict_message", "resolve_voice", "build_bundle", "validate_bundle",
     "read_bundle", "read_export", "validate_export", "build_library",

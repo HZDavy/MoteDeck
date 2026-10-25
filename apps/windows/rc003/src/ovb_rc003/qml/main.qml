@@ -1109,7 +1109,9 @@ ApplicationWindow {
                 // 全局反馈做成浮现的小胶囊，不占版面，也不再常驻：
                 // 只有刚产生反馈时弹一次，切走页面立即收起、切回来不再重弹，
                 // 宽度完全贴着文字走。
-                Rectangle {
+                // 放在 Overlay 里并给高 z：提示要压在页面遮罩和其它弹出窗口
+                // 之上，否则保存提示会被弹窗的灰色遮罩盖住。
+                Popup {
                     id: globalStatusBar
                     objectName: "globalStatusBar"
                     readonly property bool feedbackBelongsToCurrentPage:
@@ -1128,20 +1130,24 @@ ApplicationWindow {
                     readonly property bool hasKeyDetection:
                         tabBar.currentIndex === 1 && SettingsController.keyDetectionActive
                     property bool active: false
-                    z: 2
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    anchors.bottom: parent.bottom
+                    parent: Overlay.overlay
+                    z: 1000
+                    modal: false
+                    focus: false
+                    closePolicy: Popup.NoAutoClose
+                    padding: 0
+                    leftInset: 0
+                    rightInset: 0
+                    topInset: 0
+                    bottomInset: 0
                     // 与按键页底部那行工具按钮同一条水平中线：按钮行高 32、
                     // 卡在页面下边缘（下留白 24），中线即距内容区底部 40。
-                    anchors.bottomMargin: tokens.pageBottomPadding + 16 - height / 2
-                    width: Math.min(parent.width - 40, statusRow.implicitWidth + 22)
+                    x: Math.round(contentArea.mapToItem(null, contentArea.width / 2, 0).x
+                        - width / 2)
+                    y: Math.round(contentArea.mapToItem(null, 0, contentArea.height).y
+                        - tokens.pageBottomPadding - 16 - height / 2)
+                    width: Math.min(contentArea.width - 40, statusRow.implicitWidth + 22)
                     height: 26
-                    radius: height / 2
-                    visible: (active && hasStatus) || hasKeyDetection
-                    color: hasError ? tokens.accentSoft : tokens.surface
-                    border.width: 1
-                    border.color: hasError ? tokens.errorColor : tokens.line
-
                     function reveal() {
                         if (!hasStatus)
                             return
@@ -1153,6 +1159,15 @@ ApplicationWindow {
                         statusDismissTimer.stop()
                         active = false
                     }
+                    visible: (active && hasStatus) || hasKeyDetection
+                    // Popup 默认会再画一层带阴影的圆角底，叠在胶囊下面像个双气泡
+                    background: null
+                    contentItem: Rectangle {
+                        anchors.fill: parent
+                        radius: height / 2
+                        color: globalStatusBar.hasError ? tokens.accentSoft : tokens.surface
+                        border.width: 1
+                        border.color: globalStatusBar.hasError ? tokens.errorColor : tokens.line
 
                     // 反馈是“新发布”的才弹；只是切回页面不算新反馈
                     Connections {
@@ -1240,6 +1255,7 @@ ApplicationWindow {
                             text: qsTr("重试保存")
                             onClicked: SettingsController.retryMappingAutoSave()
                         }
+                    }
                     }
                 }
 

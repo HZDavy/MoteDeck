@@ -1025,5 +1025,219 @@ class EditableMicBindingTests(unittest.TestCase):
         )
 
 
+class VoiceKeyConfigEditingTests(unittest.TestCase):
+    """Voice keys must stay user-orderable and switchable, plugin rows included."""
+
+    def _config_with(self, entries):
+        config_data = config.default_config()
+        config_data["voice_key_configs"] = [dict(entry) for entry in entries]
+        return config_data
+
+    def _sample(self):
+        return self._config_with(
+            [
+                {"id": 1, "name": "第一", "hotkey": "ralt+n"},
+                {"id": 4, "name": "第二", "hotkey": "ralt+t"},
+                {"id": 7, "name": "插件项", "hotkey": "ralt+r", "plugin": "vokie"},
+            ]
+        )
+
+    def test_move_swaps_neighbours_without_renumbering(self):
+        moved = config.move_voice_key_config(self._sample(), 7, -1)
+
+        self.assertEqual(
+            [entry["id"] for entry in config.voice_key_configs(moved)],
+            [1, 7, 4],
+        )
+        self.assertEqual(config.voice_key_config(moved, 7)["hotkey"], "ralt+r")
+
+    def test_move_out_of_range_or_zero_is_a_no_op(self):
+        original = self._sample()
+
+        for slot, delta in ((1, -1), (7, 1), (4, 0), (99, 1)):
+            moved = config.move_voice_key_config(original, slot, delta)
+            self.assertEqual(
+                [entry["id"] for entry in config.voice_key_configs(moved)],
+                [1, 4, 7],
+            )
+
+    def test_enabled_flag_filters_runtime_slots(self):
+        original = self._sample()
+
+        disabled = config.set_voice_key_config_enabled(original, 4, False)
+
+        self.assertFalse(config.voice_key_enabled(disabled, 4))
+        self.assertEqual(
+            [entry["id"] for entry in config.enabled_voice_key_configs(disabled)],
+            [1, 7],
+        )
+        self.assertEqual(
+            [entry["id"] for entry in config.voice_key_configs(original)],
+            [1, 4, 7],
+        )
+
+    def test_plugin_hotkey_cannot_be_overwritten_but_rename_and_toggle_work(self):
+        original = self._sample()
+
+        written = config.update_voice_key_config(original, 7, hotkey="ralt+l")
+        renamed = config.update_voice_key_config(original, 7, name="闪记")
+        disabled = config.set_voice_key_config_enabled(original, 7, False)
+
+        self.assertEqual(config.voice_key_config(written, 7)["hotkey"], "ralt+r")
+        self.assertEqual(config.voice_key_config(renamed, 7)["name"], "闪记")
+        self.assertFalse(config.voice_key_config(disabled, 7)["enabled"])
+
+    def test_plugin_key_survives_delete_until_forced(self):
+        original = self._sample()
+
+        kept = config.remove_voice_key_config(original, 7)
+        forced = config.remove_voice_key_config(original, 7, force=True)
+
+        self.assertEqual(
+            [entry["id"] for entry in config.voice_key_configs(kept)],
+            [1, 4, 7],
+        )
+        self.assertEqual(
+            [entry["id"] for entry in config.voice_key_configs(forced)],
+            [1, 4],
+        )
+
+    def test_custom_key_is_deleted_without_force(self):
+        removed = config.remove_voice_key_config(self._sample(), 4)
+
+        self.assertEqual(
+            [entry["id"] for entry in config.voice_key_configs(removed)],
+            [1, 7],
+        )
+
+    def test_last_remaining_key_is_never_deleted(self):
+        single = self._config_with([{"id": 1, "name": "唯一", "hotkey": "ralt+n"}])
+
+        self.assertEqual(
+            [entry["id"] for entry in config.voice_key_configs(
+                config.remove_voice_key_config(single, 1)
+            )],
+            [1],
+        )
+
+
+class PluginVoiceKeySyncTests(unittest.TestCase):
+    """Connecting a plugin appends its rows; disconnecting releases its rows."""
+
+    MODES = [
+        {"name": "语音输入", "hotkey": "ralt"},
+        {"name": "闪记", "hotkey": "ralt+n"},
+        {"name": "空条目", "hotkey": ""},
+        {"name": "", "hotkey": ""},
+        {"name": "坏快捷键", "hotkey": "not-a-key"},
+    ]
+
+    def _custom(self):
+        config_data = config.default_config()
+        config_data["voice_key_configs"] = [
+            {"id": 2, "name": "自定义", "hotkey": "ctrl+alt+1"}
+        ]
+        return config_data
+
+    def test_apply_appends_plugin_rows_and_keeps_custom_keys(self):
+        applied = config.apply_plugin_voice_keys(
+            self._custom(), config.VOICE_KEY_PLUGIN_VOKIE, self.MODES
+        )
+
+        entries = config.voice_key_configs(applied)
+        self.assertEqual(
+            [entry["name"] for entry in entries],
+            ["自定义", "语音输入", "闪记", "空条目", "坏快捷键"],
+        )
+        self.assertEqual([entry["id"] for entry in entries], [2, 1, 3, 4, 5])
+        self.assertEqual(entries[0]["plugin"], "")
+        self.assertEqual(entries[0]["hotkey"], "ctrl+alt+1")
+        self.assertTrue(all(entry["plugin"] == "vokie" for entry in entries[1:]))
+        self.assertEqual(entries[1]["hotkey"], "ralt")
+        self.assertEqual(entries[2]["hotkey"], "ralt+n")
+        self.assertEqual(entries[3]["hotkey"], "")
+        # 名字可读、快捷键非法的插件项保留下来显示，但没有可注入的快捷键。
+        self.assertEqual(entries[4]["hotkey"], "")
+
+    def test_apply_keeps_the_id_and_switch_of_a_reconnecting_mode(self):
+        applied = config.apply_plugin_voice_keys(
+            self._custom(), config.VOICE_KEY_PLUGIN_VOKIE, self.MODES[:2]
+        )
+        first_ids = {
+            entry["name"]: entry["id"] for entry in config.voice_key_configs(applied)
+        }
+        applied = config.set_voice_key_config_enabled(
+            applied, first_ids["语音输入"], False
+        )
+
+        reapplied = config.apply_plugin_voice_keys(
+            applied,
+            config.VOICE_KEY_PLUGIN_VOKIE,
+            [self.MODES[1], self.MODES[0]],
+        )
+
+        entries = config.voice_key_configs(reapplied)
+        self.assertEqual([entry["name"] for entry in entries],
+                         ["自定义", "闪记", "语音输入"])
+        self.assertEqual(entries[1]["id"], first_ids["闪记"])
+        self.assertEqual(entries[2]["id"], first_ids["语音输入"])
+        self.assertFalse(entries[2]["enabled"])
+
+    def test_apply_without_usable_modes_is_a_no_op(self):
+        original = self._custom()
+
+        for modes in ([], [{"name": "", "hotkey": ""}], [None]):
+            applied = config.apply_plugin_voice_keys(
+                original, config.VOICE_KEY_PLUGIN_VOKIE, modes
+            )
+            self.assertEqual(
+                [entry["name"] for entry in config.voice_key_configs(applied)],
+                ["自定义"],
+            )
+
+    def test_apply_without_plugin_id_is_a_no_op(self):
+        applied = config.apply_plugin_voice_keys(self._custom(), "  ", self.MODES)
+
+        self.assertEqual(
+            [entry["name"] for entry in config.voice_key_configs(applied)],
+            ["自定义"],
+        )
+
+    def test_release_removes_only_that_plugins_rows(self):
+        applied = config.apply_plugin_voice_keys(
+            self._custom(), config.VOICE_KEY_PLUGIN_VOKIE, self.MODES[:2]
+        )
+        with_custom = config.add_voice_key_config(applied)
+        custom_id = config.voice_key_configs(with_custom)[-1]["id"]
+        with_custom = config.update_voice_key_config(
+            with_custom, custom_id, name="我的", hotkey="ctrl+alt+2"
+        )
+
+        released = config.release_plugin_voice_keys(with_custom, "other")
+        self.assertEqual(len(config.voice_key_configs(released)), 4)
+
+        released = config.release_plugin_voice_keys(
+            with_custom, config.VOICE_KEY_PLUGIN_VOKIE
+        )
+        entries = config.voice_key_configs(released)
+        self.assertEqual([entry["name"] for entry in entries], ["自定义", "我的"])
+        self.assertTrue(all(entry["plugin"] == "" for entry in entries))
+
+    def test_release_restores_a_default_row_when_nothing_is_left(self):
+        plugin_only = config.default_config()
+        plugin_only["voice_key_configs"] = [
+            {"id": 1, "name": "语音输入", "hotkey": "ralt", "plugin": "vokie"}
+        ]
+
+        released = config.release_plugin_voice_keys(
+            plugin_only, config.VOICE_KEY_PLUGIN_VOKIE
+        )
+
+        entries = config.voice_key_configs(released)
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["plugin"], "")
+        self.assertEqual(entries[0]["hotkey"], "")
+
+
 if __name__ == "__main__":
     unittest.main()

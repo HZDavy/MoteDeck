@@ -45,6 +45,7 @@ for Raw Input, HID tap, and the voice-key physicalizer.
 
 from __future__ import annotations
 
+import array
 import asyncio
 import json
 import logging
@@ -93,6 +94,7 @@ from . import (
     voice_interaction_diagnostics_windows,
     voice_mode_toast_windows,
     voice_playback_session_windows,
+    vokie_bridge,
     win32_input,
     win32_keys,
 )
@@ -190,6 +192,14 @@ _VOICE_HOLD_SAFETY_SECONDS = 120.0
 # 重复事件吞掉。
 _VOICE_SHORT_PRESS_DISMISS_DELAY_SECONDS = 0.09
 _VOICE_SHORT_PRESS_DISMISS_TAP_HOLD_SECONDS = 0.03
+# 插件语音只按"按住多久"分岔，不看音量：按下就开遥控器话筒并把 PCM 缓进
+# 一个约 0.8s 的环形缓冲，按满 ``_PLUGIN_VOICE_HOLD_SECONDS`` 才开插件会话
+# 并把缓冲一起补发（插件在 session_accepted 之前会自己暂存），所以开口的
+# 第一个字不会丢；不到阈值就松手等于短按，只切模式，Vokie 完全不被惊动。
+# 用能量判断"有没有说话"会把开话筒的爆音和按键噪声当成人声，连按切模式
+# 每次都误触发，所以这里只认时间。
+_PLUGIN_VOICE_PREROLL_SECONDS = 0.8
+_PLUGIN_VOICE_HOLD_SECONDS = 0.35
 _VOICE_KEY_PHYSICALIZER_RETRY_SECONDS = 1.0
 _VOICE_KEY_PHYSICALIZER_DEGRADED_RETRY_WINDOW_SECONDS = 10.0
 _VOICE_KEY_PHYSICALIZER_FAILED_RETRY_SECONDS = 30.0
@@ -424,6 +434,30 @@ class RC003App:
         self._voice_audio_stream_active = False
         self._voice_audio_stop_processed = False
         self._voice_pcm_forwarding_enabled = False
+        # 插件模式只按一下宿主的快捷键，不经过虚拟声卡，所以快捷键的按下
+        # 状态必须由自己记账：万一松开事件丢了，也要能补一条抬起，绝不能让
+        # 右 Alt 这类修饰键卡在系统里。
+        self._plugin_voice_injected_tokens: Optional[Tuple[str, ...]] = None
+        # 插件连接可用时，长按直接把遥控器的 PCM 通过回环桥送进 Vokie，
+        # 不再靠模拟热键让 Vokie 去开电脑自带麦克风。
+        self._plugin_voice_audio_active = False
+        # 当前这条设备音频流是插件会话在用的，停止时要认出来别当成本机流程。
+        self._plugin_voice_audio_stream = False
+        # 插件模式下短按只切换语音模式，不惊动 Vokie；快捷键要等按住超过
+        # 长按阈值才下发，所以按下先挂一个待定项。
+        self._plugin_voice_press_slot: Optional[int] = None
+        self._plugin_voice_press_timer: Optional[object] = None
+        self._plugin_voice_press_token: Optional[object] = None
+        # 按下插件键后先开遥控器话筒、把 PCM 缓起来；按住满阈值才真正通知
+        # Vokie，所以短按切模式不会把 Vokie 叫起来。
+        self._plugin_voice_capture_pending = False
+        self._plugin_voice_capture_slot: Optional[int] = None
+        self._plugin_voice_capture_frames: List[array.array] = []
+        self._plugin_voice_capture_samples = 0
+        # 本次按下是否真的开出过插件会话：开出过就不再把它当短按切模式。
+        self._plugin_voice_started_this_press = False
+        # 本次按下是否已经替插件发过 MIC_OPEN（收尾时据此决定要不要关）。
+        self._plugin_voice_mic_opened = False
         self._voice_raw_input_trigger_pending = False
         self._ble_session: Optional[ble_transport_winrt.RC003BleSession] = None
         self._hid_listener: Optional[raw_input_windows.RawInputButtonListener] = None
@@ -3073,9 +3107,12 @@ class RC003App:
         return self._voice_cycle_enabled() or self._voice_other_key_switch_enabled()
 
     def _voice_cycle_slots(self) -> List[int]:
-        """Every configured voice key id, in the order the user listed them."""
+        """Every enabled voice key id, in the order the user listed them."""
 
-        return [int(entry["id"]) for entry in config.voice_key_configs(self._config)]
+        return [
+            int(entry["id"])
+            for entry in config.enabled_voice_key_configs(self._config)
+        ]
 
     def _active_voice_slot(self) -> int:
         """The voice key a physical mic press currently drives.
@@ -3097,9 +3134,14 @@ class RC003App:
         current = self._voice_cycle_slot
         if current is not None and current in slots:
             return current
-        # 第一次短按之前先落在列表第一条上，切换从它开始往后走。
-        self._voice_cycle_slot = slots[0]
-        return slots[0]
+        # 循环起点是按键页给麦克风指定的那条语音键，之后按配置列表的顺序
+        # 往下走；列表重新排序后顺序自动跟着变。
+        mapped = key_mapping.voice_slot_for_action(
+            self._primary_button_action("mic")
+        )
+        start = mapped if mapped in slots else slots[0]
+        self._voice_cycle_slot = start
+        return start
 
     def _advance_voice_cycle_slot_locked(self) -> int:
         """Move to the next configured voice key and return it."""
@@ -3125,6 +3167,327 @@ class RC003App:
             config.voice_input_source(self._config, slot)
             == config.VOICE_INPUT_SOURCE_LOCAL
         )
+
+    def _voice_slot_tokens(self, slot: Optional[int]) -> Optional[Tuple[str, ...]]:
+        """The key tokens a voice slot replays, or None when it is unset."""
+
+        if slot is None:
+            return None
+        text = self._voice_hotkey_text_for_slot(int(slot))
+        if not text:
+            return None
+        try:
+            spec = hotkey.HotkeySpec.parse(text)
+        except hotkey.HotkeyParseError:
+            return None
+        return (*spec.modifiers, spec.key)
+
+    def _force_release_plugin_voice_tokens_locked(self, reason: str) -> None:
+        """Send the missing key-up for a plugin voice shortcut.
+
+        The plugin path never opens the virtual audio device, so there is no
+        audio-stop event that could complete the press. Everything here is
+        best effort: a stray key-up is harmless, a stuck right Alt is not.
+        """
+
+        tokens = self._plugin_voice_injected_tokens
+        self._cancel_plugin_voice_hold_pending_locked()
+        self._end_plugin_voice_audio_locked(reason)
+        self._cancel_plugin_voice_capture_locked(reason)
+        if not tokens:
+            return
+        self._plugin_voice_injected_tokens = None
+        try:
+            win32_input.send_voice_key_combo_up(tokens)
+            self._logger.info("plugin voice key force released on %s", reason)
+        except BaseException as exc:  # noqa: BLE001 - never trap input
+            self._logger.warning(
+                "plugin voice key force release failed on %s: error_type=%s",
+                reason,
+                type(exc).__name__,
+            )
+
+    def _cancel_plugin_voice_hold_pending_locked(self) -> None:
+        """Drop a plugin press that has not reached the long-press threshold."""
+
+        timer = self._plugin_voice_press_timer
+        self._plugin_voice_press_timer = None
+        self._plugin_voice_press_token = None
+        self._plugin_voice_press_slot = None
+        if timer is not None:
+            try:
+                timer.stop()
+            except BaseException:  # noqa: BLE001 - timer teardown is cosmetic
+                pass
+
+    def _schedule_plugin_voice_hold_locked(self, voice_slot: int) -> bool:
+        """按满长按阈值就开插件会话；短按只切模式。
+
+        按下先开话筒、把 PCM 缓起来（见
+        ``_arm_plugin_voice_capture_locked``），到点才通知 Vokie，并把缓冲
+        一起补发，所以开口第一个字不会丢。没到点就松手走短按，Vokie 完全
+        不被惊动。
+        """
+
+        self._cancel_plugin_voice_hold_pending_locked()
+        token = object()
+        self._plugin_voice_press_token = token
+        self._plugin_voice_press_slot = voice_slot
+        delay_seconds = _PLUGIN_VOICE_HOLD_SECONDS
+        try:
+            timer = threading.Timer(
+                delay_seconds,
+                lambda pending=token: self._plugin_voice_hold_elapsed(pending),
+            )
+            timer.daemon = True
+            self._plugin_voice_press_timer = timer
+            timer.start()
+        except BaseException as exc:  # noqa: BLE001
+            self._cancel_plugin_voice_hold_pending_locked()
+            self._logger.warning(
+                "plugin voice hold timer unavailable: error_type=%s",
+                type(exc).__name__,
+            )
+            return False
+        self._logger.info(
+            "plugin voice press armed: slot=%s hold_s=%s",
+            voice_slot,
+            delay_seconds,
+        )
+        return True
+
+    def _arm_plugin_voice_capture_locked(self, slot: int) -> bool:
+        """按下插件键就开遥控器话筒，把 PCM 先缓起来。"""
+
+        self._reset_plugin_voice_capture_locked()
+        self._plugin_voice_mic_opened = False
+        bridge = vokie_bridge.active_bridge()
+        if bridge is None or not bridge.connected():
+            return False
+        session = self._ble_session
+        if session is None:
+            return False
+        self._plugin_voice_capture_pending = True
+        self._plugin_voice_capture_slot = int(slot)
+        try:
+            session.send_mic_open_threadsafe()
+        except BaseException as exc:  # noqa: BLE001 - never trap input
+            self._reset_plugin_voice_capture_locked()
+            self._logger.warning(
+                "plugin voice capture MIC_OPEN failed: error_type=%s",
+                type(exc).__name__,
+            )
+            return False
+        self._plugin_voice_mic_opened = True
+        self._logger.info("plugin voice capture armed: slot=%s", slot)
+        return True
+
+    def _reset_plugin_voice_capture_locked(self) -> None:
+        """清空预录缓冲与待定状态，不碰话筒与插件会话。"""
+
+        self._plugin_voice_capture_pending = False
+        self._plugin_voice_capture_slot = None
+        self._plugin_voice_capture_frames = []
+        self._plugin_voice_capture_samples = 0
+
+    def _cancel_plugin_voice_capture_locked(
+        self, reason: str, *, close_mic: bool = True
+    ) -> None:
+        """放弃这次预录：短按没到长按阈值时，Vokie 完全不该被惊动。"""
+
+        if not self._plugin_voice_capture_pending:
+            return
+        self._reset_plugin_voice_capture_locked()
+        # 松手了就把长按定时器一起撤掉，否则它到点还会把 Vokie 叫起来——
+        # 连按切模式时每次都会在松手后冒出一个会话，就是这个原因。
+        self._cancel_plugin_voice_hold_pending_locked()
+        if self._plugin_voice_audio_active:
+            return
+        self._voice_pcm_forwarding_enabled = False
+        opened = self._plugin_voice_mic_opened
+        self._plugin_voice_mic_opened = False
+        self._logger.info("plugin voice capture cancelled on %s", reason)
+        if not close_mic or not opened:
+            return
+        session = self._ble_session
+        if session is None:
+            return
+        try:
+            session.send_mic_close_threadsafe()
+        except BaseException as exc:  # noqa: BLE001 - never trap input
+            self._logger.warning(
+                "plugin voice capture MIC_CLOSE failed: error_type=%s",
+                type(exc).__name__,
+            )
+
+    def _take_plugin_voice_capture_frames_locked(self) -> List[array.array]:
+        """取走预录 PCM 并清空缓冲；调用方负责补发。"""
+
+        frames = self._plugin_voice_capture_frames
+        self._reset_plugin_voice_capture_locked()
+        return frames
+
+    def _handle_plugin_voice_capture_frame_locked(
+        self, samples, generation: Optional[int]
+    ) -> None:
+        """缓存一帧 PCM，按满长按阈值后随会话一起补发。"""
+
+        if not self._accepts_ble_callback(generation):
+            return
+        frame = array.array("h", samples)
+        if not frame:
+            return
+        self._plugin_voice_capture_frames.append(frame)
+        self._plugin_voice_capture_samples += len(frame)
+        limit = int(16000 * _PLUGIN_VOICE_PREROLL_SECONDS)
+        while (
+            self._plugin_voice_capture_samples > limit
+            and self._plugin_voice_capture_frames
+        ):
+            dropped = self._plugin_voice_capture_frames.pop(0)
+            self._plugin_voice_capture_samples -= len(dropped)
+
+    def _start_plugin_voice_session_locked(self, slot: Optional[int]) -> bool:
+        """真正开始插件会话；说话起始与兜底定时器共用这条路径。"""
+
+        if self._plugin_voice_audio_active:
+            return True
+        if slot is None or not self._voice_slot_is_plugin(slot):
+            return False
+        self._cancel_plugin_voice_hold_pending_locked()
+        self._extra_voice_slot_active = None
+        self._ensure_voice_diagnostic_attempt()
+        if self._begin_plugin_voice_audio_locked(slot):
+            # 插件已连上：遥控器 PCM 直接经回环桥送进 Vokie，不用模拟热键。
+            self._set_runtime_voice_active(True)
+            self._set_runtime_voice_result(
+                bridge_runtime_status.VOICE_RUNTIME_ACTIVE
+            )
+            self._logger.info("plugin voice audio hold started: slot=%s", slot)
+            return True
+        self._cancel_plugin_voice_capture_locked(
+            "plugin audio unavailable", close_mic=True
+        )
+        # 回退注入必须用这条语音键自己的快捷键：会话里的 hotkey 可能是上一次
+        # 按压留下的别的槽位（比如语音输入），直接重放就会变成那个模式。
+        tokens = self._voice_slot_tokens(slot)
+        if not self._press_voice_shortcut_edge_locked(
+            slot, tokens_override=tokens
+        ):
+            self._logger.warning("plugin voice hold replay failed: slot=%s", slot)
+            self._finish_voice_diagnostic_attempt(
+                "failed_before_send", reason="hotkey_delivery_failed"
+            )
+            self._set_runtime_voice_result(
+                bridge_runtime_status.VOICE_RUNTIME_HOST_START_FAILED
+            )
+            self._set_runtime_voice_active(False)
+            return False
+        self._plugin_voice_injected_tokens = (
+            self._voice_shortcut.pending_tokens or tokens
+        )
+        self._set_runtime_voice_active(True)
+        self._set_runtime_voice_result(bridge_runtime_status.VOICE_RUNTIME_ACTIVE)
+        self._hide_voice_mode_toast()
+        self._logger.info("plugin voice hold started: slot=%s", slot)
+        return True
+
+    def _plugin_voice_hold_elapsed(self, token: object) -> None:
+        """按满长按阈值就开插件会话；短按的定时器早已被撤掉。"""
+
+        with self._voice_shortcut.lock:
+            if self._plugin_voice_press_token is not token:
+                return
+            slot = self._plugin_voice_press_slot
+            self._cancel_plugin_voice_hold_pending_locked()
+            if slot is None or not self._voice_slot_is_plugin(slot):
+                return
+            self._start_plugin_voice_session_locked(slot)
+
+    def _begin_plugin_voice_audio_locked(self, slot: int) -> bool:
+        """Hand the remote microphone to the connected plugin.
+
+        The plugin owns the transcription session, so MoteDeck only has to
+        name the mode, open the remote microphone and then let
+        ``_on_pcm_frame`` push samples across the loopback bridge. Returns
+        False when no plugin is connected, which keeps the old hotkey replay
+        as the fallback.
+        """
+
+        bridge = vokie_bridge.active_bridge()
+        if bridge is None or not bridge.connected():
+            return False
+        mode_name = config.voice_key_name(self._config, int(slot))
+        if not bridge.send_audio_start(mode_name):
+            return False
+        # 预录的 PCM 一并补发：插件在 session_accepted 之前会自己攒着，
+        # 所以说话的第一个字不会被丢掉。
+        buffered = self._take_plugin_voice_capture_frames_locked()
+        self._plugin_voice_audio_active = True
+        self._plugin_voice_started_this_press = True
+        self._voice_pcm_forwarding_enabled = True
+        for frame in buffered:
+            if not bridge.send_audio(frame.tobytes()):
+                self._voice_pcm_forwarding_enabled = False
+                break
+        # Vokie 自己的输入框马上要出现，先把这个常驻置顶的气泡收掉。
+        self._hide_voice_mode_toast()
+        session = self._ble_session
+        if session is not None and not self._plugin_voice_mic_opened:
+            try:
+                session.send_mic_open_threadsafe()
+            except BaseException as exc:  # noqa: BLE001 - never trap input
+                self._logger.warning(
+                    "plugin voice MIC_OPEN failed: error_type=%s",
+                    type(exc).__name__,
+                )
+        self._plugin_voice_mic_opened = True
+        return True
+
+    def _end_plugin_voice_audio_locked(self, reason: str) -> None:
+        """Close a plugin voice session that this app started."""
+
+        if not self._plugin_voice_audio_active:
+            return
+        self._plugin_voice_audio_active = False
+        self._plugin_voice_audio_stream = False
+        self._voice_pcm_forwarding_enabled = False
+        # 遥控器松手自己会停流，不用再补 MIC_CLOSE。
+        self._plugin_voice_mic_opened = False
+        bridge = vokie_bridge.active_bridge()
+        if bridge is not None:
+            bridge.send_audio_stop()
+        self._logger.info("plugin voice audio stopped on %s", reason)
+
+    def _hide_voice_mode_toast(self) -> None:
+        """收起模式气泡，别压在插件自己的输入框上。"""
+
+        try:
+            self._voice_mode_toast.hide()
+        except BaseException as exc:  # noqa: BLE001 - the bubble is best effort
+            self._logger.warning(
+                "voice mode toast hide failed: error_type=%s",
+                type(exc).__name__,
+            )
+
+    def _voice_slot_is_plugin(self, slot: Optional[int]) -> bool:
+        """Whether this voice key belongs to an external plugin (Vokie).
+
+        Plugin rows carry their own host shortcut and capture audio themselves,
+        so the only thing MoteDeck has to do for them is replay that shortcut.
+        """
+
+        if slot is None:
+            return False
+        entry = config.voice_key_config(self._config, slot)
+        return bool(entry and str(entry.get("plugin") or "").strip())
+
+    def _plugin_voice_session_active(self) -> bool:
+        """True while a press belongs to a plugin-owned voice key."""
+
+        return self._voice_slot_is_plugin(
+            self._extra_voice_slot_active
+        ) or self._voice_slot_is_plugin(self._active_voice_slot())
 
     def _voice_input_source(self) -> str:
         return config.voice_input_source(self._config, self._active_voice_slot())
@@ -3235,6 +3598,11 @@ class RC003App:
                 self._configured_voice_buttons(),
             )
             return False
+        if not config.voice_key_enabled(self._config, slot):
+            self._logger.info(
+                "voice mapping ignored: voice key %s is switched off", slot
+            )
+            return False
         hotkey_text = self._voice_hotkey_text_for_slot(slot)
         if not hotkey_text and button_id == "mic" and self._voice_cycle_follows_mic():
             # 循环到的这条语音键还没录快捷键：清空当前热键即可。注入空
@@ -3301,12 +3669,18 @@ class RC003App:
             )
         return True
 
-    def _press_voice_shortcut_edge_locked(self, voice_slot: Optional[int]) -> bool:
+    def _press_voice_shortcut_edge_locked(
+        self,
+        voice_slot: Optional[int],
+        *,
+        tokens_override: Optional[Tuple[str, ...]] = None,
+    ) -> bool:
         action = self._voice_shortcut.controller.on_mic_button_pressed()
         delivered = self._voice_shortcut.apply(
             action,
             voice_slot=voice_slot,
             inject_mode=self._voice_slot_inject_mode(voice_slot),
+            tokens_override=tokens_override,
         )
         if not delivered:
             self._voice_shortcut.controller.cancel_pending()
@@ -3335,6 +3709,8 @@ class RC003App:
 
         if voice_slot is None:
             voice_slot = self._active_voice_slot()
+        if self._voice_slot_is_plugin(voice_slot):
+            return
         if self._voice_slot_uses_local_microphone(voice_slot):
             return
         if not config.voice_short_press_dismiss(self._config):
@@ -3626,13 +4002,25 @@ class RC003App:
                     )
                     return
                 if self._voice_shortcut.controller.active:
-                    self._logger.info(
-                        "extra voice key ignored: hold session already active; "
-                        "button=%s slot=%s",
-                        button_id,
-                        slot,
-                    )
-                    return
+                    if self._plugin_voice_injected_tokens is not None:
+                        # 同话筒键：上次插件按键的抬起丢了，先补抬起再重来。
+                        self._logger.info(
+                            "plugin voice session stale; force releasing before "
+                            "extra voice press"
+                        )
+                        self._force_release_plugin_voice_tokens_locked(
+                            "stale plugin session on extra voice press"
+                        )
+                        self._voice_shortcut.controller.reset()
+                        gesture.reset()
+                    else:
+                        self._logger.info(
+                            "extra voice key ignored: hold session already active; "
+                            "button=%s slot=%s",
+                            button_id,
+                            slot,
+                        )
+                        return
                 if not self._prepare_voice_mapping_locked(
                     button_id,
                     action,
@@ -3666,6 +4054,12 @@ class RC003App:
             if self._extra_voice_slot_active != slot:
                 return
             decision = gesture.on_release()
+            if (
+                decision == voice_gesture.VoiceGestureDecision.LATCH
+                and self._voice_slot_is_plugin(slot)
+            ):
+                # 插件模式不锁存：遥控器只重放快捷键，没有音频要留着。
+                decision = voice_gesture.VoiceGestureDecision.CLOSE
             released = self._release_voice_shortcut_edge_locked(
                 "extra voice key release"
             )
@@ -3840,6 +4234,8 @@ class RC003App:
                 self._voice_shortcut.controller.restore_pending(action)
         elif self._voice_shortcut.pending_tokens is not None:
             released = self._voice_shortcut.release_pending()
+        # 插件快捷键不经过音频事件，兜底补一条抬起。
+        self._force_release_plugin_voice_tokens_locked(reason)
 
         self._finish_voice_mic_gesture()
         self._extra_voice_slot_active = None
@@ -3916,8 +4312,11 @@ class RC003App:
         action = self._voice_shortcut.controller.on_mic_button_released()
         if action is None:
             self._cancel_voice_hold_watchdog_locked()
+            # 插件模式没有音频停止事件兜底，这里补一条抬起，防止键卡住。
+            self._force_release_plugin_voice_tokens_locked(reason)
             return True
         if self._voice_shortcut.apply(action, inject_mode=inject_mode):
+            self._plugin_voice_injected_tokens = None
             self._cancel_voice_hold_watchdog_locked()
             self._logger.info("voice shortcut edge released on %s", reason)
             return True
@@ -4929,6 +5328,10 @@ class RC003App:
                             "source=%s",
                             event_source,
                         )
+                        # 记账丢了也不能让插件快捷键留在按下状态。
+                        self._force_release_plugin_voice_tokens_locked(
+                            "physical mic release without matching down"
+                        )
                         self._apply_pending_voice_settings_if_idle_locked()
                         return
 
@@ -4960,7 +5363,12 @@ class RC003App:
                         if (
                             gesture_decision
                             is voice_gesture.VoiceGestureDecision.LATCH
-                            and not self._uses_local_voice_microphone()
+                            and (
+                                not self._uses_local_voice_microphone()
+                                or self._voice_slot_is_plugin(
+                                    self._active_voice_slot()
+                                )
+                            )
                         ):
                             # 模式1 只支持长按：按下时快捷键已经立即下发，
                             # 松手就立刻结束，绝不锁存（遥控器只在按住期间
@@ -5028,6 +5436,13 @@ class RC003App:
                             )
                         )
                     if short_tap:
+                        # 短按松手：长按定时器可能还没到点，撤掉它并丢弃预录，
+                        # 否则松手之后它照样会把 Vokie 叫起来。
+                        self._cancel_plugin_voice_hold_pending_locked()
+                        self._cancel_plugin_voice_capture_locked(
+                            "physical mic release"
+                        )
+                    if short_tap and not self._plugin_voice_started_this_press:
                         self._handle_voice_short_tap_locked(
                             "physical mic release"
                         )
@@ -5080,10 +5495,25 @@ class RC003App:
                     )
                     return
                 if self._voice_shortcut.controller.active:
-                    self._logger.info(
-                        "voice physical trigger ignored: hold session already active"
-                    )
-                    return
+                    if self._plugin_voice_injected_tokens is not None:
+                        # 上一次插件按键的抬起丢了，会话还挂着。先把卡住的
+                        # 键补抬起并结束会话，否则这次按下会被拒到安全计时器
+                        # 超时为止（键盘会一直带着 Alt）。
+                        self._logger.info(
+                            "plugin voice session stale; force releasing before press"
+                        )
+                        self._force_release_plugin_voice_tokens_locked(
+                            "stale plugin session on new press"
+                        )
+                        self._voice_shortcut.controller.reset()
+                        self._finish_voice_mic_gesture()
+                        self._begin_voice_mic_gesture(event_source, physical_down=True)
+                        gesture_decision = self._voice_gesture.on_press()
+                    else:
+                        self._logger.info(
+                            "voice physical trigger ignored: hold session already active"
+                        )
+                        return
                 if gesture_decision != voice_gesture.VoiceGestureDecision.OPEN:
                     self._logger.info(
                         "voice physical trigger ignored: gesture not idle"
@@ -5976,6 +6406,43 @@ class RC003App:
             with self._voice_shortcut.lock:
                 if not self._accepts_ble_callback(_ble_generation):
                     return
+                if self._plugin_voice_capture_pending:
+                    # 按住插件键时话筒已经开了：先收着这条流，PCM 由
+                    # _on_pcm_frame 缓存，检测到人声才真正开会话。
+                    self._voice_audio_stream_active = True
+                    self._voice_audio_stop_processed = False
+                    self._voice_audio_start_fallback_pending = False
+                    self._voice_pcm_forwarding_enabled = True
+                    self._plugin_voice_audio_stream = True
+                    self._voice_audio.stats.reset()
+                    self._logger.info(
+                        "plugin voice audio stream accepted while waiting for speech"
+                    )
+                    return
+                if self._plugin_voice_audio_active:
+                    # 插件会话已经拿到这条流：留着它，PCM 由 _on_pcm_frame
+                    # 直接经回环桥推进 Vokie。
+                    self._voice_audio_stream_active = True
+                    self._voice_audio_stop_processed = False
+                    self._voice_audio_start_fallback_pending = False
+                    self._voice_pcm_forwarding_enabled = True
+                    self._plugin_voice_audio_stream = True
+                    self._voice_audio.stats.reset()
+                    self._logger.info(
+                        "plugin voice audio stream accepted for the plugin"
+                    )
+                    return
+                if self._plugin_voice_session_active():
+                    # 插件模式不收遥控器的音频：标成已处理，免得 PCM 被塞进
+                    # 没打开的虚拟声卡，也免得松手的音频停止事件乱动快捷键。
+                    self._voice_pcm_forwarding_enabled = False
+                    self._voice_audio_stream_active = False
+                    self._voice_audio_stop_processed = True
+                    self._voice_audio_start_fallback_pending = False
+                    self._logger.info(
+                        "plugin voice mode active: device audio stream ignored"
+                    )
+                    return
                 self._logger.info("voice audio started")
                 if self._voice_audio_stream_active:
                     self._logger.info(
@@ -6171,9 +6638,13 @@ class RC003App:
                         self._release_voice_shortcut_edge_locked(
                             "audio stop after short voice press"
                         )
-                        if self._voice_cycle_enabled():
+                        if (
+                            self._voice_cycle_enabled()
+                            and not self._plugin_voice_started_this_press
+                        ):
                             # 短按切换模式：这一下只是用来切模式的，不锁存
-                            # 麦克风，切完立刻把会话收干净。
+                            # 麦克风，切完立刻把会话收干净。已经和 Vokie 说过
+                            # 话的这一下不算短按，不能被切成模式。
                             self._finish_voice_mic_gesture()
                             self._handle_voice_short_tap_locked(
                                 "audio stop after short voice press"
@@ -6202,6 +6673,14 @@ class RC003App:
                     self._voice_gesture.reset()
                 self._voice_audio_stream_active = False
                 self._voice_audio_stop_processed = True
+                if self._plugin_voice_capture_pending:
+                    # 设备自己停流了：这次按下没等到人声，别把 Vokie 叫起来。
+                    self._cancel_plugin_voice_capture_locked(
+                        "device audio stop", close_mic=False
+                    )
+                if self._plugin_voice_audio_stream:
+                    self._plugin_voice_audio_stream = False
+                    self._end_plugin_voice_audio_locked("device audio stop")
                 self._voice_pcm_forwarding_enabled = latched_session
                 if not latched_session:
                     self._set_runtime_voice_active(False)
@@ -6478,6 +6957,52 @@ class RC003App:
                     self._primary_button_action("mic")
                 )
 
+        if self._voice_slot_is_plugin(voice_slot):
+            # 插件模式（Vokie）：插件已连接时长按会把遥控器的 PCM 直接推给
+            # 它；插件没连上时退回只重放它的那条快捷键。两种都不开虚拟声卡。
+            self._voice_short_press_dismiss_hold_outstanding = False
+            self._voice_pcm_forwarding_enabled = False
+            if self._voice_shortcut.pending_tokens is not None:
+                if not self._voice_shortcut.release_pending():
+                    self._voice_shortcut.pending_tokens = None
+            self._force_release_plugin_voice_tokens_locked(
+                "plugin voice press superseded"
+            )
+            # 短按只切换模式，绝不惊动 Vokie：按下先开话筒、把 PCM 缓起来，
+            # 按满长按阈值才开插件会话并把缓冲补发过去。
+            self._plugin_voice_started_this_press = False
+            self._arm_plugin_voice_capture_locked(voice_slot)
+            if not self._schedule_plugin_voice_hold_locked(voice_slot):
+                self._set_runtime_voice_result(
+                    bridge_runtime_status.VOICE_RUNTIME_HOST_START_FAILED
+                )
+                return False
+            self._logger.info(
+                "plugin voice key armed for long press: slot=%s", voice_slot
+            )
+            return True
+
+        # 插件那次按压如果没收干净（插件中途断开、松手事件丢了），
+        # 残留的会话会继续吞普通语音，“这次跟 Vokie 说过话”的标记也会
+        # 一直留着，让短按切换永远被跳过。没有真正在进行的插件按压时，
+        # 普通按下从这里把插件状态清干净再继续。
+        bridge = vokie_bridge.active_bridge()
+        plugin_press_pending = bool(
+            bridge is not None
+            and bridge.connected()
+            and (
+                self._plugin_voice_press_token is not None
+                or self._plugin_voice_capture_pending
+                or self._plugin_voice_audio_active
+                or self._plugin_voice_injected_tokens is not None
+            )
+        )
+        if not plugin_press_pending:
+            self._force_release_plugin_voice_tokens_locked(
+                "plugin state cleared before normal press"
+            )
+            self._plugin_voice_started_this_press = False
+
         # 用户又按下了话筒：正在进行中的短按补发让位给这次真实按下。
         self._voice_short_press_dismiss_hold_outstanding = False
 
@@ -6714,6 +7239,27 @@ class RC003App:
         """Queue one immutable PCM frame without blocking the BLE worker."""
 
         with self._voice_shortcut.lock:
+            if self._plugin_voice_audio_active:
+                # 插件会话：遥控器的 PCM 直接经回环桥交给 Vokie 的插件，
+                # 不碰虚拟声卡。
+                if (
+                    not self._accepts_ble_callback(_ble_generation)
+                    or not self._voice_pcm_forwarding_enabled
+                ):
+                    return
+                bridge = vokie_bridge.active_bridge()
+                if bridge is None:
+                    self._voice_pcm_forwarding_enabled = False
+                    return
+                if not bridge.send_audio(array.array("h", samples).tobytes()):
+                    self._voice_pcm_forwarding_enabled = False
+                return
+            if self._plugin_voice_capture_pending:
+                # 还没说话：先把 PCM 攒着，不惊动 Vokie。
+                self._handle_plugin_voice_capture_frame_locked(
+                    samples, _ble_generation
+                )
+                return
             sink = self._voice_audio.sink
             if (
                 sink is None

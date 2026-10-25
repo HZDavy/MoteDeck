@@ -24,6 +24,7 @@ from typing import Optional, Tuple
 
 WM_APP = 0x8000
 WM_TOAST_SHOW = WM_APP + 1
+WM_TOAST_HIDE = WM_APP + 2
 WM_TIMER = 0x0113
 WM_QUIT = 0x0012
 PM_NOREMOVE = 0x0000
@@ -200,6 +201,35 @@ class VoiceModeToast:
             except Exception:  # noqa: BLE001 - the bubble is best effort
                 pass
 
+    def hide(self) -> None:
+        """收起气泡，不等自动隐藏定时器。
+
+        插件（Vokie）开始自己的语音会话时立刻调用：松手后用户手快再按一次，
+        常驻置顶的气泡就会压在插件自己的输入框上。
+        """
+
+        if sys.platform != "win32":
+            return
+        with self._lock:
+            if self._stopped or self._failed:
+                return
+            thread_id = self._thread_id
+            self._pending = None
+        if not thread_id:
+            return
+        try:
+            user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+            user32.PostThreadMessageW.argtypes = (
+                wintypes.DWORD,
+                wintypes.UINT,
+                wintypes.WPARAM,
+                wintypes.LPARAM,
+            )
+            user32.PostThreadMessageW.restype = wintypes.BOOL
+            user32.PostThreadMessageW(thread_id, WM_TOAST_HIDE, 0, 0)
+        except Exception:  # noqa: BLE001 - the bubble is best effort
+            pass
+
     def stop(self) -> None:
         """Tear the pump down; safe to call more than once or before show()."""
 
@@ -321,6 +351,9 @@ class VoiceModeToast:
                     if pending is not None:
                         self._draw(hwnd, pending[0], pending[1])
                     continue
+                if message.message == WM_TOAST_HIDE:
+                    self._hide(hwnd)
+                    continue
                 if message.message == WM_TIMER and message.hWnd == hwnd:
                     self._handle_timer(hwnd, message.wParam)
                     continue
@@ -352,10 +385,16 @@ class VoiceModeToast:
     def _handle_timer(self, hwnd, timer_id) -> None:  # noqa: ANN001 - ctypes
         """重申置顶或收尾隐藏；两个定时器共用这条路径。"""
 
-        user32 = ctypes.windll.user32  # type: ignore[attr-defined]
         if int(timer_id) == TIMER_RAISE_ID:
             self._raise(hwnd)
             return
+        self._hide(hwnd)
+
+    @staticmethod
+    def _hide(hwnd) -> None:  # noqa: ANN001 - ctypes
+        """停掉两个定时器并隐藏窗口。"""
+
+        user32 = ctypes.windll.user32  # type: ignore[attr-defined]
         user32.KillTimer(hwnd, TIMER_ID)
         user32.KillTimer(hwnd, TIMER_RAISE_ID)
         user32.ShowWindow(hwnd, SW_HIDE)

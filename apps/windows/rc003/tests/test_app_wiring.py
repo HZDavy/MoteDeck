@@ -18,6 +18,7 @@ win32_input.py's ``_require_windows()`` genuinely raises
 in for it.
 """
 
+import array
 import asyncio
 from contextlib import ExitStack
 import json
@@ -83,6 +84,31 @@ class _FakeBleSession:
         self.close_calls += 1
         if self.close_raises:
             raise RuntimeError("simulated BLE worker thread that did not stop")
+
+
+class _FakePluginBridge:
+    """Stand-in for VokieBridge's audio hand-off surface."""
+
+    def __init__(self, connected=True):
+        self._connected = connected
+        self.audio_starts = []
+        self.audio_frames = []
+        self.audio_stops = 0
+
+    def connected(self):
+        return self._connected
+
+    def send_audio_start(self, mode):
+        self.audio_starts.append(mode)
+        return True
+
+    def send_audio(self, pcm):
+        self.audio_frames.append(pcm)
+        return True
+
+    def send_audio_stop(self):
+        self.audio_stops += 1
+        return True
 
 
 class _FakeHidListener:
@@ -1566,6 +1592,218 @@ class HostHotkeyFailureSuppressesMicOpenTests(_AppWiringTestCase):
             self.app._voice_shortcut.retry_delay,
             app_module.voice_shortcut_session._VOICE_HOTKEY_RELEASE_RETRY_INITIAL_SECONDS,
         )
+
+    def test_plugin_voice_short_tap_never_replays_hotkey(self):
+        entries = config.voice_key_configs(self.app._config)
+        entries[0] = {**entries[0], "plugin": "vokie"}
+        self.app._config["voice_key_configs"] = entries
+        calls = []
+
+        with mock.patch.object(
+            win32_input,
+            "send_voice_key_combo_down",
+            side_effect=lambda tokens: calls.append(tokens),
+        ), mock.patch.object(
+            self.app._voice_audio.__class__, "open", autospec=True
+        ) as audio_open:
+            self.assertTrue(
+                self.app._handle_mic_button_pressed(send_device_open=False)
+            )
+            # 短按只切换模式：按下时不能惊动 Vokie。
+            self.assertEqual(calls, [])
+            self.assertIsNotNone(self.app._plugin_voice_press_token)
+            with self.app._voice_shortcut.lock:
+                self.app._cancel_plugin_voice_hold_pending_locked()
+
+        self.assertEqual(calls, [])
+        audio_open.assert_not_called()
+        self.assertFalse(self.app._voice_shortcut.controller.active)
+        self.assertFalse(self.app._voice_pcm_forwarding_enabled)
+
+    def test_plugin_voice_long_press_replays_hotkey_without_opening_virtual_audio(self):
+        entries = config.voice_key_configs(self.app._config)
+        entries[0] = {**entries[0], "plugin": "vokie"}
+        self.app._config["voice_key_configs"] = entries
+        calls = []
+
+        with mock.patch.object(
+            win32_input,
+            "send_voice_key_combo_down",
+            side_effect=lambda tokens: calls.append(tokens),
+        ), mock.patch.object(
+            self.app._voice_audio.__class__, "open", autospec=True
+        ) as audio_open:
+            self.assertTrue(
+                self.app._handle_mic_button_pressed(send_device_open=False)
+            )
+            token = self.app._plugin_voice_press_token
+            self.app._plugin_voice_hold_elapsed(token)
+
+        self.assertEqual(calls, [("ralt",)])
+        audio_open.assert_not_called()
+        self.assertFalse(self.app._voice_pcm_forwarding_enabled)
+        self.assertTrue(self.app._voice_shortcut.controller.active)
+
+    def test_plugin_voice_fallback_replays_the_keys_own_shortcut(self):
+        # 语音指令和语音输入共用同一条插件回退路径：每条键必须重放自己的
+        # 快捷键，不能沿用会话里残留的上一条（否则两个模式都变成语音输入）。
+        self.app._config["voice_key_configs"] = [
+            {
+                "id": 1,
+                "name": "语音输入",
+                "hotkey": "ralt",
+                "source": "remote",
+                "device": "",
+                "plugin": "vokie",
+            },
+            {
+                "id": 2,
+                "name": "语音指令",
+                "hotkey": "ralt+space",
+                "source": "remote",
+                "device": "",
+                "plugin": "vokie",
+            },
+        ]
+        calls = []
+
+        with mock.patch.object(
+            win32_input,
+            "send_voice_key_combo_down",
+            side_effect=lambda tokens: calls.append(tokens),
+        ), mock.patch.object(
+            self.app._voice_audio.__class__, "open", autospec=True
+        ):
+            self.assertTrue(
+                self.app._handle_mic_button_pressed(
+                    send_device_open=False, voice_slot=2
+                )
+            )
+            self.app._plugin_voice_hold_elapsed(
+                self.app._plugin_voice_press_token
+            )
+
+        self.assertEqual(calls, [("ralt", "space")])
+        self.assertEqual(self.app._plugin_voice_injected_tokens, ("ralt", "space"))
+
+    def test_plugin_voice_key_up_is_never_lost_when_the_session_resets(self):
+        entries = config.voice_key_configs(self.app._config)
+        entries[0] = {**entries[0], "plugin": "vokie"}
+        self.app._config["voice_key_configs"] = entries
+        with mock.patch.object(
+            win32_input, "send_voice_key_combo_down"
+        ), mock.patch.object(
+            self.app._voice_audio.__class__, "open", autospec=True
+        ):
+            self.assertTrue(
+                self.app._handle_mic_button_pressed(send_device_open=False)
+            )
+            self.app._plugin_voice_hold_elapsed(
+                self.app._plugin_voice_press_token
+            )
+        # 记账被重置（曾经导致右侧 Alt 卡住 120 秒，整个键盘失灵）
+        self.app._voice_shortcut.controller.reset()
+
+        with mock.patch.object(win32_input, "send_voice_key_combo_up") as send_up:
+            with self.app._voice_shortcut.lock:
+                self.app._release_voice_shortcut_edge_locked("lost_bookkeeping")
+
+        send_up.assert_called_once_with(("ralt",))
+        self.assertIsNone(self.app._plugin_voice_injected_tokens)
+
+    def test_plugin_voice_long_press_streams_remote_audio_to_the_plugin(self):
+        entries = config.voice_key_configs(self.app._config)
+        entries[0] = {**entries[0], "plugin": "vokie"}
+        self.app._config["voice_key_configs"] = entries
+        bridge = _FakePluginBridge()
+        calls = []
+
+        with mock.patch.object(
+            app_module.vokie_bridge, "active_bridge", return_value=bridge
+        ), mock.patch.object(
+            win32_input,
+            "send_voice_key_combo_down",
+            side_effect=lambda tokens: calls.append(tokens),
+        ), mock.patch.object(
+            self.app._voice_audio.__class__, "open", autospec=True
+        ) as audio_open:
+            self.assertTrue(
+                self.app._handle_mic_button_pressed(send_device_open=False)
+            )
+            # 短按只是切模式：不能惊动 Vokie。遥控器话筒先开着缓存 PCM。
+            self.assertEqual(bridge.audio_starts, [])
+            self.assertTrue(self.app._plugin_voice_capture_pending)
+            self.assertEqual(self.app._ble_session.mic_open_calls, 1)
+
+            self.app._plugin_voice_hold_elapsed(
+                self.app._plugin_voice_press_token
+            )
+            # 兜底定时器到点：模式名交给插件，话筒已经开过不重复开。
+            self.assertEqual(
+                bridge.audio_starts,
+                [config.voice_key_name(self.app._config, entries[0]["id"])],
+            )
+            self.assertEqual(self.app._ble_session.mic_open_calls, 1)
+            self.assertTrue(self.app._plugin_voice_audio_active)
+
+            self.app._on_control_event(AudioStarted(session_id=1))
+            self.app._on_pcm_frame([100, -100])
+            with self.app._voice_shortcut.lock:
+                self.app._release_voice_shortcut_edge_locked(
+                    "physical mic release"
+                )
+
+        self.assertEqual(calls, [])
+        audio_open.assert_not_called()
+        self.assertEqual(
+            bridge.audio_frames,
+            [array.array("h", [100, -100]).tobytes()],
+        )
+        self.assertEqual(bridge.audio_stops, 1)
+        self.assertFalse(self.app._plugin_voice_audio_active)
+        self.assertFalse(self.app._voice_pcm_forwarding_enabled)
+        self.assertFalse(self.app._plugin_voice_audio_stream)
+
+    def test_plugin_voice_tap_discards_preroll_and_cancels_the_hold(self):
+        entries = config.voice_key_configs(self.app._config)
+        entries[0] = {**entries[0], "plugin": "vokie"}
+        self.app._config["voice_key_configs"] = entries
+        bridge = _FakePluginBridge()
+
+        with mock.patch.object(
+            app_module.vokie_bridge, "active_bridge", return_value=bridge
+        ), mock.patch.object(
+            win32_input, "send_voice_key_combo_down"
+        ) as send_down:
+            self.assertTrue(
+                self.app._handle_mic_button_pressed(send_device_open=False)
+            )
+            self.app._on_control_event(AudioStarted(session_id=1))
+            # 开话筒的爆音、按键噪声也不能把人声判断骗过去：只认按住时间。
+            self.app._on_pcm_frame([3000, -3000])
+            self.app._on_pcm_frame([3000, -3000])
+            self.assertEqual(bridge.audio_starts, [])
+            self.assertTrue(self.app._plugin_voice_capture_pending)
+
+            token = self.app._plugin_voice_press_token
+            self.assertIsNotNone(token)
+            # 短按松手：预录丢掉、长按定时器撤掉、话筒关掉。
+            with self.app._voice_shortcut.lock:
+                self.app._cancel_plugin_voice_capture_locked(
+                    "physical mic release"
+                )
+            self.assertIsNone(self.app._plugin_voice_press_token)
+            self.assertFalse(self.app._plugin_voice_capture_pending)
+            self.assertEqual(self.app._ble_session.mic_close_calls, 1)
+            # 松手之后那个定时器就算响了，也不能再把 Vokie 叫起来。
+            self.app._plugin_voice_hold_elapsed(token)
+
+        self.assertEqual(bridge.audio_starts, [])
+        self.assertEqual(bridge.audio_frames, [])
+        self.assertEqual(bridge.audio_stops, 0)
+        send_down.assert_not_called()
+        self.assertFalse(self.app._plugin_voice_audio_active)
+        self.assertFalse(self.app._plugin_voice_started_this_press)
 
     def test_new_voice_session_releases_previous_hotkey_debt_first(self):
         previous_tokens = ("lctrl",)

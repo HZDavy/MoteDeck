@@ -15,6 +15,8 @@ Button {
     property bool inverse: false
     // 尾随图标（稿里 btn-t 后的 external / chevron），14px
     property string trailingIcon: ""
+    // 直角样式：只给“访问官网 / 下载插件”这类弱化文字入口用
+    property bool radiusless: false
 
     readonly property int sidePadding: flat ? 8 : highlighted ? 14 : 12
     readonly property color textColor: !enabled
@@ -72,7 +74,7 @@ Button {
     }
 
     background: Rectangle {
-        radius: root.tokens.cornerRadiusControl
+        radius: root.radiusless ? 0 : root.tokens.cornerRadiusControl
         color: root.inverse
             ? (root.flat
                 ? (root.down || root.hovered ? Qt.rgba(1, 1, 1, 0.08) : "transparent")

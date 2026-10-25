@@ -1042,6 +1042,8 @@ Item {
                     model: {
                         // 依赖“使用其他按键切换模式”，开关变化后重新取列表
                         SettingsController.voiceOtherKeySwitch
+                        // 语音键被停用后也要马上从列表里消失
+                        SettingsController.voiceKeyConfigs
                         return SettingsController.primaryActionOptionsFor(
                             actionEditor.buttonId
                         )

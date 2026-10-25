@@ -141,6 +141,7 @@ from . import (
     single_instance,
     startup_windows,
     vb_cable_bundle,
+    vokie_bridge,
     win32_keys,
     window_chrome_windows,
     windows_diagnostics,
@@ -149,6 +150,16 @@ from . import (
 # 联网更新检查已开启：应用会按需访问 GitHub 查询新版本，启动后每天最多
 # 静默检查一次；下载仍需用户手动触发，不会自动运行或覆盖当前安装。
 APPLICATION_UPDATE_CHECK_ENABLED = True
+
+# 语音页「外部应用程序支持」弹窗里的三个入口。Vokie 插件包作为发布资产随
+# 版本一起上传，所以“下载插件”指向该资产的直链，而不是 Vokie 官网。
+VOKIE_WEBSITE_URL = "https://www.vokie.com"
+VOKIE_PLUGIN_URL = (
+    f"https://github.com/{application_update.REPOSITORY_SLUG}"
+    "/releases/download/v0.1.1/MoteDeck2Vokie-0.1.0.zip"
+)
+OPENMEXIA_WEBSITE_URL = "https://hzdavy.github.io/OpenMexia/"
+OPENMEXIA_DOWNLOAD_URL = "https://github.com/HZDavy/OpenMexia/releases"
 
 
 # Only the physical microphone button can own RC003 audio. Other buttons use
@@ -1196,6 +1207,7 @@ def _load_qt_classes() -> dict:
         holdVoiceHotkeyTextChanged = Signal()
         voiceSlotHotkeysChanged = Signal()
         voiceKeyConfigsChanged = Signal()
+        voicePluginStateChanged = Signal()
         voiceInputSourceChanged = Signal()
         voiceShortPressDismissChanged = Signal()
         voiceCycleConfigChanged = Signal()
@@ -1625,6 +1637,14 @@ def _load_qt_classes() -> dict:
             self._microphone_level_timer.timeout.connect(
                 self._tick_microphone_level
             )
+            self._vokie_bridge = vokie_bridge.VokieBridge(self._config_root, self)
+            self._vokie_bridge.stateChanged.connect(
+                self._on_voice_plugin_state_changed
+            )
+            self._vokie_bridge.modesReceived.connect(self._on_vokie_modes_received)
+            self._vokie_bridge.pluginDisconnected.connect(
+                self._on_vokie_plugin_disconnected
+            )
             self._active_page_index = self._DEVICE_PAGE_INDEX
             self._feedback_page_index = (
                 self._BUTTONS_PAGE_INDEX
@@ -1702,6 +1722,9 @@ def _load_qt_classes() -> dict:
                 self._refresh_mapping_presets()
             except Exception:  # noqa: BLE001 - a broken store must not block startup
                 pass
+            # 上次离开时插件连接是开着的，这次启动就照原样把监听开回来。
+            if self._config.get("voice_plugin_auto_connect") is True:
+                QTimer.singleShot(0, self._restore_voice_plugin_connection)
 
         # -- internal helpers -------------------------------------------------
 
@@ -1770,6 +1793,7 @@ def _load_qt_classes() -> dict:
             """Stop accepting background results and bounded-wait for workers."""
 
             self.stopMicrophoneLevelMonitor()
+            self._vokie_bridge.stop()
             with self._background_threads_lock:
                 self._background_shutdown_event.set()
                 threads = list(self._background_threads)
@@ -4893,8 +4917,9 @@ def _load_qt_classes() -> dict:
             new_config = dict(self._config)
             new_config.update(updates)
             if (
-                "voice_input_source" in updates
-                or "voice_local_input_device" in updates
+                ("voice_input_source" in updates
+                 or "voice_local_input_device" in updates)
+                and "voice_key_configs" not in updates
             ):
                 # 语音模式现在属于每一条语音键；档案层只带一个模式，落到第一条。
                 new_config = config.set_voice_mode(
@@ -4929,11 +4954,13 @@ def _load_qt_classes() -> dict:
 
         def _voice_key_config_rows(self) -> List[dict]:
             devices = local_microphone_windows.list_input_devices()
+            entries = config.voice_key_configs(self._config)
             rows: List[dict] = []
-            for entry in config.voice_key_configs(self._config):
+            for index, entry in enumerate(entries):
                 slot = int(entry["id"])
                 source = entry["source"]
                 device = entry["device"]
+                plugin = str(entry.get("plugin", ""))
                 try:
                     device_index = devices.index(device) if device else -1
                 except ValueError:
@@ -4942,6 +4969,7 @@ def _load_qt_classes() -> dict:
                 rows.append(
                     {
                         "id": slot,
+                        "index": index,
                         "name": entry["name"],
                         "displayName": config.voice_key_name(self._config, slot),
                         "hotkey": configured_hotkey,
@@ -4963,6 +4991,11 @@ def _load_qt_classes() -> dict:
                         ),
                         "device": device,
                         "deviceIndex": device_index,
+                        "enabled": bool(entry.get("enabled", True)),
+                        "plugin": plugin,
+                        "locked": bool(plugin),
+                        "first": index == 0,
+                        "last": index == len(entries) - 1,
                     }
                 )
             return rows
@@ -4995,6 +5028,13 @@ def _load_qt_classes() -> dict:
             entry = config.voice_key_config(self._config, slot)
             if entry is None:
                 return
+            if entry.get("plugin"):
+                self._set_status_message("")
+                self._set_error_message(
+                    "该语音键由 MoteDeck2Vokie 插件提供，不能删除。",
+                    self._VOICE_PAGE_INDEX,
+                )
+                return
             label = config.voice_key_name(self._config, slot)
             new_config = config.remove_voice_key_config(self._config, slot)
             if config.voice_key_configs(new_config) == config.voice_key_configs(
@@ -5007,6 +5047,18 @@ def _load_qt_classes() -> dict:
             # 绑定到这个语音键的物理按键回到“禁用”，并让映射自动保存跟上。
             self._model.clear_voice_action(int(slot), label)
 
+        @Slot(int, int)
+        def moveVoiceKeyConfig(self, slot: int, delta: int) -> None:
+            self._save_voice_config_data(
+                config.move_voice_key_config(self._config, slot, delta)
+            )
+
+        @Slot(int, bool)
+        def setVoiceKeyConfigEnabled(self, slot: int, enabled: bool) -> None:
+            self._save_voice_config_data(
+                config.set_voice_key_config_enabled(self._config, slot, enabled)
+            )
+
         @Slot(int, str)
         def setVoiceKeyConfigName(self, slot: int, value: str) -> None:
             self._save_voice_config_data(
@@ -5015,6 +5067,14 @@ def _load_qt_classes() -> dict:
 
         @Slot(int, str)
         def setVoiceKeyConfigHotkey(self, slot: int, value: str) -> None:
+            entry = config.voice_key_config(self._config, slot)
+            if entry is not None and entry.get("plugin"):
+                self._set_status_message("")
+                self._set_error_message(
+                    "该快捷键由 MoteDeck2Vokie 插件自带，不能在这里修改。",
+                    self._VOICE_PAGE_INDEX,
+                )
+                return
             self._update_and_persist_voice_slot_hotkey(int(slot), value)
 
         @Slot(int, int)
@@ -5145,6 +5205,173 @@ def _load_qt_classes() -> dict:
             """一条语音键是否存在；删除后它的录入行也不再出现。"""
 
             return config.voice_key_config(self._config, int(slot)) is not None
+
+        # -- 语音页：外部应用程序支持（Vokie 插件）-------------------------
+
+        @Slot(result=bool)
+        def connectVoicePlugin(self) -> bool:
+            """开启本机回环服务，等待 Vokie 插件把语音模式送进来。"""
+
+            if not self._vokie_bridge.start():
+                self._set_status_message("")
+                self._set_error_message(
+                    "无法开启插件连接，请稍后重试。", self._VOICE_PAGE_INDEX
+                )
+                return False
+            self._remember_voice_plugin_connection(True)
+            self._set_error_message("")
+            self._set_status_message(
+                "已开启插件连接，请在 Vokie 中点击“开启连接”。",
+                self._VOICE_PAGE_INDEX,
+            )
+            self.voicePluginStateChanged.emit()
+            self.voiceKeyConfigsChanged.emit()
+            return True
+
+        @Slot()
+        def disconnectVoicePlugin(self) -> None:
+            self._vokie_bridge.stop()
+            self._remember_voice_plugin_connection(False)
+            self._release_voice_plugin_keys()
+            self.voicePluginStateChanged.emit()
+            self.voiceKeyConfigsChanged.emit()
+            self._set_error_message("")
+            self._set_status_message(
+                "已断开插件连接，插件提供的语音键已清除。", self._VOICE_PAGE_INDEX
+            )
+
+        def _release_voice_plugin_keys(self) -> None:
+            """插件断开后把它带来的语音键清掉，绑过它的按键回到禁用。"""
+
+            if not any(
+                entry.get("plugin") for entry in config.voice_key_configs(self._config)
+            ):
+                return
+            previous_labels = config.voice_key_labels(self._config)
+            new_config = config.release_plugin_voice_keys(
+                self._config, config.VOICE_KEY_PLUGIN_VOKIE
+            )
+            if not self._save_voice_config_data(new_config):
+                return
+            for slot, label in previous_labels.items():
+                if config.voice_key_config(self._config, slot) is None:
+                    self._model.clear_voice_action(int(slot), label)
+
+        def _remember_voice_plugin_connection(self, enabled: bool) -> None:
+            """记住插件连接开关的状态，下次启动照它决定要不要自动恢复监听。"""
+
+            if self.configurationReadOnly:
+                return
+            if bool(self._config.get("voice_plugin_auto_connect")) == enabled:
+                return
+            next_config = dict(self._config)
+            next_config["voice_plugin_auto_connect"] = enabled
+            try:
+                self._config = config.save_config_and_load(
+                    config.config_path(self._config_root), next_config
+                )
+            except Exception:  # noqa: BLE001 - 只影响下次自动连，当前连接照常
+                pass
+            else:
+                self._bump_settings_revision()
+
+        def _restore_voice_plugin_connection(self) -> None:
+            """启动时按上次的状态把监听开回来，不弹成功提示。"""
+
+            if not self._config.get("voice_plugin_auto_connect"):
+                return
+            if not self._vokie_bridge.start():
+                self._set_error_message(
+                    "无法开启插件连接，请稍后重试。", self._VOICE_PAGE_INDEX
+                )
+                return
+            self.voicePluginStateChanged.emit()
+            self.voiceKeyConfigsChanged.emit()
+
+        def _on_voice_plugin_state_changed(self) -> None:
+            self.voicePluginStateChanged.emit()
+            self.voiceKeyConfigsChanged.emit()
+
+        def _on_vokie_modes_received(self, modes: object) -> None:
+            rows = vokie_bridge.normalize_modes(modes)
+            if not rows:
+                self._set_status_message("")
+                self._set_error_message(
+                    "MoteDeck2Vokie 插件没有提供可用的语音模式。", self._VOICE_PAGE_INDEX
+                )
+                return
+            previous_labels = config.voice_key_labels(self._config)
+            new_config = config.apply_plugin_voice_keys(
+                self._config, config.VOICE_KEY_PLUGIN_VOKIE, rows
+            )
+            if not self._save_voice_config_data(new_config):
+                return
+            # 被插件换掉的语音键可能还挂在物理按键上，需要一起解绑。
+            for slot, label in previous_labels.items():
+                if config.voice_key_config(self._config, slot) is None:
+                    self._model.clear_voice_action(int(slot), label)
+            self._set_status_message(
+                f"已接收 Vokie 的 {len(rows)} 个语音模式，加在原有语音键后面。",
+                self._VOICE_PAGE_INDEX,
+            )
+
+        def _on_vokie_plugin_disconnected(self) -> None:
+            # 插件关了或连接断了，它带来的语音键已经没有意义，直接从配置里清掉。
+            self._release_voice_plugin_keys()
+            self.voicePluginStateChanged.emit()
+            self.voiceKeyConfigsChanged.emit()
+            self._set_status_message(
+                "MoteDeck2Vokie 插件已断开，插件提供的语音键已清除。",
+                self._VOICE_PAGE_INDEX,
+            )
+
+        voicePluginConnected = Property(
+            bool,
+            lambda self: bool(self._vokie_bridge.connected()),
+            notify=voicePluginStateChanged,
+        )
+
+        voicePluginState = Property(
+            str,
+            lambda self: self._vokie_bridge.state(),
+            notify=voicePluginStateChanged,
+        )
+
+        voicePluginName = Property(
+            str,
+            lambda self: self._vokie_bridge.pluginName(),
+            notify=voicePluginStateChanged,
+        )
+
+        voicePluginModeCount = Property(
+            int,
+            lambda self: len(self._vokie_bridge.modes()),
+            notify=voicePluginStateChanged,
+        )
+
+        @Slot(result=bool)
+        def openVokieWebsite(self) -> bool:
+            result = shell_targets.open_external_target(VOKIE_WEBSITE_URL)
+            self._report_external_target(result, self._VOICE_PAGE_INDEX)
+            return result.outcome is shell_targets.ExternalTargetOutcome.OPENED
+
+        @Slot(result=bool)
+        def openVokiePluginDownload(self) -> bool:
+            result = shell_targets.open_external_target(VOKIE_PLUGIN_URL)
+            self._report_external_target(result, self._VOICE_PAGE_INDEX)
+            return result.outcome is shell_targets.ExternalTargetOutcome.OPENED
+
+        @Slot(result=bool)
+        def openOpenMexiaWebsite(self) -> bool:
+            result = shell_targets.open_external_target(OPENMEXIA_WEBSITE_URL)
+            self._report_external_target(result, self._VOICE_PAGE_INDEX)
+            return result.outcome is shell_targets.ExternalTargetOutcome.OPENED
+
+        @Slot(result=bool)
+        def openOpenMexiaDownload(self) -> bool:
+            result = shell_targets.open_external_target(OPENMEXIA_DOWNLOAD_URL)
+            self._report_external_target(result, self._VOICE_PAGE_INDEX)
+            return result.outcome is shell_targets.ExternalTargetOutcome.OPENED
 
         voiceHotkeySource = Property(
             str,
@@ -5785,6 +6012,7 @@ def _load_qt_classes() -> dict:
 
             遥控器麦克风来源的语音键只能挂到遥控器的语音键上，别的按键不列
             出来；本机麦克风来源的语音键才出现在所有按键的可选列表里。
+            已在语音键配置里关掉的语音键不再出现，避免关掉还能继续选。
             """
 
             labels = config.voice_key_labels(self._config)
@@ -5792,11 +6020,18 @@ def _load_qt_classes() -> dict:
                 int(entry["id"]): entry["source"]
                 for entry in config.voice_key_configs(self._config)
             }
+            enabled = {
+                int(entry["id"]): bool(entry.get("enabled", True))
+                for entry in config.voice_key_configs(self._config)
+            }
             return [
                 label
                 for slot, label in labels.items()
-                if sources.get(slot) != config.VOICE_INPUT_SOURCE_REMOTE
-                or include_remote
+                if enabled.get(slot, True)
+                and (
+                    sources.get(slot) != config.VOICE_INPUT_SOURCE_REMOTE
+                    or include_remote
+                )
             ]
 
         @Slot(str, result=list)
@@ -7515,9 +7750,14 @@ def _load_qt_classes() -> dict:
 
         mappingPresets = Property(list, lambda self: self._mapping_preset_rows, notify=mappingPresetsChanged)
 
-        # The voice page renders the same library, labelled with each profile's
-        # automatic mode tag. Sharing one row list keeps the two pages in sync.
-        voiceProfiles = Property(list, lambda self: self._mapping_preset_rows, notify=mappingPresetsChanged)
+        # The voice page renders the same library, but only whole-machine
+        # profiles: application layouts are imported/exported from the buttons
+        # page instead.
+        voiceProfiles = Property(
+            list,
+            lambda self: [row for row in self._mapping_preset_rows
+                          if row["scope"] != "app"],
+            notify=mappingPresetsChanged)
 
         def _live_voice_fields(self) -> tuple[str, str]:
             return (self._get_voice_input_source(),
@@ -7561,12 +7801,14 @@ def _load_qt_classes() -> dict:
             source, device = self._live_voice_fields()
             entries = app_profiles.AppProfileStore(self._config_root).view(
                 self._bindings, profile,
-                voice_input_source=source, voice_local_input_device=device)
+                voice_input_source=source, voice_local_input_device=device,
+                voice_keys=config.voice_key_configs(self._config))
             self._mapping_preset_rows = [
                 {key: entry[key] for key in ("id", "name", "automatic", "applied",
                                              "scope", "process", "hotkey",
                                              "voice_input_source",
                                              "voice_local_input_device",
+                                             "voice_keys",
                                              "mode_tag", "label", "voice_conflicts",
                                              "voice_conflict_text")}
                 for entry in entries
@@ -7910,12 +8152,15 @@ def _load_qt_classes() -> dict:
                     mapping = entry["mapping"]
                     source = entry["voice_input_source"]
                     device = entry["voice_local_input_device"]
+                    keys = entry.get(app_profiles.VOICE_KEYS_FIELD) or []
                 else:
                     name = "全局布局"
                     mapping = app_profiles.snapshot(self._bindings, profile)
+                    keys = config.voice_key_configs(self._config)
                 store.export_entry({"name": name, "mapping": mapping,
                                     "voice_input_source": source,
-                                    "voice_local_input_device": device},
+                                    "voice_local_input_device": device,
+                                    app_profiles.VOICE_KEYS_FIELD: keys},
                                    Path(url.toLocalFile()), profile)
                 message = (f"已导出「{name}」的按键映射。"
                            if identity else "已导出全局布局的按键映射。")
@@ -7947,6 +8192,7 @@ def _load_qt_classes() -> dict:
                     app_profiles.snapshot(self._bindings, profile),
                     voice_input_source=source,
                     voice_local_input_device=device,
+                    voice_keys=config.voice_key_configs(self._config),
                 )
                 return {"ok": True, "id": "",
                         "message": f"已导出 {count} 个配置和当前全局按键。"}
@@ -8018,7 +8264,8 @@ def _load_qt_classes() -> dict:
                 elif operation == "save":
                     identity = store.create(
                         text, app_profiles.snapshot(self._bindings, profile),
-                        voice_input_source=source, voice_local_input_device=device)
+                        voice_input_source=source, voice_local_input_device=device,
+                        voice_keys=config.voice_key_configs(self._config))
                     message = "配置已保存；点击“应用配置”可随时切回。"
                 else:
                     if identity == app_profiles.GLOBAL_ID:
@@ -8029,7 +8276,9 @@ def _load_qt_classes() -> dict:
                         entry = {"id": app_profiles.GLOBAL_ID, "name": app_profiles.GLOBAL_NAME,
                                  "mapping": app_profiles.snapshot(self._bindings, profile),
                                  "voice_input_source": source,
-                                 "voice_local_input_device": device}
+                                 "voice_local_input_device": device,
+                                 app_profiles.VOICE_KEYS_FIELD:
+                                     config.voice_key_configs(self._config)}
                     else:
                         entry = store.get(identity)
                     if operation == "copy":
@@ -8037,7 +8286,8 @@ def _load_qt_classes() -> dict:
                             identity = store.create(
                                 text, entry["mapping"],
                                 voice_input_source=entry["voice_input_source"],
-                                voice_local_input_device=entry["voice_local_input_device"])
+                                voice_local_input_device=entry["voice_local_input_device"],
+                                voice_keys=entry[app_profiles.VOICE_KEYS_FIELD])
                         else:
                             identity = store.copy_profile(
                                 identity, text, bindings=self._bindings, profile=profile)
@@ -8051,7 +8301,8 @@ def _load_qt_classes() -> dict:
                         store.update_content(
                             identity,
                             app_profiles.snapshot(self._active_edit_bindings(), profile),
-                            voice_input_source=source, voice_local_input_device=device)
+                            voice_input_source=source, voice_local_input_device=device,
+                            voice_keys=config.voice_key_configs(self._config))
                         message = "配置已更新为当前按键和语音设置。"
                     elif operation == "rename":
                         store.rename(identity, text)
@@ -8064,8 +8315,10 @@ def _load_qt_classes() -> dict:
                         if self._mapping_dirty:
                             raise ValueError("当前映射尚未保存，请先完成自动保存或重试保存。")
                         bindings = app_profiles.apply_to(self._bindings, entry, profile)
+                        keys = entry.get(app_profiles.VOICE_KEYS_FIELD) or []
                         conflict_buttons = app_profiles.voice_conflicts(
-                            bindings, entry["voice_input_source"], profile)
+                            bindings, entry["voice_input_source"], profile,
+                            plugin_slots=app_profiles.plugin_slot_ids(keys))
                         if conflict_buttons:
                             raise ValueError(app_profiles.voice_conflict_message(
                                 conflict_buttons) + "，然后再应用该配置。")
@@ -8075,7 +8328,14 @@ def _load_qt_classes() -> dict:
                         switched = False
                         target = (entry["voice_input_source"],
                                   entry["voice_local_input_device"])
-                        if target != (source, device):
+                        if keys:
+                            # 一条配置保存的是整份语音键快照：顺序、开关、来源与
+                            # 快捷键一起恢复，镜像字段由归一化回写。
+                            updates = {"voice_key_configs": keys}
+                            head = keys[0]
+                            switched = (str(head["source"]), str(head["device"])) != (
+                                source, device)
+                        elif target != (source, device):
                             updates = {"voice_input_source": target[0],
                                        "voice_local_input_device": target[1]}
                             if (target[0] == config.VOICE_INPUT_SOURCE_LOCAL
@@ -8083,13 +8343,14 @@ def _load_qt_classes() -> dict:
                                 devices = local_microphone_windows.list_input_devices()
                                 if devices:
                                     updates["voice_local_input_device"] = devices[0]
+                            switched = True
+                        else:
+                            updates = None
+                        if updates is not None:
                             if not self._persist_voice_config_fields(updates):
                                 raise ValueError(
-                                    "按键已应用，但语音模式未能保存，请在语音页重新选择。")
-                            switched = True
+                                    "按键已应用，但语音设置未能保存，请在语音页重新选择。")
                         if switched:
-                            self.voiceInputSourceChanged.emit()
-                            self.localMicrophoneDeviceChanged.emit()
                             message += " 语音模式已切换。"
                         try:
                             store.mark_applied(identity)
@@ -9722,7 +9983,7 @@ def _load_qt_classes() -> dict:
                 # install - that is only ever established later, by a
                 # diagnostics recheck finding both endpoints present.
                 self._set_driver_info(
-                    "已启动 VB-CABLE 安装程序；完成安装并重启电脑后，请重新检查"
+                    "已启动 VB-CABLE 程序；请按提示完成安装或卸载并重启电脑后，重新检查"
                 )
 
     _qt_classes_cache = {
