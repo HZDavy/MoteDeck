@@ -121,6 +121,17 @@ h2{font-family:var(--display);font-size:44px;line-height:1.25;font-weight:700;le
 .demo .win .app{cursor:pointer}
 .demo .win .chip{cursor:pointer}
 
+/* Vokie 原生支持横幅 */
+.band{padding:0}
+.band-in{display:flex;align-items:center;gap:24px;padding:26px 30px;border:1px solid var(--line);border-radius:20px;background:var(--panel)}
+.band-logo{width:56px;height:56px;flex:none;border-radius:16px;background:var(--bg);display:grid;place-items:center;color:#374151}
+.band-logo svg{width:28px;height:28px;fill:currentColor}
+.band-copy h3{font-family:var(--display);font-size:22px;line-height:1.35;font-weight:600;letter-spacing:-.01em}
+.band-copy p{margin-top:6px;font-size:16px;line-height:1.6;color:var(--text2)}
+.band-link{margin-left:auto;padding-bottom:2px;font-size:15px;white-space:nowrap;border-bottom:1px solid currentColor}
+.band-link:hover{color:var(--text2)}
+.band+.blk{padding-top:72px}
+
 /* 语音：按住说话 */
 .talk{margin-top:36px;padding-top:28px;border-top:1px solid var(--line)}
 .talk-out{min-height:58px;font-size:20px;line-height:1.45;font-family:var(--display);color:var(--text)}
@@ -244,6 +255,8 @@ h2{font-family:var(--display);font-size:44px;line-height:1.25;font-weight:700;le
   .press{flex-direction:column;gap:16px;align-items:flex-start;padding:0 var(--pad);max-width:360px;margin:32px auto 0}
   .stats{padding:72px 0 0}
   .blk{padding:96px 0}
+  .band-in{flex-wrap:wrap;gap:16px;padding:20px}
+  .band-link{margin-left:0}
   .seg{display:flex;overflow-x:auto}
   .seg button{padding:0 12px;font-size:14px}
   .drop{height:520px}
