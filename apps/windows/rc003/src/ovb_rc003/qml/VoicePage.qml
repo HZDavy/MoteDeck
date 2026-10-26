@@ -802,6 +802,15 @@ Item {
                 }
             }
 
+            UiLabel {
+                objectName: "voiceKeyHotkeyUniqueNote"
+                tokens: root.tokens
+                kind: noteKind
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                text: qsTr("同时使用多个输入法时，快捷键不要有任何重复。")
+            }
+
             RowLayout {
                 Layout.fillWidth: true
                 spacing: root.tokens.spacingSmall

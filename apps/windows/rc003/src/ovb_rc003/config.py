@@ -1070,13 +1070,20 @@ def apply_plugin_voice_keys(
         for entry in existing
         if _normalize_plugin_id(entry.get("plugin")) != plugin
     ]
-    reusable: Dict[str, Dict[str, Any]] = {}
+    # 优先按快捷键认回同一条语音键，其次才按名字。快捷键由插件自带、用户改
+    # 不了，所以它稳定；而名字用户可能改过，若按插件默认名去匹配就会认不回来，
+    # 每次插件重连都会把自定义名字刷回默认名。
+    reusable_by_hotkey: Dict[str, Dict[str, Any]] = {}
+    reusable_by_name: Dict[str, Dict[str, Any]] = {}
     for entry in existing:
         if _normalize_plugin_id(entry.get("plugin")) != plugin:
             continue
+        hotkey = _normalize_hotkey_text(entry.get("hotkey", ""))
+        if hotkey and hotkey not in reusable_by_hotkey:
+            reusable_by_hotkey[hotkey] = entry
         name = _normalize_voice_key_name(entry.get("name"))
-        if name and name not in reusable:
-            reusable[name] = entry
+        if name and name not in reusable_by_name:
+            reusable_by_name[name] = entry
     used_ids = {entry["id"] for entry in merged}
     for raw_entry in entries:
         if len(merged) >= key_mapping.MAX_VOICE_SLOTS:
@@ -1087,7 +1094,9 @@ def apply_plugin_voice_keys(
         hotkey = _normalize_hotkey_text(raw_entry.get("hotkey", ""))
         if not name and not hotkey:
             continue
-        previous = reusable.get(name) if name else None
+        previous = reusable_by_hotkey.get(hotkey) if hotkey else None
+        if previous is None and name:
+            previous = reusable_by_name.get(name)
         slot = 0
         if previous is not None and previous["id"] not in used_ids:
             slot = previous["id"]
@@ -1102,7 +1111,8 @@ def apply_plugin_voice_keys(
         merged.append(
             _default_voice_key_config(
                 slot=slot,
-                name=name,
+                # 认回同一条时保留用户改过的名字；全新行才用插件给的名字。
+                name=previous["name"] if previous else name,
                 hotkey=hotkey,
                 enabled=bool(previous.get("enabled", True)) if previous else True,
                 plugin=plugin,
