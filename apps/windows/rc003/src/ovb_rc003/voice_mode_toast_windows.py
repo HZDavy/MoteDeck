@@ -164,13 +164,17 @@ class VoiceModeToast:
         self._thread: Optional[threading.Thread] = None
         self._thread_id = 0
         self._ready_event = threading.Event()
-        self._pending: Optional[Tuple[str, dict]] = None
+        self._pending: Optional[Tuple[str, dict, int]] = None
         self._stopped = False
         self._failed = False
         self._proc_keepalive: Optional[_WNDPROC] = None
 
-    def show(self, text: str, theme: str = "dark") -> None:
-        """Request one bubble; never blocks and never raises."""
+    def show(self, text: str, theme: str = "dark", offset: int = 0) -> None:
+        """Request one bubble; never blocks and never raises.
+
+        ``offset`` 是相对默认贴底位置的额外上移像素，由设置页的「调整位置」
+        写入配置；负值按 0 处理。
+        """
 
         if sys.platform != "win32":
             return
@@ -180,12 +184,16 @@ class VoiceModeToast:
         palette = _TOAST_THEMES.get(
             str(theme or "dark").strip().lower(), _TOAST_THEMES["dark"]
         )
+        try:
+            offset_px = max(0, int(offset))
+        except (TypeError, ValueError):
+            offset_px = 0
         with self._lock:
             if self._stopped or self._failed:
                 return
             if not self._ensure_thread_locked():
                 return
-            self._pending = (label, palette)
+            self._pending = (label, palette, offset_px)
             thread_id = self._thread_id
         if thread_id:
             try:
@@ -337,7 +345,7 @@ class VoiceModeToast:
                 self._pending = None
             self._ready_event.set()
             if pending is not None:
-                self._draw(hwnd, pending[0], pending[1])
+                self._draw(hwnd, pending[0], pending[1], pending[2])
 
             message = wintypes.MSG()
             while True:
@@ -349,7 +357,7 @@ class VoiceModeToast:
                         pending = self._pending
                         self._pending = None
                     if pending is not None:
-                        self._draw(hwnd, pending[0], pending[1])
+                        self._draw(hwnd, pending[0], pending[1], pending[2])
                     continue
                 if message.message == WM_TOAST_HIDE:
                     self._hide(hwnd)
@@ -600,7 +608,7 @@ class VoiceModeToast:
             return None, None
         return monitor, info
 
-    def _draw(self, hwnd, text: str, palette: dict) -> None:
+    def _draw(self, hwnd, text: str, palette: dict, offset: int = 0) -> None:
         user32, gdi32, _ = self._bind_win32()
         monitor, info = self._monitor_for_cursor(user32)
         if info is None:
@@ -634,7 +642,10 @@ class VoiceModeToast:
             pad_x = max(12, int(round(16 * scale)))
             pad_y = max(7, int(round(8 * scale)))
             # rcWork 已经扣掉任务栏，留一点缝即可贴近任务栏，和豆包输入法一致。
-            bottom_margin = max(6, int(round(10 * scale)))
+            # 设置页的「调整位置」再按用户拖动的像素把气泡整体往上挪。
+            bottom_margin = max(6, int(round(10 * scale))) + int(
+                round(max(0, offset) * scale)
+            )
             border_px = max(1, int(round(scale)))
 
             font = gdi32.CreateFontW(

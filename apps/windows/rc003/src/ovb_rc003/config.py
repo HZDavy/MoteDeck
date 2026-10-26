@@ -69,6 +69,11 @@ VOICE_CYCLE_TOAST_THEMES = (
     VOICE_CYCLE_TOAST_OFF,
 )
 
+# 模式切换气泡相对默认位置的纵向偏移（像素，正值向上）。设置页可以让用户
+# 把气泡从默认的贴底位置往上挪，避免被任务栏或输入法面板挡住。
+VOICE_CYCLE_TOAST_OFFSET_MIN = 0
+VOICE_CYCLE_TOAST_OFFSET_MAX = 400
+
 # 一条语音键配置的自定义名称上限，避免配置文件被写爆。
 MAX_VOICE_KEY_NAME_LENGTH = 32
 
@@ -252,6 +257,8 @@ def default_config() -> Dict[str, Any]:
         "voice_other_key_switch": False,
         # 切换模式时在鼠标所在屏幕底部弹出的小气泡配色：dark / light / off。
         "voice_cycle_toast_theme": VOICE_CYCLE_TOAST_DARK,
+        # 气泡相对默认底部位置的额外上移像素，0 表示贴默认位置。
+        "voice_cycle_toast_offset": 0,
         # Empty until the user explicitly picks one in settings; voice fails
         # closed while this is empty (see audio_output.resolve_selected_endpoint).
         # Both fields together disambiguate endpoints that share a display
@@ -607,6 +614,19 @@ def _legacy_voice_key_configs(config: Dict[str, Any]) -> List[Dict[str, Any]]:
     return entries
 
 
+def _clamp_voice_cycle_toast_offset(value: object) -> int:
+    """Return the bubble offset in pixels, clamped to the supported range."""
+
+    try:
+        offset = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return VOICE_CYCLE_TOAST_OFFSET_MIN
+    return max(
+        VOICE_CYCLE_TOAST_OFFSET_MIN,
+        min(VOICE_CYCLE_TOAST_OFFSET_MAX, offset),
+    )
+
+
 def _normalize_voice_key_configs(config: Dict[str, Any]) -> None:
     """Normalize the voice-key list and refresh its compatibility mirrors.
 
@@ -682,6 +702,9 @@ def _normalize_voice_key_configs(config: Dict[str, Any]) -> None:
     if theme not in VOICE_CYCLE_TOAST_THEMES:
         theme = VOICE_CYCLE_TOAST_DARK
     config["voice_cycle_toast_theme"] = theme
+    config["voice_cycle_toast_offset"] = _clamp_voice_cycle_toast_offset(
+        config.get("voice_cycle_toast_offset", 0)
+    )
 
 
 def voice_key_configs(config_data: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -886,6 +909,14 @@ def voice_cycle_toast_theme(config_data: Dict[str, Any]) -> str:
     if isinstance(theme, str) and theme.strip().lower() in VOICE_CYCLE_TOAST_THEMES:
         return theme.strip().lower()
     return VOICE_CYCLE_TOAST_DARK
+
+
+def voice_cycle_toast_offset(config_data: Dict[str, Any]) -> int:
+    """Return how many pixels the mode-switch bubble sits above its default spot."""
+
+    return _clamp_voice_cycle_toast_offset(
+        config_data.get("voice_cycle_toast_offset", VOICE_CYCLE_TOAST_OFFSET_MIN)
+    )
 
 
 _VOICE_KEY_FIELD_UNSET = object()

@@ -4913,6 +4913,60 @@ def _load_qt_classes() -> dict:
             new_config["voice_cycle_toast_theme"] = self._VOICE_CYCLE_TOAST_ORDER[index]
             self._save_voice_config_data(new_config)
 
+        def _get_voice_cycle_toast_offset(self) -> int:
+            return config.voice_cycle_toast_offset(self._config)
+
+        voiceCycleToastOffset = Property(
+            int, _get_voice_cycle_toast_offset, notify=voiceCycleConfigChanged
+        )
+
+        voiceCycleToastOffsetMax = Property(
+            int, lambda self: config.VOICE_CYCLE_TOAST_OFFSET_MAX, constant=True
+        )
+
+        voiceCycleToastOffIndex = Property(
+            int, lambda self: len(self._VOICE_CYCLE_TOAST_ORDER) - 1, constant=True
+        )
+
+        @Slot(int)
+        def setVoiceCycleToastOffset(self, offset: int) -> None:
+            try:
+                value = int(offset)
+            except (TypeError, ValueError):
+                return
+            value = max(
+                config.VOICE_CYCLE_TOAST_OFFSET_MIN,
+                min(config.VOICE_CYCLE_TOAST_OFFSET_MAX, value),
+            )
+            if value == self._get_voice_cycle_toast_offset():
+                return
+            new_config = dict(self._config)
+            new_config["voice_cycle_toast_offset"] = value
+            self._save_voice_config_data(new_config)
+
+        @Slot(result=bool)
+        def placeVoiceToastTuner(self) -> bool:
+            """Fill the tuner mask over the work area of the settings window's screen."""
+            from PySide6.QtGui import QGuiApplication
+
+            window = None
+            for candidate in QGuiApplication.topLevelWindows():
+                if candidate.objectName() == "voiceToastTunerWindow":
+                    window = candidate
+                    break
+            if window is None:
+                return False
+            parent = window.transientParent()
+            screen = parent.screen() if parent is not None else None
+            if screen is None:
+                screen = QGuiApplication.primaryScreen()
+            if screen is None:
+                return False
+            # 子窗口默认挂在主屏上，这里先跟随设置窗口所在屏幕再铺满工作区。
+            window.setScreen(screen)
+            window.setGeometry(screen.availableGeometry())
+            return True
+
         def _persist_voice_config_fields(self, updates: Dict[str, Any]) -> bool:
             new_config = dict(self._config)
             new_config.update(updates)

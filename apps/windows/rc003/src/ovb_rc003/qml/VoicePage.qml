@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Dialogs
 import QtQuick.Layouts
+import QtQuick.Window
 import OvbRc003Settings 1.0
 
 Item {
@@ -1426,6 +1427,19 @@ Item {
                             showDivider: true
 
                             editorData: [
+                                IconButton {
+                                    objectName: "voiceCycleToastAdjustButton"
+                                    tokens: root.tokens
+                                    iconName: "moveVertical"
+                                    iconColor: root.tokens.darkMode
+                                        ? root.tokens.textSecondary
+                                        : "#9a9a9a"
+                                    // 关闭气泡时没有可调的位置。
+                                    enabled: SettingsController.voiceCycleToastThemeIndex
+                                        !== SettingsController.voiceCycleToastOffIndex
+                                    Accessible.name: qsTr("调整气泡位置")
+                                    onClicked: voiceToastTuner.open()
+                                },
                                 ChipGroup {
                                     objectName: "voiceCycleToastChips"
                                     tokens: root.tokens
@@ -1517,6 +1531,269 @@ Item {
         Component.onCompleted: {
             if (visible)
                 SettingsController.startMicrophoneLevelMonitor()
+        }
+    }
+
+    // ── 气泡位置微调：覆盖整个屏幕的遮罩窗口 + 可拖动的胶囊预览 ──
+    Window {
+        id: voiceToastTunerWindow
+        objectName: "voiceToastTunerWindow"
+        visible: false
+        flags: Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
+        color: "transparent"
+
+        onVisibleChanged: {
+            if (visible) {
+                requestActivate()
+                voiceToastTuner.forceActiveFocus()
+            }
+        }
+
+        Item {
+            id: voiceToastTuner
+            objectName: "voiceToastTuner"
+            anchors.fill: parent
+            focus: true
+            // 本次调整的偏移量，点「保存」后才写入配置。
+            property int draftOffset: 0
+            // 已生效的偏移量，用来判断是否有未保存的调整。
+            property int savedOffset: 0
+            readonly property bool dirty: draftOffset !== savedOffset
+            // 确认弹窗对应的操作：保存前确认为 "save"，未保存退出为 "exit"。
+            property string pendingAction: ""
+            readonly property int maxOffset: SettingsController.voiceCycleToastOffsetMax
+            // 胶囊预览跟随所选气泡配色（1 = 浅色）。
+            readonly property bool lightToast:
+                SettingsController.voiceCycleToastThemeIndex === 1
+
+            function open() {
+                savedOffset = SettingsController.voiceCycleToastOffset
+                draftOffset = savedOffset
+                cancelConfirm()
+                // 只铺设置窗口所在屏幕的可用区域，任务栏保持可见。
+                SettingsController.placeVoiceToastTuner()
+                voiceToastTunerWindow.visible = true
+            }
+
+            // 点「保存」先弹确认。
+            function requestSave() {
+                pendingAction = "save"
+                voiceToastTunerConfirmLabel.text = qsTr("保存当前气泡位置？")
+                voiceToastTunerConfirm.visible = true
+            }
+
+            // 有未保存的调整时，退出前先弹确认。
+            function requestExit() {
+                if (!dirty) {
+                    closeTuner()
+                    return
+                }
+                pendingAction = "exit"
+                voiceToastTunerConfirmLabel.text = qsTr("调整尚未保存，是否保存？")
+                voiceToastTunerConfirm.visible = true
+            }
+
+            function cancelConfirm() {
+                pendingAction = ""
+                voiceToastTunerConfirm.visible = false
+                voiceToastTuner.forceActiveFocus()
+            }
+
+            function saveAndClose() {
+                SettingsController.setVoiceCycleToastOffset(draftOffset)
+                savedOffset = draftOffset
+                closeTuner()
+            }
+
+            function closeTuner() {
+                pendingAction = ""
+                voiceToastTunerConfirm.visible = false
+                voiceToastTunerWindow.visible = false
+            }
+
+            function applyOffset(value) {
+                draftOffset = Math.max(0, Math.min(maxOffset, Math.round(value)))
+            }
+
+            Keys.onUpPressed: function(event) {
+                applyOffset(draftOffset + 2)
+                event.accepted = true
+            }
+            Keys.onDownPressed: function(event) {
+                applyOffset(draftOffset - 2)
+                event.accepted = true
+            }
+            Keys.onEscapePressed: function(event) {
+                if (voiceToastTunerConfirm.visible) {
+                    cancelConfirm()
+                } else {
+                    requestExit()
+                }
+                event.accepted = true
+            }
+
+            Rectangle {
+                anchors.fill: parent
+                color: Qt.rgba(0, 0, 0, 0.45)
+
+                // 挡住遮罩上的点击，避免误触下面的窗口。
+                MouseArea {
+                    anchors.fill: parent
+                    acceptedButtons: Qt.AllButtons
+                    onWheel: function(wheel) { wheel.accepted = true }
+                }
+            }
+
+            Rectangle {
+                id: voiceToastTunerBar
+                anchors.top: parent.top
+                anchors.topMargin: 24
+                anchors.horizontalCenter: parent.horizontalCenter
+                width: voiceToastTunerBarRow.implicitWidth + 32
+                height: 48
+                radius: 12
+                color: root.tokens.surface
+                border.width: 1
+                border.color: root.tokens.cardBorder
+
+                RowLayout {
+                    id: voiceToastTunerBarRow
+                    anchors.centerIn: parent
+                    spacing: 12
+
+                    Label {
+                        text: qsTr("拖动胶囊，或用 ↑ ↓ 微调")
+                        color: root.tokens.textSecondary
+                        font.family: root.tokens.fontFamily
+                        font.pixelSize: root.tokens.fontSizeBody
+                    }
+                    CompactButton {
+                        objectName: "voiceToastTunerResetButton"
+                        tokens: root.tokens
+                        text: qsTr("恢复默认")
+                        onClicked: {
+                            voiceToastTuner.applyOffset(0)
+                            voiceToastTuner.forceActiveFocus()
+                        }
+                    }
+                    CompactButton {
+                        objectName: "voiceToastTunerSaveButton"
+                        tokens: root.tokens
+                        text: qsTr("保存")
+                        onClicked: voiceToastTuner.requestSave()
+                    }
+                    CompactButton {
+                        objectName: "voiceToastTunerExitButton"
+                        tokens: root.tokens
+                        text: qsTr("退出")
+                        onClicked: voiceToastTuner.requestExit()
+                    }
+                }
+            }
+
+            // 保存、未保存退出前的确认弹窗。
+            Rectangle {
+                id: voiceToastTunerConfirm
+                objectName: "voiceToastTunerConfirm"
+                z: 10
+                anchors.centerIn: parent
+                visible: false
+                width: voiceToastTunerConfirmColumn.implicitWidth + 48
+                height: voiceToastTunerConfirmColumn.implicitHeight + 40
+                radius: 12
+                color: root.tokens.surface
+                border.width: 1
+                border.color: root.tokens.cardBorder
+
+                ColumnLayout {
+                    id: voiceToastTunerConfirmColumn
+                    anchors.centerIn: parent
+                    spacing: 16
+
+                    Label {
+                        id: voiceToastTunerConfirmLabel
+                        Layout.maximumWidth: 420
+                        wrapMode: Text.WordWrap
+                        text: ""
+                        color: root.tokens.textPrimary
+                        font.family: root.tokens.fontFamily
+                        font.pixelSize: root.tokens.fontSizeBody
+                    }
+
+                    RowLayout {
+                        Layout.alignment: Qt.AlignRight
+                        spacing: 8
+
+                        CompactButton {
+                            objectName: "voiceToastTunerConfirmCancelButton"
+                            tokens: root.tokens
+                            text: qsTr("取消")
+                            onClicked: voiceToastTuner.cancelConfirm()
+                        }
+                        CompactButton {
+                            objectName: "voiceToastTunerConfirmDiscardButton"
+                            tokens: root.tokens
+                            text: qsTr("放弃修改")
+                            visible: voiceToastTuner.pendingAction === "exit"
+                            onClicked: voiceToastTuner.closeTuner()
+                        }
+                        CompactButton {
+                            objectName: "voiceToastTunerConfirmSaveButton"
+                            tokens: root.tokens
+                            text: qsTr("保存")
+                            onClicked: voiceToastTuner.saveAndClose()
+                        }
+                    }
+                }
+            }
+
+            Rectangle {
+                id: voiceToastTunerPreview
+                objectName: "voiceToastTunerPreview"
+                anchors.horizontalCenter: parent.horizontalCenter
+                // 与真实气泡一致：贴着屏幕底部，再按偏移量上移。
+                y: voiceToastTuner.height - height - 10 - voiceToastTuner.draftOffset
+                width: voiceToastTunerPreviewLabel.implicitWidth + 32
+                height: 36
+                radius: height / 2
+                // 与真实气泡一致：浅色主题用白底深字，深色主题用深底白字。
+                color: voiceToastTuner.lightToast ? "#ffffff" : "#121214"
+                border.width: 1
+                border.color: voiceToastTuner.lightToast ? "#dadade" : "#5c5c62"
+
+                Label {
+                    id: voiceToastTunerPreviewLabel
+                    anchors.centerIn: parent
+                    text: qsTr("语音模式")
+                    color: voiceToastTuner.lightToast ? "#141416" : "#ffffff"
+                    font.family: root.tokens.fontFamily
+                    font.pixelSize: 15
+                    font.weight: Font.DemiBold
+                }
+
+                MouseArea {
+                    id: voiceToastTunerDragArea
+                    anchors.fill: parent
+                    cursorShape: Qt.SizeVerCursor
+                    property real pressY: 0
+                    property int pressOffset: 0
+
+                    function positionInTuner(mouse) {
+                        return voiceToastTunerDragArea.mapToItem(
+                            voiceToastTuner, mouse.x, mouse.y).y
+                    }
+
+                    onPressed: function(mouse) {
+                        pressY = positionInTuner(mouse)
+                        pressOffset = voiceToastTuner.draftOffset
+                        voiceToastTuner.forceActiveFocus()
+                    }
+                    onPositionChanged: function(mouse) {
+                        voiceToastTuner.applyOffset(
+                            pressOffset - (positionInTuner(mouse) - pressY))
+                    }
+                }
+            }
         }
     }
 

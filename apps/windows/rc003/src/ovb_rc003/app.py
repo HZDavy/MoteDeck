@@ -3507,7 +3507,9 @@ class RC003App:
         if not name:
             return
         try:
-            self._voice_mode_toast.show(name, theme)
+            self._voice_mode_toast.show(
+                name, theme, config.voice_cycle_toast_offset(self._config)
+            )
         except BaseException as exc:  # noqa: BLE001 - the bubble is best effort
             self._logger.warning(
                 "voice mode toast failed: error_type=%s",

@@ -9,6 +9,8 @@ Button {
     property string iconName: ""
     property bool inverse: false
     property bool compact: false
+    // 传了就用这个颜色，不传沿用 textSecondary。
+    property var iconColor: null
 
     implicitWidth: compact ? 28 : 30
     implicitHeight: compact ? 28 : 30
@@ -20,7 +22,9 @@ Button {
             anchors.centerIn: parent
             name: root.iconName
             size: root.compact ? 16 : 18
-            color: root.inverse ? "#d4d4d4" : root.tokens.textSecondary
+            color: root.iconColor
+                ? root.iconColor
+                : (root.inverse ? "#d4d4d4" : root.tokens.textSecondary)
         }
     }
 
