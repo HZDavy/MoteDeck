@@ -4520,17 +4520,17 @@ class SettingsControllerTests(unittest.TestCase):
         saved = config.load_config(config.config_path(config.config_root()))
         self.assertIs(saved["voice_cycle_short_press"], True)
 
-        # 两个开关可以同时打开，写其中一个不能顺手清掉另一个，
-        # 否则它会永久丢失、短按彻底无响应。
-        controller.setVoiceShortPressDismiss(True)
+        # 短按切换模式和每条语音键的延迟补发互相独立，写其中一个不能顺手清掉
+        # 另一个，否则它会永久丢失、短按彻底无响应。
+        controller.setVoiceKeyConfigShortPressResend(1, True)
         saved = config.load_config(config.config_path(config.config_root()))
         self.assertIs(saved["voice_cycle_short_press"], True)
-        self.assertIs(saved["voice_short_press_dismiss"], True)
+        self.assertIs(saved["voice_key_configs"][0]["short_press_resend"], True)
 
         controller.setVoiceCycleShortPress(False)
-        controller.setVoiceShortPressDismiss(True)
+        controller.setVoiceKeyConfigShortPressResend(1, True)
         saved = config.load_config(config.config_path(config.config_root()))
-        self.assertIs(saved["voice_short_press_dismiss"], True)
+        self.assertIs(saved["voice_key_configs"][0]["short_press_resend"], True)
         self.assertIs(saved["voice_cycle_short_press"], False)
 
     def test_other_key_switch_unlocks_mode_cycle_action_options(self):
@@ -7224,23 +7224,27 @@ class SettingsControllerTests(unittest.TestCase):
         self.assertTrue(next(row for row in controller.voiceProfiles
                              if row["id"] == saved["id"])["applied"])
 
-    def test_voice_short_press_dismiss_toggle_persists_and_notifies(self):
+    def test_voice_short_press_resend_toggle_persists_and_notifies(self):
         controller, _ = self._make_controller()
+
+        def resend_enabled():
+            row = next(
+                row for row in controller.voiceKeyConfigs if row["id"] == 1
+            )
+            return bool(row["shortPressResend"])
+
         changed = []
-        controller.voiceShortPressDismissChanged.connect(
-            lambda: changed.append(controller.voiceShortPressDismiss)
+        controller.voiceKeyConfigsChanged.connect(
+            lambda: changed.append(resend_enabled())
         )
-        self.assertFalse(controller.voiceShortPressDismiss, "默认必须关闭")
+        self.assertFalse(resend_enabled(), "默认必须关闭")
 
-        controller.setVoiceShortPressDismiss(True)
+        controller.setVoiceKeyConfigShortPressResend(1, True)
 
-        self.assertTrue(controller.voiceShortPressDismiss)
+        self.assertTrue(resend_enabled())
         self.assertEqual(changed, [True])
         persisted = config.load_config(config.config_path(controller._config_root))
-        self.assertTrue(persisted["voice_short_press_dismiss"])
-
-        controller.setVoiceShortPressDismiss(True)
-        self.assertEqual(changed, [True], "值未变化时不应重复保存或发信号")
+        self.assertTrue(persisted["voice_key_configs"][0]["short_press_resend"])
 
     def test_export_all_mapping_presets_writes_a_library_backup(self):
         controller, _ = self._make_controller()

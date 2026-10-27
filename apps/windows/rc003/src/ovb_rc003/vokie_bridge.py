@@ -93,6 +93,8 @@ class VokieBridge(QObject):
     stateChanged = Signal()
     modesReceived = Signal(list)
     pluginDisconnected = Signal()
+    # Vokie 接下了一次语音会话：它的输入框就是这时才弹出来的。
+    sessionAccepted = Signal()
 
     def __init__(self, config_root: Path, parent=None) -> None:
         super().__init__(parent)
@@ -430,6 +432,9 @@ class VokieBridge(QObject):
             with self._lock:
                 self._modes = modes
             self.modesReceived.emit([dict(mode) for mode in modes])
+            return True
+        if message_type == "session_accepted":
+            self.sessionAccepted.emit()
             return True
         if message_type == "bye":
             return False

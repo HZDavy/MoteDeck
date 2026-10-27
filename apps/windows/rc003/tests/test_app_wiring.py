@@ -86,6 +86,20 @@ class _FakeBleSession:
             raise RuntimeError("simulated BLE worker thread that did not stop")
 
 
+class _FakeSignal:
+    """Minimal stand-in for VokieBridge's Qt signals."""
+
+    def __init__(self):
+        self._targets = []
+
+    def connect(self, target):
+        self._targets.append(target)
+
+    def emit(self):
+        for target in list(self._targets):
+            target()
+
+
 class _FakePluginBridge:
     """Stand-in for VokieBridge's audio hand-off surface."""
 
@@ -94,6 +108,7 @@ class _FakePluginBridge:
         self.audio_starts = []
         self.audio_frames = []
         self.audio_stops = 0
+        self.sessionAccepted = _FakeSignal()
 
     def connected(self):
         return self._connected
@@ -1763,6 +1778,33 @@ class HostHotkeyFailureSuppressesMicOpenTests(_AppWiringTestCase):
         self.assertFalse(self.app._plugin_voice_audio_active)
         self.assertFalse(self.app._voice_pcm_forwarding_enabled)
         self.assertFalse(self.app._plugin_voice_audio_stream)
+
+    def test_mode_toast_hides_only_after_vokie_accepts_the_session(self):
+        entries = config.voice_key_configs(self.app._config)
+        entries[0] = {**entries[0], "plugin": "vokie"}
+        self.app._config["voice_key_configs"] = entries
+        bridge = _FakePluginBridge()
+
+        with mock.patch.object(
+            app_module.vokie_bridge, "active_bridge", return_value=bridge
+        ), mock.patch.object(
+            self.app, "_hide_voice_mode_toast"
+        ) as hide_toast, mock.patch.object(
+            self.app._voice_audio.__class__, "open", autospec=True
+        ):
+            self.assertTrue(
+                self.app._handle_mic_button_pressed(send_device_open=False)
+            )
+            self.app._plugin_voice_hold_elapsed(
+                self.app._plugin_voice_press_token
+            )
+            # audio_start 只是请求会话；Vokie 还没弹输入框，气泡不能提前收。
+            self.assertEqual(len(bridge.audio_starts), 1)
+            hide_toast.assert_not_called()
+
+            bridge.sessionAccepted.emit()
+
+        hide_toast.assert_called_once_with()
 
     def test_plugin_voice_tap_discards_preroll_and_cancels_the_hold(self):
         entries = config.voice_key_configs(self.app._config)
@@ -7750,54 +7792,51 @@ class VoiceRemoteMicrophoneModeTests(_AppWiringTestCase):
         self.assertFalse(self.app._voice_gesture.latched, "模式1 不允许短按锁存")
         self.assertEqual(self.app._ble_session.mic_open_calls, 0)
 
-    def _use_manual_dismiss_timers(self):
+    def _use_manual_press_timers(self):
         timers = []
-        self.app._voice_short_press_dismiss_timer_factory = (
+        self.app._voice_delayed_press_timer_factory = (
             lambda _delay, callback: timers.append(_ManualTimer(callback)) or timers[-1]
         )
         return timers
 
     @staticmethod
-    def _fire_dismiss_timers(timers):
-        # 补发会再排一个“保持一小段按下时间”的松开定时器，边跑边取。
+    def _fire_press_timers(timers):
+        # 已经丢掉的延迟定时器也还在列表里（回调会因 token 失效直接返回），
+        # 边跑边取即可。
         while timers:
             timers.pop(0).fire()
 
-    def test_short_press_dismiss_option_adds_a_second_tap(self):
-        self.app._config["voice_short_press_dismiss"] = True
-        timers = self._use_manual_dismiss_timers()
+    def test_short_press_delay_sends_nothing_inside_the_window(self):
+        _stamp_voice_key(self.app._config, 1, short_press_resend=True)
+        timers = self._use_manual_press_timers()
+        clock = [50.0]
+        self.app._voice_gesture = voice_gesture.VoiceGestureLatch(
+            clock=lambda: clock[0]
+        )
         calls = []
         down_patch, up_patch = self._patch_voice_keys(calls)
         with down_patch, up_patch:
             self.app._on_button_event("mic", True, event_source="hid")
+            self.assertEqual(calls, [], "延迟发送：按下瞬间不能下发")
+            self.assertTrue(self.app._voice_shortcut.controller.active)
+            self.assertEqual(len(timers), 1, "按下只排一次延迟下发")
+            clock[0] += 0.05
             self.app._on_button_event("mic", False, event_source="hid")
-            self.assertEqual(
-                calls,
-                [("down", ("ralt",)), ("up", ("ralt",))],
-                "补发必须等双击间隔，不能和第一次松开挤在同几毫秒内",
+            self.assertEqual(calls, [], "窗口内松手一个键都不发")
+            self.assertIsNone(
+                self.app._voice_delayed_press_token,
+                "窗口内松手要把还没落地的那一记整记丢掉",
             )
-            self.assertEqual(len(timers), 1, "松开后应排一次延迟补发")
-            timers[0].fire()
-            self.assertEqual(calls[-1], ("down", ("ralt",)))
-            self.assertEqual(len(timers), 2, "补发按下后要再排一次松开")
-            timers[1].fire()
+            self._fire_press_timers(timers)
+            self.assertEqual(calls, [], "丢掉的那一记定时器到点也什么都不能发")
+            self.assertFalse(self.app._voice_shortcut.controller.active)
 
-        self.assertEqual(
-            calls,
-            [
-                ("down", ("ralt",)),
-                ("up", ("ralt",)),
-                ("down", ("ralt",)),
-                ("up", ("ralt",)),
-            ],
-            "开关打开后短按必须补一次完整按键，让输入法把面板关掉",
-        )
-        self.assertFalse(self.app._voice_shortcut.controller.active)
+        self.assertEqual(calls, [], "短按只切模式，宿主收不到任何按键")
         self.assertFalse(self.app._voice_gesture.latched)
 
-    def test_short_press_dismiss_option_ignores_a_held_press(self):
-        self.app._config["voice_short_press_dismiss"] = True
-        timers = self._use_manual_dismiss_timers()
+    def test_delayed_press_lands_once_when_held_past_the_window(self):
+        _stamp_voice_key(self.app._config, 1, short_press_resend=True)
+        timers = self._use_manual_press_timers()
         clock = [300.0]
         self.app._voice_gesture = voice_gesture.VoiceGestureLatch(
             clock=lambda: clock[0]
@@ -7806,90 +7845,59 @@ class VoiceRemoteMicrophoneModeTests(_AppWiringTestCase):
         down_patch, up_patch = self._patch_voice_keys(calls)
         with down_patch, up_patch:
             self.app._on_button_event("mic", True, event_source="hid")
+            self.assertEqual(calls, [], "长按同样先等满窗口")
+            self.assertEqual(len(timers), 1)
+            timers.pop(0).fire()
+            self.assertEqual(
+                calls, [("down", ("ralt",))], "越过窗口才下发这一记按下"
+            )
             clock[0] += 1.0
             self.app._on_button_event("mic", False, event_source="hid")
 
-        self.assertEqual(
-            calls,
-            [("down", ("ralt",)), ("up", ("ralt",))],
-            "长按只下发一次，补按选项不能生效",
-        )
-        self.assertEqual(timers, [], "长按不应该排补发")
+        self.assertEqual(calls, [("down", ("ralt",)), ("up", ("ralt",))])
+        self.assertEqual(timers, [], "按满阈值松手直接松开，不再排任何按键")
 
-    def test_short_press_dismiss_option_adds_a_second_tap_after_audio_stop(self):
-        self.app._config["voice_short_press_dismiss"] = True
-        timers = self._use_manual_dismiss_timers()
+    def test_short_press_delay_is_dropped_when_audio_stops_inside_the_window(self):
+        _stamp_voice_key(self.app._config, 1, short_press_resend=True)
+        timers = self._use_manual_press_timers()
         calls = []
         down_patch, up_patch = self._patch_voice_keys(calls)
         with down_patch, up_patch:
             self.app._on_control_event(MicButtonPressed())
+            self.assertEqual(calls, [])
             self.app._on_control_event(AudioStopped(reason=0))
-            self._fire_dismiss_timers(timers)
+            self.assertEqual(calls, [], "窗口内音频就停了：一个键都不能发")
+            self._fire_press_timers(timers)
 
-        self.assertEqual(
-            calls,
-            [
-                ("down", ("ralt",)),
-                ("up", ("ralt",)),
-                ("down", ("ralt",)),
-                ("up", ("ralt",)),
-            ],
-            "没有 HID 释放边沿时也要在音频流结束后补一次按键",
-        )
+        self.assertEqual(calls, [])
         self.assertFalse(self.app._voice_shortcut.controller.active)
 
-    def test_short_press_cycle_and_dismiss_together_switch_and_close_the_panel(self):
-        # Chatterfly 一类输入法同时支持长按和短按：短按切换模式时，这一记
-        # 按键已经把输入法唤起了，切完槽位必须再为“刚用过的槽”补发一次
-        # 按键把它收起来，否则每切一次模式都会误触发输入法。
-        _stamp_voice_key(self.app._config, 2, hotkey="lalt")
+    def test_short_press_cycle_switches_slots_without_sending_any_key(self):
+        _stamp_voice_key(self.app._config, 2, hotkey="lalt", short_press_resend=True)
+        _stamp_voice_key(self.app._config, 1, short_press_resend=True)
         self.app._config["voice_cycle_short_press"] = True
-        self.app._config["voice_short_press_dismiss"] = True
-        timers = self._use_manual_dismiss_timers()
+        timers = self._use_manual_press_timers()
+        clock = [50.0]
+        self.app._voice_gesture = voice_gesture.VoiceGestureLatch(
+            clock=lambda: clock[0]
+        )
         calls = []
         down_patch, up_patch = self._patch_voice_keys(calls)
         with down_patch, up_patch:
             self.app._on_button_event("mic", True, event_source="hid")
+            clock[0] += 0.05
             self.app._on_button_event("mic", False, event_source="hid")
-            self.assertEqual(
-                calls,
-                [("down", ("ralt",)), ("up", ("ralt",))],
-                "短按已经完整下发过当前槽的快捷键",
-            )
             self.assertEqual(self.app._voice_cycle_slot, 2, "短按要切到下一个槽")
-            self.assertEqual(len(timers), 1, "切槽后要给刚用过的槽排补发")
-            self._fire_dismiss_timers(timers)
-            self.assertEqual(
-                calls,
-                [
-                    ("down", ("ralt",)),
-                    ("up", ("ralt",)),
-                    ("down", ("ralt",)),
-                    ("up", ("ralt",)),
-                ],
-                "补发必须打在刚用过的槽上，才能收起它打开的面板",
-            )
+            self.assertEqual(calls, [], "切槽就是全部，什么都不发")
+            self._fire_press_timers(timers)
 
-            # 下一记短按改用新槽的快捷键，切完再补发一次收面板。
             self.app._on_button_event("mic", True, event_source="hid")
+            clock[0] += 0.05
             self.app._on_button_event("mic", False, event_source="hid")
-            self.assertEqual(len(timers), 1)
-            self._fire_dismiss_timers(timers)
+            self.assertEqual(self.app._voice_cycle_slot, 1, "两记短按走完一圈")
+            self._fire_press_timers(timers)
 
-        self.assertEqual(
-            calls,
-            [
-                ("down", ("ralt",)),
-                ("up", ("ralt",)),
-                ("down", ("ralt",)),
-                ("up", ("ralt",)),
-                ("down", ("lalt",)),
-                ("up", ("lalt",)),
-                ("down", ("lalt",)),
-                ("up", ("lalt",)),
-            ],
-        )
-        self.assertEqual(self.app._voice_cycle_slot, 1, "两记短按走完一圈")
+        self.assertEqual(calls, [], "短按一个键都不发")
         self.assertFalse(self.app._voice_shortcut.controller.active)
         self.assertFalse(self.app._voice_gesture.latched)
 
@@ -7958,42 +7966,51 @@ class VoiceRemoteMicrophoneModeTests(_AppWiringTestCase):
         self.app._on_button_event("power", False, event_source="hid")
         self.assertEqual(self.app._voice_cycle_slot, 1, "长按映射必须真的切槽")
 
-    def test_short_press_dismiss_option_is_ignored_in_local_microphone_mode(self):
-        self.app._config["voice_short_press_dismiss"] = True
+    def test_short_press_delay_is_ignored_in_local_microphone_mode(self):
+        _stamp_voice_key(self.app._config, 1, short_press_resend=True)
         _stamp_voice_mode(self.app._config, config.VOICE_INPUT_SOURCE_LOCAL)
-        timers = self._use_manual_dismiss_timers()
+        timers = self._use_manual_press_timers()
         calls = []
         down_patch, up_patch = self._patch_voice_keys(calls)
-        with down_patch, up_patch, self.app._voice_shortcut.lock:
-            self.app._dismiss_short_voice_press_locked("test")
+        with down_patch, up_patch:
+            self.app._on_control_event(MicButtonPressed())
+            self.assertIsNone(
+                self.app._voice_delayed_press_token, "模式2 不延迟下发"
+            )
+            self.app._on_control_event(AudioStopped(reason=0))
 
-        self.assertEqual(calls, [], "模式2 的短按仍然锁存麦克风，不需要补按")
-        self.assertEqual(timers, [], "模式2 不应该排补发")
+        self.assertEqual(timers, [], "模式2 不应该排延迟下发")
 
-    def test_short_press_dismiss_option_is_cancelled_when_the_mic_presses_again(self):
-        self.app._config["voice_short_press_dismiss"] = True
-        timers = self._use_manual_dismiss_timers()
-        calls = []
+    def test_a_new_press_after_a_short_press_starts_a_fresh_window(self):
+        _stamp_voice_key(self.app._config, 1, short_press_resend=True)
+        timers = self._use_manual_press_timers()
         clock = [50.0]
         self.app._voice_gesture = voice_gesture.VoiceGestureLatch(
             clock=lambda: clock[0]
         )
+        calls = []
         down_patch, up_patch = self._patch_voice_keys(calls)
         with down_patch, up_patch:
             self.app._on_button_event("mic", True, event_source="hid")
             clock[0] += 0.05
             self.app._on_button_event("mic", False, event_source="hid")
-            self.assertEqual(len(timers), 1)
-            # 补发还没落地就又按住了话筒：这次补发必须放弃。
+            self.assertEqual(calls, [], "第一记是短按：什么都不发")
+            self.assertIsNone(self.app._voice_delayed_press_token)
+            self._fire_press_timers(timers)
+            self.assertEqual(calls, [], "第一记作废后定时器不能再发键")
+            # 再按一记并一直按住：这时才重新排一次延迟下发。
+            clock[0] += 333.0
             self.app._on_button_event("mic", True, event_source="hid")
-            timers[0].fire()
+            self.assertEqual(len(timers), 1, "新的一记要重新计时")
+            timers.pop(0).fire()
+            self.assertEqual(
+                calls, [("down", ("ralt",))], "上一记不能漏出幽灵按键"
+            )
+            clock[0] += 1.0
+            self.app._on_button_event("mic", False, event_source="hid")
 
-        self.assertEqual(
-            calls,
-            [("down", ("ralt",)), ("up", ("ralt",)), ("down", ("ralt",))],
-            "新一轮按下进行中时不能再补发第二次按键",
-        )
-        self.assertTrue(self.app._voice_shortcut.controller.active)
+        self.assertEqual(calls, [("down", ("ralt",)), ("up", ("ralt",))])
+        self.assertFalse(self.app._voice_shortcut.controller.active)
 
     def test_held_press_injects_once_at_press_time(self):
         clock = [100.0]
@@ -8120,10 +8137,10 @@ class VoiceRemoteMicrophoneModeTests(_AppWiringTestCase):
         backend.key_up.assert_called_once_with(("ralt",))
         self.assertFalse(self.app._voice_shortcut.controller.active)
 
-    def test_short_press_dismiss_option_replays_through_the_interception_backend(self):
+    def test_short_press_delay_replays_through_the_interception_backend(self):
         self._bind_mic_to_interception()
-        self.app._config["voice_short_press_dismiss"] = True
-        timers = self._use_manual_dismiss_timers()
+        _stamp_voice_key(self.app._config, 1, short_press_resend=True)
+        timers = self._use_manual_press_timers()
         calls = []
         with mock.patch.object(
             app_module.injection_backend,
@@ -8147,18 +8164,15 @@ class VoiceRemoteMicrophoneModeTests(_AppWiringTestCase):
             side_effect=lambda tokens: calls.append(("sendinput-up", tokens)),
         ):
             self.app._on_button_event("mic", True, event_source="hid")
+            self.assertEqual(calls, [], "驱动级注入同样延迟")
+            timers.pop(0).fire()
+            self.assertEqual(calls, [("driver-down", ("ralt",))])
             self.app._on_button_event("mic", False, event_source="hid")
-            self._fire_dismiss_timers(timers)
 
         self.assertEqual(
             calls,
-            [
-                ("driver-down", ("ralt",)),
-                ("driver-up", ("ralt",)),
-                ("driver-down", ("ralt",)),
-                ("driver-up", ("ralt",)),
-            ],
-            "驱动级注入下短按补偿也必须走驱动级，并完整补一次按下/松开",
+            [("driver-down", ("ralt",)), ("driver-up", ("ralt",))],
+            "延迟下发必须走驱动级，窗口走完只有一次按下/松开",
         )
         self.assertFalse(self.app._voice_shortcut.controller.active)
 

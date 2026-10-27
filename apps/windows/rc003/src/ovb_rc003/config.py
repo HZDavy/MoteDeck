@@ -199,6 +199,7 @@ def _default_voice_key_config(
     device: str = "",
     enabled: bool = True,
     plugin: str = "",
+    short_press_resend: bool = False,
 ) -> Dict[str, Any]:
     return {
         "id": int(slot),
@@ -211,6 +212,10 @@ def _default_voice_key_config(
         "enabled": bool(enabled),
         # 非空表示这条语音键由外部插件提供（当前只有 Vokie）。
         "plugin": _normalize_plugin_id(plugin),
+        # 短按延迟发送：只对这一条非插件语音键生效。按下后把这唯一一次
+        # 快捷键推迟一小段时间再注入（松手不再补发第二次），避开同时支持
+        # 短按/长按的输入法；插件键的快捷键由插件自己接管，这里保持 False。
+        "short_press_resend": bool(short_press_resend),
     }
 
 
@@ -243,13 +248,9 @@ def default_config() -> Dict[str, Any]:
         "voice_input_source": VOICE_INPUT_SOURCE_REMOTE,
         # 模式2 使用本机哪个录音设备；空值表示尚未选择，模式2 保持静默。
         "voice_local_input_device": "",
-        # 模式1 的短按补偿（可选，默认关闭）。模式1 按下即注入，短按同样会让
-        # 输入法弹出一次；打开后松手时会立刻补发一次相同快捷键，相当于双击，
-        # 让输入法把刚弹出的面板关掉。长按不受影响。
-        "voice_short_press_dismiss": False,
         # 短按切换模式（可选，默认关闭）。打开后话筒键的短按在已配置的语音键
-        # 之间循环切换；它和上面的短按自动双击可以同时打开，此时切换槽位后
-        # 仍会为刚用过的槽补发一次按键，把被短按唤起的输入法面板收起来。
+        # 之间循环切换；每条语音键还可以单独打开“短按延迟发送”，把这一次
+        # 快捷键推迟下发，避开输入法的短按/长按竞争。
         "voice_cycle_short_press": False,
         # 使用其他按键切换模式（可选，默认关闭）。打开后按键设置页的单击、
         # 双击、长按动作里会多出“语音模式切换”，任意按键（语音键除外）都能
@@ -534,6 +535,8 @@ def _normalize_voice_hotkey(config: Dict[str, Any]) -> None:
     config["voice_hotkeys"] = {"hold": current}
     config["voice_slot_hotkeys"] = _normalize_voice_slot_hotkeys(config, current)
     config.pop("voice_release_finish_tap_enabled", None)
+    # 全局“短按自动双击”已改成每条语音键自己的“短按延迟发送”，旧字段丢弃。
+    config.pop("voice_short_press_dismiss", None)
     # The input-method (provider) layer is gone in schema 18: quietly drop the
     # legacy provider tables so an old installation never resurrects them.
     config.pop("voice_program", None)
@@ -672,6 +675,8 @@ def _normalize_voice_key_configs(config: Dict[str, Any]) -> None:
                 device=device,
                 enabled=raw_entry.get("enabled", True) is not False,
                 plugin=raw_entry.get("plugin", ""),
+                short_press_resend=raw_entry.get("short_press_resend", False)
+                is not False,
             )
         )
     if not normalized:
@@ -689,12 +694,10 @@ def _normalize_voice_key_configs(config: Dict[str, Any]) -> None:
     config["voice_input_source"] = first["source"]
     config["voice_local_input_device"] = first["device"]
 
-    # 两个短按开关彼此独立，可以同时打开：短按切换模式负责换槽位，短按自动
-    # 双击负责给刚用过的槽补发一次按键。运行时以“短按自动双击”决定是否补发。
+    # 两个短按开关彼此独立，可以同时打开：短按切换模式负责换槽位，每条语音
+    # 键的“短按延迟发送”把那一次按键推迟下发。运行时按具体槽位判断。
     cycle = bool(config.get("voice_cycle_short_press", False))
-    dismiss = bool(config.get("voice_short_press_dismiss", False))
     config["voice_cycle_short_press"] = cycle
-    config["voice_short_press_dismiss"] = dismiss
     config["voice_other_key_switch"] = bool(
         config.get("voice_other_key_switch", False)
     )
@@ -735,6 +738,8 @@ def voice_key_configs(config_data: Dict[str, Any]) -> List[Dict[str, Any]]:
                 device="" if source == VOICE_INPUT_SOURCE_REMOTE else device,
                 enabled=raw_entry.get("enabled", True) is not False,
                 plugin=raw_entry.get("plugin", ""),
+                short_press_resend=raw_entry.get("short_press_resend", False)
+                is not False,
             )
         )
     if not entries:
@@ -874,16 +879,17 @@ def voice_local_input_device(config_data: Dict[str, Any], slot: int = 1) -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
-def voice_short_press_dismiss(config_data: Dict[str, Any]) -> bool:
-    """Return whether a short press also replays a second tap.
+def voice_key_short_press_resend(config_data: Dict[str, Any], slot: int) -> bool:
+    """Return whether one voice key delays its only press on a short press.
 
-    Disabled by default because several input methods do not need it: pressing
-    the voice hotkey twice quickly would reopen or toggle something unrelated.
-    It stays meaningful while 短按切换模式 is on: the mode switch still happens
-    and the second tap closes the panel the first tap opened.
+    Only the key the user turned it on for is affected; plugin-provided keys
+    always report False because the plugin owns their shortcut.
     """
 
-    return bool(config_data.get("voice_short_press_dismiss", False))
+    entry = voice_key_config(config_data, slot)
+    if entry is None or _normalize_plugin_id(entry.get("plugin")):
+        return False
+    return bool(entry.get("short_press_resend", False))
 
 
 def voice_cycle_short_press(config_data: Dict[str, Any]) -> bool:
@@ -942,6 +948,7 @@ def update_voice_key_config(
     source: object = _VOICE_KEY_FIELD_UNSET,
     device: object = _VOICE_KEY_FIELD_UNSET,
     enabled: object = _VOICE_KEY_FIELD_UNSET,
+    short_press_resend: object = _VOICE_KEY_FIELD_UNSET,
     force: bool = False,
 ) -> Dict[str, Any]:
     """Return a copy with one voice key's fields replaced.
@@ -967,6 +974,9 @@ def update_voice_key_config(
         target["hotkey"] = _normalize_hotkey_text(hotkey)
     if enabled is not _VOICE_KEY_FIELD_UNSET:
         target["enabled"] = bool(enabled)
+    # 插件键的快捷键由插件接管，短按延迟发送对它没有意义，所以不写入。
+    if short_press_resend is not _VOICE_KEY_FIELD_UNSET and not target.get("plugin"):
+        target["short_press_resend"] = bool(short_press_resend)
     if source is not _VOICE_KEY_FIELD_UNSET:
         target["source"] = _normalize_voice_source(source)
         if target["source"] == VOICE_INPUT_SOURCE_REMOTE:
@@ -988,9 +998,9 @@ def add_voice_key_config(config_data: Dict[str, Any]) -> Dict[str, Any]:
     if len(entries) >= key_mapping.MAX_VOICE_SLOTS:
         return dict(config_data)
     used = {entry["id"] for entry in entries}
-    slot = 1
-    while slot in used:
-        slot += 1
+    # 新键一律接在现有最大 id 之后，不复用空位：id 1 是历史单语音键，它没录
+    # 快捷键时会回退到旧版全局快捷键，新键不该莫名其妙继承那个值。
+    slot = max(used, default=1) + 1
     entries.append(_default_voice_key_config(slot=slot))
     return _with_voice_key_configs(config_data, entries)
 
@@ -1044,6 +1054,16 @@ def set_voice_key_config_enabled(
     """Return a copy with one voice key switched on or off."""
 
     return update_voice_key_config(config_data, int(slot), enabled=bool(enabled))
+
+
+def set_voice_key_config_short_press_resend(
+    config_data: Dict[str, Any], slot: int, enabled: bool
+) -> Dict[str, Any]:
+    """Return a copy with one voice key's short-press resend toggled."""
+
+    return update_voice_key_config(
+        config_data, int(slot), short_press_resend=bool(enabled)
+    )
 
 
 def apply_plugin_voice_keys(
@@ -1173,9 +1193,6 @@ def _normalize_voice_input_source(config: Dict[str, Any]) -> None:
     if not isinstance(device, str):
         device = ""
     config["voice_local_input_device"] = device.strip()
-    config["voice_short_press_dismiss"] = bool(
-        config.get("voice_short_press_dismiss", False)
-    )
 
 
 def _normalize_desktop_behavior(config: Dict[str, Any]) -> None:

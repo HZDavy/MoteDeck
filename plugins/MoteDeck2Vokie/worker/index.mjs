@@ -398,8 +398,11 @@ const MODE_DEFINITIONS = [
   // 免提输入（toggleConfig）是“按一下开、再按一下关”，遥控器只能按住说话，
   // 所以这里不列出来，免得给出一个按住就断的键。
   { id: 'vokie-translation', name: '翻译输入', configKey: 'translationConfig', fallback: 'ralt+t' },
-  // 同声传译（实时翻译）和闪记按用户要求不列出。
+  // 同声传译（实时翻译）按用户要求不列出。
   { id: 'vokie-command', name: '语音指令', configKey: 'commandConfig', fallback: 'ralt+space' },
+  // 闪记：读 Vokie 的 quickNoteConfig。用户不需要这条键时，在语音键列表里
+  // 自己关掉或删掉即可。
+  { id: 'vokie-quick-note', name: '闪记', configKey: 'quickNoteConfig', fallback: 'ralt+n' },
 ];
 
 function vokieSettingsPath() {
@@ -626,6 +629,9 @@ function handleSessionResponse(message) {
   }
   entry.accepted = true;
   clearSessionTimers(entry);
+  // Vokie 这时才真正弹出自己的输入框；MoteDeck 靠这条消息收掉模式气泡，
+  // 所以不能提前在 audio_start 时就告诉它。
+  LINK.notifySessionAccepted(entry.mode);
   const pending = entry.pending.splice(0);
   for (const pcm of pending) sendAudioFrame(entry, pcm);
   if (entry.stopping) finishVoiceSession(entry);
@@ -851,6 +857,10 @@ class MoteDeckLink {
   _send(payload) {
     if (!this.socket) return;
     this._sendOn(this.socket, payload);
+  }
+
+  notifySessionAccepted(mode) {
+    this._send({ type: 'session_accepted', mode: String(mode || '') });
   }
 
   _sendOn(socket, payload) {

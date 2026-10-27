@@ -57,35 +57,42 @@ class DefaultConfigPrivacyTests(unittest.TestCase):
     def test_output_endpoint_defaults_to_empty_so_voice_fails_closed(self):
         self.assertEqual(config.default_config()["output_endpoint_name"], "")
 
-    def test_short_press_dismiss_is_off_by_default(self):
-        # Several input methods toggle on the second press, so the 模式1
-        # compensation must never switch itself on.
-        self.assertFalse(config.default_config()["voice_short_press_dismiss"])
-        self.assertFalse(config.voice_short_press_dismiss({}))
+    def test_short_press_resend_is_off_by_default_for_every_voice_key(self):
+        # 延迟发送会改变按键时机，所以每条语音键默认关闭。
+        stored = config.default_config()
+        self.assertFalse(stored["voice_key_configs"][0]["short_press_resend"])
+        self.assertFalse(config.voice_key_short_press_resend(stored, 1))
 
-    def test_invalid_short_press_dismiss_is_normalized_to_a_bool(self):
+    def test_invalid_short_press_resend_is_normalized_to_a_bool(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.json"
-            path.write_text(
-                json.dumps({"voice_short_press_dismiss": "yes"}), encoding="utf-8"
-            )
-            loaded = config.load_config(path)
-        self.assertIs(loaded["voice_short_press_dismiss"], True)
-        self.assertIs(config.voice_short_press_dismiss(loaded), True)
+            stored = config.default_config()
+            stored["voice_key_configs"][0]["short_press_resend"] = "yes"
+            loaded = config.save_config_and_load(path, stored)
+        self.assertIs(loaded["voice_key_configs"][0]["short_press_resend"], True)
+        self.assertIs(config.voice_key_short_press_resend(loaded, 1), True)
 
-    def test_short_press_cycle_and_auto_double_click_can_be_saved_together(self):
-        # 两个开关可以同时打开：短按切换模式负责换槽位，短按自动双击负责给
-        # 刚用过的槽补发一次按键。归一化不能再把其中一个静默清掉。
+    def test_short_press_resend_never_applies_to_plugin_keys(self):
+        stored = config.default_config()
+        stored["voice_key_configs"][0]["plugin"] = config.VOICE_KEY_PLUGIN_VOKIE
+        stored["voice_key_configs"][0]["hotkey"] = "lctrl+win"
+        stored["voice_key_configs"][0]["short_press_resend"] = True
+        updated = config.set_voice_key_config_short_press_resend(stored, 1, True)
+        self.assertFalse(config.voice_key_short_press_resend(stored, 1))
+        self.assertFalse(config.voice_key_short_press_resend(updated, 1))
+
+    def test_short_press_cycle_and_resend_can_be_saved_together(self):
+        # 两个开关互相独立：短按切换模式负责换槽位，每条语音键的延迟发送负责
+        # 把这一次按键推迟下发。归一化不能把其中一个静默清掉。
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.json"
             stored = config.default_config()
             stored["voice_cycle_short_press"] = True
-            stored["voice_short_press_dismiss"] = True
+            stored = config.set_voice_key_config_short_press_resend(stored, 1, True)
             loaded = config.save_config_and_load(path, stored)
         self.assertIs(loaded["voice_cycle_short_press"], True)
-        self.assertIs(loaded["voice_short_press_dismiss"], True)
         self.assertIs(config.voice_cycle_short_press(loaded), True)
-        self.assertIs(config.voice_short_press_dismiss(loaded), True)
+        self.assertIs(config.voice_key_short_press_resend(loaded, 1), True)
 
     def test_other_key_switch_is_off_by_default(self):
         self.assertFalse(config.default_config()["voice_other_key_switch"])
@@ -587,15 +594,19 @@ class RoundTripTests(unittest.TestCase):
             self.assertEqual(loaded["gain_db"], 3.5)
             self.assertTrue(loaded["diagnostic_trace_enabled"])
 
-    def test_short_press_dismiss_round_trips(self):
+    def test_short_press_resend_round_trips(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.json"
             original = config.default_config()
-            original["voice_short_press_dismiss"] = True
+            original = config.set_voice_key_config_short_press_resend(
+                original, 1, True
+            )
 
             config.save_config(path, original)
 
-            self.assertTrue(config.load_config(path)["voice_short_press_dismiss"])
+            self.assertTrue(
+                config.voice_key_short_press_resend(config.load_config(path), 1)
+            )
 
     def test_save_removes_the_retired_release_finish_setting(self):
         with tempfile.TemporaryDirectory() as tmp:

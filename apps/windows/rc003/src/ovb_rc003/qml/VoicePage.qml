@@ -562,6 +562,8 @@ Item {
                             // 插件带来的语音键固定由插件维护：快捷键不能改、也不能删。
                             readonly property bool pluginLocked:
                                 Boolean(modelData.locked)
+                            readonly property bool shortPressResend:
+                                modelData.shortPressResend === true
                             readonly property string slotHotkey: {
                                 const entries = SettingsController.voiceSlotHotkeys
                                 const value = entries[slot]
@@ -719,6 +721,42 @@ Item {
                                             && !root.configurationWriteBusy
                                         onClicked: SettingsController.removeVoiceKeyConfig(
                                             keyCard.slot)
+                                    }
+
+                                    CompactButton {
+                                        objectName: "voiceKeyShortPressResendButton"
+                                        tokens: root.tokens
+                                        // 固定小方块：激活与否尺寸不变，整行不会位移。
+                                        implicitWidth: 32
+                                        Layout.preferredWidth: 32
+                                        compactMinimumWidth: 32
+                                        leftPadding: 4
+                                        rightPadding: 4
+                                        // 插件语音键的快捷键由插件接管，按钮不可用；
+                                        // 保留占位，名称框和快捷键框才能和普通行对齐。
+                                        opacity: keyCard.pluginLocked ? 0 : 1
+                                        flat: !keyCard.shortPressResend
+                                        highlighted: keyCard.shortPressResend
+                                        enabled: !keyCard.pluginLocked
+                                            && !root.configurationWriteBusy
+                                            && !root.voiceHotkeyBusy
+                                        Accessible.name: qsTr("短按延迟发送")
+                                        onClicked: SettingsController.setVoiceKeyConfigShortPressResend(
+                                            keyCard.slot, !keyCard.shortPressResend)
+
+                                        // 两行两字排成小方块，尽量少占地儿。
+                                        contentItem: Label {
+                                            text: "延迟\n发送"
+                                            textFormat: Text.PlainText
+                                            horizontalAlignment: Text.AlignHCenter
+                                            verticalAlignment: Text.AlignVCenter
+                                            color: keyCard.shortPressResend
+                                                ? root.tokens.accentText
+                                                : root.tokens.textSecondary
+                                            font.family: root.tokens.fontFamily
+                                            font.pixelSize: root.tokens.fontSizeTiny
+                                            font.weight: Font.Medium
+                                        }
                                     }
 
                                     IconButton {
@@ -1362,8 +1400,9 @@ Item {
                         titleText: qsTr("语音键")
                         titleObjectName: "voiceKeySectionTitle"
 
-                        // 两个短按行为可以同时打开：切换模式换槽位，自动双击
-                        // 负责把被短按唤起的输入法面板收起来。
+                        // 两个短按行为可以同时打开：切换模式换槽位，每条语音键的
+                        // “短按延迟发送”把唯一那一次按键推迟下发，避开输入法的
+                        // 短按/长按竞争。
                         InlineSettingsRow {
                             objectName: "voiceCycleShortPressRow"
                             tokens: root.tokens
@@ -1407,24 +1446,22 @@ Item {
                         }
 
                         InlineSettingsRow {
-                            objectName: "voiceShortPressDismissRow"
+                            objectName: "voiceKeyTutorialRow"
                             tokens: root.tokens
-                            titleText: qsTr("短按自动双击")
-                            descriptionText: qsTr("可屏蔽部分输入法的短按")
+                            actionColumnWidth: root.settingsActionColumnWidth
+                            titleText: qsTr("语音键帮助")
+                            descriptionText: qsTr("查看语音键录入、模式切换与延迟发送说明")
                             showDivider: true
 
-                            CompactSwitch {
-                                id: voiceShortPressDismissSwitch
-                                objectName: "voiceShortPressDismissSwitch"
+                            // 与「麦克风隐私」入口保持同样的文字链接样式。
+                            CompactButton {
+                                objectName: "voiceKeyTutorialButton"
                                 tokens: root.tokens
-                                checked: SettingsController.voiceShortPressDismiss
-                                enabled: !root.configurationWriteBusy
-                                    && !root.voiceHotkeyBusy
-                                Accessible.name: qsTr("短按自动双击关闭输入框")
-                                onToggled: {
-                                    if (checked !== SettingsController.voiceShortPressDismiss)
-                                        SettingsController.setVoiceShortPressDismiss(checked)
-                                }
+                                flat: true
+                                trailingIcon: "external"
+                                text: qsTr("查看教程")
+                                Accessible.name: qsTr("打开语音键帮助")
+                                onClicked: SettingsController.openVoiceKeyTutorial()
                             }
                         }
 

@@ -81,6 +81,7 @@ from . import (
     hid_identity,
     hotkey,
     injection_backend,
+    input_method_watch_windows,
     key_detection_bridge,
     key_mapping,
     local_microphone_windows,
@@ -187,11 +188,16 @@ _KEY_DETECTION_SUPPRESSION_MAX_SECONDS = 2.0
 _RUNTIME_STATUS_HEARTBEAT_SECONDS = 5.0
 _PRESET_SWITCH_POLL_SECONDS = 1.0
 _VOICE_HOLD_SAFETY_SECONDS = 120.0
-# 短按补偿的第二次按键必须和真人双击一样留出间隔。驱动级注入下，如果
-# 松开与补发只隔几毫秒，输入法面板还没真正创建，第二次按键会被当成
-# 重复事件吞掉。
-_VOICE_SHORT_PRESS_DISMISS_DELAY_SECONDS = 0.09
-_VOICE_SHORT_PRESS_DISMISS_TAP_HOLD_SECONDS = 0.03
+# 语音键的短按阈值：按下不到这么久就是短按（只切模式），越过才是长按（语音）。
+# 这个值同时也是"延迟发送"的等待窗口，所以它直接决定按下后语音多久才开。
+# 0.35 太肉；再往下压就会开始把正常的短按误判成长按。实测下探到 0.15
+# 换取更快的开口手感。
+_VOICE_TAP_MAX_SECONDS = 0.15
+# 短按开关（界面上叫"延迟发送"）打开时：按下瞬间一个键都不发，先等满这个
+# 短按阈值。窗口内松手只切模式，宿主输入法收不到任何按键，所以短按绝不会
+# 变成一次语音输入。只有一直按住、越过这个阈值才是长按，这时才下发那一记
+# KEY_DOWN，松手再 KEY_UP。窗口与短按判定共用同一个阈值，两边不会打架。
+_VOICE_SHORTCUT_PRESS_DELAY_SECONDS = _VOICE_TAP_MAX_SECONDS
 # 插件语音只按"按住多久"分岔，不看音量：按下就开遥控器话筒并把 PCM 缓进
 # 一个约 0.8s 的环形缓冲，按满 ``_PLUGIN_VOICE_HOLD_SECONDS`` 才开插件会话
 # 并把缓冲一起补发（插件在 session_accepted 之前会自己暂存），所以开口的
@@ -199,7 +205,7 @@ _VOICE_SHORT_PRESS_DISMISS_TAP_HOLD_SECONDS = 0.03
 # 用能量判断"有没有说话"会把开话筒的爆音和按键噪声当成人声，连按切模式
 # 每次都误触发，所以这里只认时间。
 _PLUGIN_VOICE_PREROLL_SECONDS = 0.8
-_PLUGIN_VOICE_HOLD_SECONDS = 0.35
+_PLUGIN_VOICE_HOLD_SECONDS = 0.25
 _VOICE_KEY_PHYSICALIZER_RETRY_SECONDS = 1.0
 _VOICE_KEY_PHYSICALIZER_DEGRADED_RETRY_WINDOW_SECONDS = 10.0
 _VOICE_KEY_PHYSICALIZER_FAILED_RETRY_SECONDS = 30.0
@@ -398,7 +404,9 @@ class RC003App:
         self._voice_shortcut_physical_sources_down: set[str] = set()
         # The physical microphone follows its actual key-down/key-up edges.
         # Promoted voice buttons retain tap/hold behavior per voice slot.
-        self._voice_gesture = voice_gesture.VoiceGestureLatch()
+        self._voice_gesture = voice_gesture.VoiceGestureLatch(
+            tap_max_seconds=_VOICE_TAP_MAX_SECONDS
+        )
         self._extra_voice_gestures: dict[int, voice_gesture.VoiceGestureLatch] = {}
         # Non-microphone buttons bound to a voice slot replay the slot's host
         # shortcut only; this tracks which slot currently owns that hold.
@@ -407,14 +415,14 @@ class RC003App:
         self._voice_hold_watchdog_timer: Optional[object] = None
         self._voice_hold_watchdog_token: Optional[object] = None
         self._voice_hold_watchdog_timer_factory = threading.Timer
-        # 短按补偿的第二次按键按双击节奏延迟下发，这里的定时器与 token
-        # 用来保证只有最新一次短按的补发能落地。
-        self._voice_short_press_dismiss_timer: Optional[object] = None
-        self._voice_short_press_dismiss_token: Optional[object] = None
-        self._voice_short_press_release_timer: Optional[object] = None
-        # True while the compensating second tap is physically held down.
-        self._voice_short_press_dismiss_hold_outstanding = False
-        self._voice_short_press_dismiss_timer_factory = threading.Timer
+        # 延迟发送：按下时只占住控制器（保证所有 controller.active 判断不变），
+        # 一个键都不发；等满窗口才真的注入这一次 KEY_DOWN。窗口内松手就直接
+        # 作废，宿主什么也收不到。
+        self._voice_delayed_press_timer: Optional[object] = None
+        self._voice_delayed_press_token: Optional[object] = None
+        self._voice_delayed_press_action: Optional[object] = None
+        self._voice_delayed_press_slot: Optional[int] = None
+        self._voice_delayed_press_timer_factory = threading.Timer
         # 模式2 的本机麦克风采集；只在语音会话开着的时候运行。
         self._local_voice_capture: Optional[object] = None
         # 短按切换模式：当前生效的语音键 id，None 表示还没按过、用第一条。
@@ -422,6 +430,12 @@ class RC003App:
         self._voice_mode_toast = voice_mode_toast_windows.VoiceModeToast(
             logger=self._logger
         )
+        # 其他输入法没有回调，只能盯着顶层窗口：气泡显示后冒出新窗口就收掉。
+        self._voice_mode_toast_watch = input_method_watch_windows.InputMethodWatch(
+            logger=self._logger
+        )
+        # 已经挂过「输入框弹出」通知的插件桥；Vokie 接下会话时才收气泡。
+        self._plugin_voice_toast_bridge: Optional[object] = None
         self._ordinary_mic_lock = threading.Lock()
         self._ordinary_mic_sources_down: set[str] = set()
         self._ordinary_mic_late_sources_down: set[str] = set()
@@ -566,6 +580,7 @@ class RC003App:
             try:
                 await self._stop_preset_switching()
                 self._stop_input_channels()
+                self._voice_mode_toast_watch.stop()
                 self._voice_mode_toast.stop()
             finally:
                 element_navigation_runtime.clear_diagnostic_trace(self._diagnostic_trace)
@@ -2886,6 +2901,7 @@ class RC003App:
                     )
                 self._unsolicited_mic_close_pending = False
                 self._finish_voice_mic_gesture()
+                self._drop_voice_delayed_press_locked()
                 if self._voice_shortcut.pending_tokens is not None:
                     if self._voice_shortcut.release_pending():
                         self._voice_shortcut.controller.cancel_pending()
@@ -3417,6 +3433,7 @@ class RC003App:
         bridge = vokie_bridge.active_bridge()
         if bridge is None or not bridge.connected():
             return False
+        self._watch_plugin_voice_input_box(bridge)
         mode_name = config.voice_key_name(self._config, int(slot))
         if not bridge.send_audio_start(mode_name):
             return False
@@ -3430,8 +3447,6 @@ class RC003App:
             if not bridge.send_audio(frame.tobytes()):
                 self._voice_pcm_forwarding_enabled = False
                 break
-        # Vokie 自己的输入框马上要出现，先把这个常驻置顶的气泡收掉。
-        self._hide_voice_mode_toast()
         session = self._ble_session
         if session is not None and not self._plugin_voice_mic_opened:
             try:
@@ -3459,9 +3474,31 @@ class RC003App:
             bridge.send_audio_stop()
         self._logger.info("plugin voice audio stopped on %s", reason)
 
+    def _watch_plugin_voice_input_box(self, bridge) -> None:
+        """等 Vokie 真正接下会话（输入框弹出）时再收掉模式气泡。"""
+
+        if self._plugin_voice_toast_bridge is bridge:
+            return
+        try:
+            bridge.sessionAccepted.connect(self._hide_voice_mode_toast)
+        except BaseException as exc:  # noqa: BLE001 - the bubble is best effort
+            self._logger.warning(
+                "voice mode toast watch failed: error_type=%s",
+                type(exc).__name__,
+            )
+            return
+        self._plugin_voice_toast_bridge = bridge
+
     def _hide_voice_mode_toast(self) -> None:
         """收起模式气泡，别压在插件自己的输入框上。"""
 
+        try:
+            self._voice_mode_toast_watch.cancel()
+        except BaseException as exc:  # noqa: BLE001 - the bubble is best effort
+            self._logger.warning(
+                "voice mode toast watch stop failed: error_type=%s",
+                type(exc).__name__,
+            )
         try:
             self._voice_mode_toast.hide()
         except BaseException as exc:  # noqa: BLE001 - the bubble is best effort
@@ -3513,6 +3550,15 @@ class RC003App:
         except BaseException as exc:  # noqa: BLE001 - the bubble is best effort
             self._logger.warning(
                 "voice mode toast failed: error_type=%s",
+                type(exc).__name__,
+            )
+            return
+        # 第三方输入法弹出面板时会冒出新窗口，看到了就提前收掉气泡。
+        try:
+            self._voice_mode_toast_watch.watch(self._hide_voice_mode_toast)
+        except BaseException as exc:  # noqa: BLE001 - the bubble is best effort
+            self._logger.warning(
+                "voice mode toast watch failed: error_type=%s",
                 type(exc).__name__,
             )
 
@@ -3677,7 +3723,13 @@ class RC003App:
         *,
         tokens_override: Optional[Tuple[str, ...]] = None,
     ) -> bool:
+        # 还有一次延迟按下没落地：先把它丢掉，避免这次边沿之后多出一个
+        # 没人松开的按键。
+        self._drop_voice_delayed_press_locked()
         action = self._voice_shortcut.controller.on_mic_button_pressed()
+        # 输入法常在"按下"这一瞬间就把面板翻成可见，而气泡要到松手才显示，
+        # 所以可见窗口的基线必须在注入之前取，否则面板会被算进基线里。
+        self._voice_mode_toast_watch.arm()
         delivered = self._voice_shortcut.apply(
             action,
             voice_slot=voice_slot,
@@ -3694,70 +3746,126 @@ class RC003App:
             return False
         return True
 
-    def _dismiss_short_voice_press_locked(
-        self, reason: str, voice_slot: Optional[int] = None
-    ) -> None:
-        """模式1 短按补偿：松手后补发一次相同快捷键，相当于自动双击。
+    def _voice_shortcut_press_delay_enabled(self, voice_slot: Optional[int]) -> bool:
+        """Whether this press should wait out the tap window before sending.
 
-        模式1 按下即注入，短按已经让输入法完整看到一次按压；这个可选项在松手
-        后再补一次按下/松开，让输入法把刚弹出的面板关掉。补发按真人双击的节奏
-        发出：驱动级注入下，如果松开和补发只隔几毫秒，输入法面板还没真正创建，
-        第二次按键会被当成重复事件吞掉，看起来就像补偿没生效。只用于模式1 的
-        短按，长按和模式2 都不会走到这里。调用方持有 ``_voice_shortcut.lock``。
-
-        ``voice_slot`` 是刚刚短按用过的槽位。短按切换模式会在补发排程之后
-        推进循环游标，所以这里必须按捕获的槽位判断，不能再看当前活动槽。
+        只用于模式1（热键注入）的语音槽：这些槽的短按开关现在表示"延迟发送"。
+        模式2 用本机麦克风，插件槽由 Vokie 自己收面板，都不延迟。
         """
 
-        if voice_slot is None:
-            voice_slot = self._active_voice_slot()
-        if self._voice_slot_is_plugin(voice_slot):
-            return
         if self._voice_slot_uses_local_microphone(voice_slot):
-            return
-        if not config.voice_short_press_dismiss(self._config):
-            return
+            return False
+        if self._voice_slot_is_plugin(voice_slot):
+            return False
+        return config.voice_key_short_press_resend(self._config, voice_slot)
+
+    def _arm_voice_shortcut_press_delay_locked(
+        self, action: object, voice_slot: Optional[int]
+    ) -> bool:
+        """把这一次按键整记推迟到窗口之后：窗口内松手就什么也不发。
+
+        控制器在按下那一刻已经进入 holding，所以这里只暂存动作本身；定时器到
+        点才真正注入 KEY_DOWN。返回 False 表示定时器起不来，调用方应立刻按原样
+        下发，功能不受影响。调用方持有 ``_voice_shortcut.lock``。
+        """
+
         token = object()
-        self._cancel_voice_short_press_dismiss_locked()
-        self._voice_short_press_dismiss_token = token
+        self._cancel_voice_shortcut_press_delay_locked()
+        self._voice_delayed_press_action = action
+        self._voice_delayed_press_slot = voice_slot
         try:
-            timer = self._voice_short_press_dismiss_timer_factory(
-                _VOICE_SHORT_PRESS_DISMISS_DELAY_SECONDS,
-                lambda token=token, voice_slot=voice_slot, reason=reason: (
-                    self._voice_short_press_dismiss_delay_elapsed(
-                        token, voice_slot, reason
-                    )
-                ),
+            timer = self._voice_delayed_press_timer_factory(
+                _VOICE_SHORTCUT_PRESS_DELAY_SECONDS,
+                lambda token=token: self._voice_shortcut_press_delay_elapsed(token),
             )
             if isinstance(timer, threading.Thread):
                 timer.daemon = True
-            self._voice_short_press_dismiss_timer = timer
+            self._voice_delayed_press_token = token
+            self._voice_delayed_press_timer = timer
             timer.start()
-        except BaseException as exc:  # noqa: BLE001 - compensation is best effort
-            if self._voice_short_press_dismiss_token is token:
-                self._cancel_voice_short_press_dismiss_locked()
+        except BaseException as exc:  # noqa: BLE001 - fall back to immediate send
+            self._cancel_voice_shortcut_press_delay_locked()
             self._logger.warning(
-                "voice short press dismiss timer failed: error_type=%s reason=%s",
+                "voice shortcut press delay timer failed: error_type=%s",
                 type(exc).__name__,
-                reason,
+            )
+            return False
+        return True
+
+    def _cancel_voice_shortcut_press_delay_locked(self) -> None:
+        timer = self._voice_delayed_press_timer
+        self._voice_delayed_press_timer = None
+        self._voice_delayed_press_token = None
+        self._voice_delayed_press_action = None
+        self._voice_delayed_press_slot = None
+        if timer is not None:
+            cancel = getattr(timer, "cancel", None)
+            if callable(cancel):
+                try:
+                    cancel()
+                except BaseException:  # noqa: BLE001 - token is already invalid
+                    pass
+
+    def _drop_voice_delayed_press_locked(self) -> None:
+        """丢掉还没落地的那一次延迟按下：一个键都不发。
+
+        短按（窗口内松手）、重新按下、清理和强制释放都走这里；已经落地的
+        那一次由正常的松开路径收尾，不在这里处理。
+        """
+
+        if self._voice_delayed_press_token is None:
+            return
+        self._cancel_voice_shortcut_press_delay_locked()
+        self._voice_shortcut.controller.cancel_pending()
+
+    def _voice_shortcut_press_delay_elapsed(self, token: object) -> None:
+        """窗口走完用户还按着：这才下发这一次按键。"""
+
+        with self._voice_shortcut.lock:
+            if token is not self._voice_delayed_press_token:
+                return
+            action = self._voice_delayed_press_action
+            voice_slot = self._voice_delayed_press_slot
+            self._voice_delayed_press_token = None
+            self._voice_delayed_press_timer = None
+            self._voice_delayed_press_action = None
+            self._voice_delayed_press_slot = None
+            if action is None:
+                return
+            if not self._voice_shortcut.apply(
+                action,
+                voice_slot=voice_slot,
+                inject_mode=self._voice_slot_inject_mode(voice_slot),
+            ):
+                self._voice_focus_before = None
+                self._voice_focus_provider = ""
+                self._voice_focus_submit_method = ""
+                self._voice_shortcut.controller.cancel_pending()
+                # 设备话筒在按下时已经开了：这条路径必须把它一起收干净。
+                self._force_voice_hold_release_locked(
+                    "delayed voice shortcut press delivery failed",
+                    reconnect=False,
+                )
+                return
+            self._diagnostic_trace.emit(
+                "hotkey_sent",
+                **self._diagnostic_trace.current_context(),
+                backend=_VOICE_HOTKEY_BACKEND_MARKED,
+            )
+            self._logger.info(
+                "voice shortcut press delivered after delay: slot=%s", voice_slot
             )
 
     def _handle_voice_short_tap_locked(self, reason: str) -> None:
-        """One physical mic short press: compensate a double click and/or switch mode.
+        """One physical mic short press: switch the active voice mode.
 
-        两个开关可以同时打开。补发第二次按键必须排在推进循环游标之前，
-        因为补发重放的是“刚用过的槽”的快捷键（热键要到下一次物理按下才
-        切换），这样被短按唤起的输入法面板才会被同一套快捷键收掉；游标推进
-        只影响下一记按下。
+        短按（延迟窗口内松手）一个键都不发，所以这里只推进循环游标并提示
+        气泡。
         """
 
         if not self._voice_cycle_enabled():
-            self._dismiss_short_voice_press_locked(reason)
             return
-        used_slot = self._active_voice_slot()
-        self._cancel_voice_short_press_dismiss_locked()
         self._end_latched_voice_session_for_cycle_locked()
-        self._dismiss_short_voice_press_locked(reason, voice_slot=used_slot)
         slot = self._advance_voice_cycle_slot_locked()
         self._show_voice_mode_toast(slot)
         self._logger.info(
@@ -3786,7 +3894,6 @@ class RC003App:
         with self._voice_shortcut.lock:
             if not self._voice_cycle_slots():
                 return
-            self._cancel_voice_short_press_dismiss_locked()
             self._end_latched_voice_session_for_cycle_locked()
             slot = self._advance_voice_cycle_slot_locked()
             self._show_voice_mode_toast(slot)
@@ -3800,8 +3907,8 @@ class RC003App:
     def _end_latched_voice_session_for_cycle_locked(self) -> None:
         """Close a latched mic session because the user switched voice mode.
 
-        快捷键的按下/松开在短按那一刻已经完整走完，所以这里不补发边沿，只把
-        PCM 转发、本机采集和设备话筒收干净，再落掉锁存。
+        唯一那一次按键在按下时就排好延迟下发、松手时收尾，所以这里不再发
+        边沿，只把 PCM 转发、本机采集和设备话筒收干净，再落掉锁存。
         """
 
         if not self._voice_gesture.latched:
@@ -3820,105 +3927,6 @@ class RC003App:
         self._voice_mic_gesture_sources_down.clear()
         self._finish_voice_mic_gesture()
         self._logger.info("voice mic tap latch released by mode switch")
-
-    def _cancel_voice_short_press_dismiss_locked(self) -> None:
-        timer = self._voice_short_press_dismiss_timer
-        self._voice_short_press_dismiss_timer = None
-        self._voice_short_press_dismiss_token = None
-        if timer is not None:
-            cancel = getattr(timer, "cancel", None)
-            if callable(cancel):
-                try:
-                    cancel()
-                except BaseException:  # noqa: BLE001 - token is already invalid
-                    pass
-
-    def _voice_short_press_dismiss_delay_elapsed(
-        self,
-        token: object,
-        voice_slot: Optional[int],
-        reason: str,
-    ) -> None:
-        """双击间隔走完：复核状态后补发第二次按下。"""
-
-        with self._voice_shortcut.lock:
-            if token is not self._voice_short_press_dismiss_token:
-                return
-            self._voice_short_press_dismiss_token = None
-            self._voice_short_press_dismiss_timer = None
-            if not self._short_press_dismiss_still_wanted_locked(voice_slot):
-                return
-            inject_mode = self._voice_slot_inject_mode(voice_slot)
-            if not self._press_voice_shortcut_edge_locked(voice_slot):
-                return
-            self._voice_short_press_dismiss_hold_outstanding = True
-            self._arm_voice_short_press_dismiss_release_locked(inject_mode, reason)
-
-    def _short_press_dismiss_still_wanted_locked(
-        self, voice_slot: Optional[int]
-    ) -> bool:
-        """复核补发是否仍然需要，按刚用过的槽位判断模式1/模式2。"""
-
-        if self._voice_slot_uses_local_microphone(voice_slot):
-            return False
-        if not config.voice_short_press_dismiss(self._config):
-            return False
-        if self._voice_shortcut.controller.active:
-            return False
-        if (
-            self._voice_shortcut_physical_sources_down
-            or self._voice_mic_gesture_sources_down
-        ):
-            return False
-        return True
-
-    def _arm_voice_short_press_dismiss_release_locked(
-        self,
-        inject_mode: Optional[str],
-        reason: str,
-    ) -> None:
-        """保持一小段按下时间再松开，避免驱动级注入的补发被当成抖动。
-
-        松开定时器单独存放：延迟补发会被下一次短按取消，但已经按下的补发
-        必须无条件松开，绝不能把宿主快捷键留在按住状态。
-        """
-
-        try:
-            timer = self._voice_short_press_dismiss_timer_factory(
-                _VOICE_SHORT_PRESS_DISMISS_TAP_HOLD_SECONDS,
-                lambda: self._voice_short_press_dismiss_release_elapsed(
-                    inject_mode, reason
-                ),
-            )
-            if isinstance(timer, threading.Thread):
-                timer.daemon = True
-            self._voice_short_press_release_timer = timer
-            timer.start()
-        except BaseException as exc:  # noqa: BLE001 - never leave the key held
-            self._logger.warning(
-                "voice short press dismiss hold timer failed: error_type=%s",
-                type(exc).__name__,
-            )
-            self._voice_short_press_dismiss_release_elapsed(inject_mode, reason)
-
-    def _voice_short_press_dismiss_release_elapsed(
-        self,
-        inject_mode: Optional[str],
-        reason: str,
-    ) -> None:
-        with self._voice_shortcut.lock:
-            self._voice_short_press_release_timer = None
-            if not self._voice_short_press_dismiss_hold_outstanding:
-                # 用户已经重新按住话筒：这一次的松开由用户自己的按下接管。
-                return
-            self._voice_short_press_dismiss_hold_outstanding = False
-            if self._release_voice_shortcut_edge_locked(
-                "short press dismiss second tap",
-                inject_mode=inject_mode,
-            ):
-                self._logger.info(
-                    "voice short press dismissed with a second tap on %s", reason
-                )
 
     def _handle_extra_voice_key_edge(
         self,
@@ -3952,7 +3960,9 @@ class RC003App:
             return
         gesture = self._extra_voice_gestures.get(slot)
         if gesture is None:
-            gesture = voice_gesture.VoiceGestureLatch()
+            gesture = voice_gesture.VoiceGestureLatch(
+                tap_max_seconds=_VOICE_TAP_MAX_SECONDS
+            )
             self._extra_voice_gestures[slot] = gesture
         with self._voice_shortcut.lock:
             if is_pressed:
@@ -4228,6 +4238,7 @@ class RC003App:
         self._voice_shortcut_physical_sources_down.clear()
         self._voice_mic_gesture_hid_released = True
 
+        self._drop_voice_delayed_press_locked()
         action = self._voice_shortcut.controller.reset()
         released = True
         if action is not None:
@@ -4311,6 +4322,15 @@ class RC003App:
         *,
         inject_mode: Optional[str] = None,
     ) -> bool:
+        if self._voice_delayed_press_token is not None:
+            # 窗口内就松手了：这一次按键整记作废，宿主一个键都收不到，所以
+            # 短按只会切模式，绝不会变成语音输入。
+            self._drop_voice_delayed_press_locked()
+            self._cancel_voice_hold_watchdog_locked()
+            self._logger.info(
+                "voice shortcut press dropped inside the tap window: %s", reason
+            )
+            return True
         action = self._voice_shortcut.controller.on_mic_button_released()
         if action is None:
             self._cancel_voice_hold_watchdog_locked()
@@ -4367,6 +4387,11 @@ class RC003App:
     ) -> bool:
         """Release HOLD shortcuts without depending solely on AUDIO_STOP."""
 
+        if self._voice_delayed_press_token is not None:
+            # 取消/清理路径也一样：还没落地的按键整记作废，不发任何键。
+            self._drop_voice_delayed_press_locked()
+            self._cancel_voice_hold_watchdog_locked()
+            return True
         action = self._voice_shortcut.controller.on_mic_button_released()
         if action is None:
             self._cancel_voice_hold_watchdog_locked()
@@ -5511,6 +5536,14 @@ class RC003App:
                         self._finish_voice_mic_gesture()
                         self._begin_voice_mic_gesture(event_source, physical_down=True)
                         gesture_decision = self._voice_gesture.on_press()
+                    elif self._voice_delayed_press_token is not None:
+                        # 上一记的按键还没落地，而且用户已经松过手了：那一次
+                        # 作废，这次真实按下重新走一遍（同样延迟下发），不能
+                        # 把它当成仍在按住。
+                        self._logger.info(
+                            "delayed voice press superseded by a new physical press"
+                        )
+                        self._drop_voice_delayed_press_locked()
                     else:
                         self._logger.info(
                             "voice physical trigger ignored: hold session already active"
@@ -6654,12 +6687,9 @@ class RC003App:
                         elif self._uses_local_voice_microphone():
                             self._finish_voice_mic_gesture(reset_gesture=False)
                         else:
-                            # 模式1 只支持长按：这个短按的快捷键已经完整
-                            # 下发并松开，设备流也停了，直接结束而不锁存。
+                            # 模式1 只支持长按：短按一个键都没发，设备流也停
+                            # 了，直接结束而不锁存。
                             self._finish_voice_mic_gesture()
-                            self._dismiss_short_voice_press_locked(
-                                "audio stop after short voice press"
-                            )
                 latched_session = (
                     (
                         self._voice_gesture.latched
@@ -6765,11 +6795,20 @@ class RC003App:
                     )
                     self._apply_pending_voice_settings_if_idle_locked()
                     return
-                action = (
-                    None
-                    if physical_voice_sources_down
-                    else self._voice_shortcut.controller.on_audio_stopped()
-                )
+                if self._voice_delayed_press_token is not None:
+                    # 窗口还没走完音频就停了：这一记按键整记作废，宿主一个键
+                    # 都收不到（短按不误触语音）。
+                    self._drop_voice_delayed_press_locked()
+                    self._logger.info(
+                        "voice delayed press dropped on audio stop before it landed"
+                    )
+                    action = None
+                else:
+                    action = (
+                        None
+                        if physical_voice_sources_down
+                        else self._voice_shortcut.controller.on_audio_stopped()
+                    )
                 action_applied = (
                     True if action is None else self._voice_shortcut.apply(action)
                 )
@@ -6962,7 +7001,7 @@ class RC003App:
         if self._voice_slot_is_plugin(voice_slot):
             # 插件模式（Vokie）：插件已连接时长按会把遥控器的 PCM 直接推给
             # 它；插件没连上时退回只重放它的那条快捷键。两种都不开虚拟声卡。
-            self._voice_short_press_dismiss_hold_outstanding = False
+            self._drop_voice_delayed_press_locked()
             self._voice_pcm_forwarding_enabled = False
             if self._voice_shortcut.pending_tokens is not None:
                 if not self._voice_shortcut.release_pending():
@@ -7005,8 +7044,8 @@ class RC003App:
             )
             self._plugin_voice_started_this_press = False
 
-        # 用户又按下了话筒：正在进行中的短按补发让位给这次真实按下。
-        self._voice_short_press_dismiss_hold_outstanding = False
+        # 用户又按下了话筒：还没落地的延迟按下让位给这次真实按下。
+        self._drop_voice_delayed_press_locked()
 
         self._ensure_voice_diagnostic_attempt()
         if not self._accept_input_events or not self._accept_ble_events:
@@ -7054,11 +7093,19 @@ class RC003App:
 
         self._capture_voice_focus_before()
         action = self._voice_shortcut.controller.on_mic_button_pressed()
-        action_delivered = self._voice_shortcut.apply(
-            action,
-            voice_slot=voice_slot,
-            inject_mode=self._voice_slot_inject_mode(voice_slot),
-        )
+        press_delayed = False
+        if self._voice_shortcut_press_delay_enabled(voice_slot):
+            # 短按开关打开：这一次按键推迟下发，并且只发这一次。
+            press_delayed = self._arm_voice_shortcut_press_delay_locked(
+                action, voice_slot
+            )
+        action_delivered = True
+        if not press_delayed:
+            action_delivered = self._voice_shortcut.apply(
+                action,
+                voice_slot=voice_slot,
+                inject_mode=self._voice_slot_inject_mode(voice_slot),
+            )
         if not action_delivered:
             self._voice_focus_before = None
             self._voice_focus_provider = ""
@@ -7080,11 +7127,12 @@ class RC003App:
             return False
 
         self._voice_pcm_forwarding_enabled = True
-        self._diagnostic_trace.emit(
-            "hotkey_sent",
-            **self._diagnostic_trace.current_context(),
-            backend=_VOICE_HOTKEY_BACKEND_MARKED,
-        )
+        if not press_delayed:
+            self._diagnostic_trace.emit(
+                "hotkey_sent",
+                **self._diagnostic_trace.current_context(),
+                backend=_VOICE_HOTKEY_BACKEND_MARKED,
+            )
         self._set_runtime_voice_result(bridge_runtime_status.VOICE_RUNTIME_ACTIVE)
         self._set_runtime_voice_active(True)
         if not self._arm_voice_hold_watchdog_locked():

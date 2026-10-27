@@ -1,6 +1,10 @@
 import sys
+import threading
+import time
 import unittest
+from unittest import mock
 
+from ovb_rc003 import input_method_watch_windows
 from ovb_rc003.voice_mode_toast_windows import VoiceModeToast
 
 
@@ -80,5 +84,98 @@ class VoiceModeToastInkOffsetTests(unittest.TestCase):
         self.assertLess(original[0], 60)
 
 
+class InputMethodWatchTests(unittest.TestCase):
+    def setUp(self):
+        for patcher in (
+            mock.patch.object(input_method_watch_windows, "_bind_user32", lambda: object()),
+            mock.patch.object(input_method_watch_windows, "_own_pid", lambda: 4321),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_a_new_foreign_window_reports_once(self):
+        snapshots = [{1}, {1}, {1, 2}]
+        cursor = {"index": 0}
+
+        def visible(_user32, _own_pid):
+            index = min(cursor["index"], len(snapshots) - 1)
+            cursor["index"] += 1
+            return set(snapshots[index])
+
+        calls = []
+        reported = threading.Event()
+
+        def on_popup():
+            calls.append(1)
+            reported.set()
+
+        watch = input_method_watch_windows.InputMethodWatch(
+            duration_ms=800, interval_ms=40
+        )
+        with mock.patch.object(input_method_watch_windows, "_visible_windows", visible):
+            watch.watch(on_popup)
+            self.assertTrue(reported.wait(2.0))
+            watch.cancel()
+        self.assertEqual(calls, [1])
+
+    def test_cancel_stops_the_watch_before_any_window_appears(self):
+        watch = input_method_watch_windows.InputMethodWatch(
+            duration_ms=800, interval_ms=40
+        )
+        calls = []
+        with mock.patch.object(
+            input_method_watch_windows, "_visible_windows", lambda *a: {1}
+        ):
+            watch.watch(lambda: calls.append(1))
+            watch.cancel()
+        time.sleep(0.15)
+        self.assertEqual(calls, [])
+
+    def test_a_panel_visible_before_the_toast_still_reports_once(self):
+        # Chatterfly 的面板按下就翻成可见，气泡松手后才显示：按下时 arm() 记的
+        # 基线里没有它，watch() 就要立刻认出来，而不是把它当成"一直都在"。
+        snapshots = [{1}, {1, 2}]
+        cursor = {"index": 0}
+
+        def visible(_user32, _own_pid):
+            index = min(cursor["index"], len(snapshots) - 1)
+            cursor["index"] += 1
+            return set(snapshots[index])
+
+        calls = []
+        reported = threading.Event()
+
+        def on_popup():
+            calls.append(1)
+            reported.set()
+
+        watch = input_method_watch_windows.InputMethodWatch(
+            duration_ms=800, interval_ms=40
+        )
+        with mock.patch.object(input_method_watch_windows, "_visible_windows", visible):
+            watch.arm()
+            watch.watch(on_popup)
+            self.assertTrue(reported.wait(2.0))
+            watch.cancel()
+        self.assertEqual(calls, [1])
+
+    def test_an_armed_baseline_expires_instead_of_matching_later_windows(self):
+        watch = input_method_watch_windows.InputMethodWatch(
+            duration_ms=400, interval_ms=40
+        )
+        calls = []
+        with mock.patch.object(
+            input_method_watch_windows, "_visible_windows", lambda *a: {1}
+        ), mock.patch.object(
+            input_method_watch_windows, "_BASELINE_MAX_AGE_SECONDS", 0.0
+        ):
+            watch.arm()
+            watch.watch(lambda: calls.append(1))
+            time.sleep(0.2)
+            watch.cancel()
+        self.assertEqual(calls, [])
+
+
 if __name__ == "__main__":
     unittest.main()
+

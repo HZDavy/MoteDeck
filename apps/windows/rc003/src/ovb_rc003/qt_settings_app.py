@@ -156,10 +156,12 @@ APPLICATION_UPDATE_CHECK_ENABLED = True
 VOKIE_WEBSITE_URL = "https://www.vokie.com"
 VOKIE_PLUGIN_URL = (
     f"https://github.com/{application_update.REPOSITORY_SLUG}"
-    "/releases/download/v0.1.1/MoteDeck2Vokie-0.1.0.zip"
+    "/releases/download/v0.1.2/MoteDeck2Vokie-0.1.1.zip"
 )
 OPENMEXIA_WEBSITE_URL = "https://hzdavy.github.io/OpenMexia/"
 OPENMEXIA_DOWNLOAD_URL = "https://github.com/HZDavy/OpenMexia/releases"
+# 语音页「语音键设置教程」入口。教程页面之后建在官网上，这里用固定锚点占位。
+VOICE_KEY_TUTORIAL_URL = f"{application_update.WEBSITE_URL}#voice-keys"
 
 
 # Only the physical microphone button can own RC003 audio. Other buttons use
@@ -1209,7 +1211,6 @@ def _load_qt_classes() -> dict:
         voiceKeyConfigsChanged = Signal()
         voicePluginStateChanged = Signal()
         voiceInputSourceChanged = Signal()
-        voiceShortPressDismissChanged = Signal()
         voiceCycleConfigChanged = Signal()
         localMicrophoneOptionsChanged = Signal()
         localMicrophoneDeviceChanged = Signal()
@@ -4779,7 +4780,6 @@ def _load_qt_classes() -> dict:
                 self.voiceSlotHotkeysChanged,
                 self.voiceKeyConfigsChanged,
                 self.voiceInputSourceChanged,
-                self.voiceShortPressDismissChanged,
                 self.voiceCycleConfigChanged,
                 self.localMicrophoneDeviceChanged,
                 self.voiceMappingReadyChanged,
@@ -4821,26 +4821,6 @@ def _load_qt_classes() -> dict:
         )
 
         # -- 语音页：短按切换模式与模式切换气泡 -----------------------------
-
-        def _get_voice_short_press_dismiss(self) -> bool:
-            return config.voice_short_press_dismiss(self._config)
-
-        voiceShortPressDismiss = Property(
-            bool,
-            _get_voice_short_press_dismiss,
-            notify=voiceShortPressDismissChanged,
-        )
-
-        @Slot(bool)
-        def setVoiceShortPressDismiss(self, enabled: bool) -> None:
-            enabled = bool(enabled)
-            if enabled == self._get_voice_short_press_dismiss():
-                return
-            new_config = dict(self._config)
-            # 只改自己这个开关：它和“短按切换模式”可以同时打开，
-            # 不能因为保存一项就把另一项静默清掉。
-            new_config["voice_short_press_dismiss"] = enabled
-            self._save_voice_config_data(new_config)
 
         def _get_voice_cycle_short_press(self) -> bool:
             return config.voice_cycle_short_press(self._config)
@@ -5046,6 +5026,9 @@ def _load_qt_classes() -> dict:
                         "device": device,
                         "deviceIndex": device_index,
                         "enabled": bool(entry.get("enabled", True)),
+                        "shortPressResend": bool(
+                            entry.get("short_press_resend", False)
+                        ),
                         "plugin": plugin,
                         "locked": bool(plugin),
                         "first": index == 0,
@@ -5111,6 +5094,14 @@ def _load_qt_classes() -> dict:
         def setVoiceKeyConfigEnabled(self, slot: int, enabled: bool) -> None:
             self._save_voice_config_data(
                 config.set_voice_key_config_enabled(self._config, slot, enabled)
+            )
+
+        @Slot(int, bool)
+        def setVoiceKeyConfigShortPressResend(self, slot: int, enabled: bool) -> None:
+            self._save_voice_config_data(
+                config.set_voice_key_config_short_press_resend(
+                    self._config, slot, enabled
+                )
             )
 
         @Slot(int, str)
@@ -5424,6 +5415,12 @@ def _load_qt_classes() -> dict:
         @Slot(result=bool)
         def openOpenMexiaDownload(self) -> bool:
             result = shell_targets.open_external_target(OPENMEXIA_DOWNLOAD_URL)
+            self._report_external_target(result, self._VOICE_PAGE_INDEX)
+            return result.outcome is shell_targets.ExternalTargetOutcome.OPENED
+
+        @Slot(result=bool)
+        def openVoiceKeyTutorial(self) -> bool:
+            result = shell_targets.open_external_target(VOICE_KEY_TUTORIAL_URL)
             self._report_external_target(result, self._VOICE_PAGE_INDEX)
             return result.outcome is shell_targets.ExternalTargetOutcome.OPENED
 
@@ -7849,6 +7846,15 @@ def _load_qt_classes() -> dict:
                 self._refresh_mapping_presets()
             except Exception:  # noqa: BLE001 - the dialog stays usable on a bad store
                 pass
+
+        @Slot()
+        def refreshMappingApps(self) -> None:
+            """Rebuild the button page's application bar.
+
+            Kept separate from refreshVoiceProfiles() so a failure while
+            building the preset list can no longer leave the app bar empty.
+            """
+            self._refresh_mapping_apps()
 
         def _refresh_mapping_presets(self) -> None:
             profile = self._selected_device_id()

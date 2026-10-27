@@ -61,6 +61,10 @@ GLOBAL_NAME = mapping_presets.AUTO_NAME
 VOICE_FIELDS = ("voice_input_source", "voice_local_input_device")
 # 一条语音键的完整快照：列表顺序就是用户排好的顺序，关闭的语音键也保留。
 VOICE_KEY_FIELDS = ("id", "name", "hotkey", "source", "device", "enabled", "plugin")
+# config.json 的语音键后来多了“延迟发送”开关。旧版保存的 profile 快照里
+# 没有这个字段，所以它只能是可选字段，不能参与“字段集合必须完全相等”
+# 的校验，否则老数据会让整份配置读取失败。
+OPTIONAL_VOICE_KEY_FIELDS = ("short_press_resend",)
 VOICE_KEYS_FIELD = "voice_keys"
 ENTRY_FIELDS = ("id", "name", "scope", "process", "hotkey", "mapping",
                 *VOICE_FIELDS, VOICE_KEYS_FIELD)
@@ -163,7 +167,9 @@ def validate_voice_keys(value: object) -> list[dict]:
         raise ValueError("配置里的语音键列表格式无效。")
     result, ids = [], set()
     for raw in value:
-        if not isinstance(raw, dict) or set(raw) != set(VOICE_KEY_FIELDS):
+        if (not isinstance(raw, dict)
+                or not set(VOICE_KEY_FIELDS) <= set(raw)
+                or set(raw) - set(VOICE_KEY_FIELDS) - set(OPTIONAL_VOICE_KEY_FIELDS)):
             raise ValueError("配置里的语音键格式无效。")
         try:
             slot = int(raw["id"])
@@ -182,7 +188,8 @@ def validate_voice_keys(value: object) -> list[dict]:
         result.append({"id": slot, "name": name.strip(),
                        "hotkey": hotkey.strip().lower(), "source": source,
                        "device": device, "enabled": raw["enabled"],
-                       "plugin": plugin.strip().lower()})
+                       "plugin": plugin.strip().lower(),
+                       "short_press_resend": raw.get("short_press_resend", False) is not False})
     return result
 
 

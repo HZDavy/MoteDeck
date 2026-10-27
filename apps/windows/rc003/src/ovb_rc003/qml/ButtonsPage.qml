@@ -91,7 +91,12 @@ Item {
 
     onWidthChanged: scheduleConnectorRepaint()
     onHeightChanged: scheduleConnectorRepaint()
-    Component.onCompleted: scheduleConnectorRepaint()
+    Component.onCompleted: {
+        scheduleConnectorRepaint()
+        // 页面一创建就把应用栏的列表读出来，否则冷启动后必须先打开“语音”页的
+        // 配置管理弹窗才会填充，按键映射页会一直只有“全局”和“+”。
+        SettingsController.refreshMappingApps()
+    }
 
     // 同一帧内的多次几何变化合并成一次重绘；连线画布尺寸固定，
     // 拖窗口时只平移，重绘只在真正影响连线形状的变化时才有意义。
