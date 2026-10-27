@@ -156,7 +156,7 @@ APPLICATION_UPDATE_CHECK_ENABLED = True
 VOKIE_WEBSITE_URL = "https://www.vokie.com"
 VOKIE_PLUGIN_URL = (
     f"https://github.com/{application_update.REPOSITORY_SLUG}"
-    "/releases/download/v0.1.2/MoteDeck2Vokie-0.1.1.zip"
+    "/releases/download/v0.1.3/MoteDeck2Vokie-0.1.1.zip"
 )
 OPENMEXIA_WEBSITE_URL = "https://hzdavy.github.io/OpenMexia/"
 OPENMEXIA_DOWNLOAD_URL = "https://github.com/HZDavy/OpenMexia/releases"
@@ -5229,7 +5229,11 @@ def _load_qt_classes() -> dict:
             monitor = self._microphone_level_monitor
             self._microphone_level_monitor = None
             if monitor is not None:
-                monitor.stop()
+                # 关流要等 PortAudio/WASAPI 把设备收回去，实测阻塞 8~25ms。
+                # 离开语音页时这段阻塞正好压在切页那一帧上，所以延到本轮事件
+                # 处理之后再做，让切页那一帧先画出去。仍在 UI 线程执行，
+                # 不跨线程碰 PortAudio 的流。
+                QTimer.singleShot(0, monitor.stop)
             self._set_microphone_level(0.0)
 
         def _tick_microphone_level(self) -> None:
