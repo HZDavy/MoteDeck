@@ -27,7 +27,7 @@
   <rect width="1200" height="300" rx="18" fill="#EEEDEA"/>
 
   <text x="64" y="52" font-family="'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace" font-size="18" letter-spacing="1.6" fill="#6B6862">原生支持 · NATIVE SUPPORT</text>
-  <text x="1136" y="52" text-anchor="end" font-family="'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace" font-size="18" fill="#8A867F">MoteDeck2Vokie · v0.1.0</text>
+  <text x="1136" y="52" text-anchor="end" font-family="'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace" font-size="18" fill="#8A867F">MoteDeck2Vokie · v0.1.1</text>
 
   <g transform="translate(64 120) scale(2.6667)">
     <rect width="24" height="24" rx="5.4" fill="url(#glassBody)"/>
