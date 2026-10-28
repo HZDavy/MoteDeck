@@ -276,6 +276,9 @@ class RC003App:
         # app_profiles.json so the settings window can highlight it.
         self._preset_store = app_profiles.AppProfileStore(self._config_root)
         self._presets_mtime_ns = self._settings_file_mtime_ns(self._preset_store.path)
+        # Tracked separately from the hotkey table: editing one app's mapping
+        # must re-resolve the overlay that is live right now.
+        self._preset_content_mtime_ns = self._presets_mtime_ns
         self._preset_override_id: Optional[str] = None
         # The untouched mapping an active overlay was resolved from, so moving
         # straight from one application to another re-resolves from the global
@@ -5267,6 +5270,7 @@ class RC003App:
         if not self._accept_input_events:
             return
         self._refresh_preset_hotkey_targets_if_changed()
+        self._refresh_preset_override_if_changed()
         process_targets = await asyncio.to_thread(self._preset_app_targets)
         foreground = await asyncio.to_thread(self._preset_foreground_basename)
         if foreground != self._preset_switch_foreground:
@@ -5314,19 +5318,19 @@ class RC003App:
         name = getattr(snapshot, "foreground_executable", "") or ""
         return os.path.basename(name).strip().casefold()
 
-    def _apply_preset_override(self, identity: str) -> None:
+    def _apply_preset_override(self, identity: str) -> bool:
         """Swap the live mapping for a process-scoped preset (in memory only)."""
 
         try:
             entry = self._preset_store.get(identity)
         except Exception:  # noqa: BLE001 - the preset vanished between polls
-            return
+            return False
         with self._voice_shortcut.lock:
             with self._button_mapping_lock:
                 if not self._accept_input_events:
-                    return
+                    return False
                 if not self._voice_settings_idle_locked():
-                    return  # retried on the next poll
+                    return False  # retried on the next poll
                 base = (
                     self._preset_base_bindings
                     if self._preset_base_bindings is not None
@@ -5340,7 +5344,7 @@ class RC003App:
                     self._logger.warning(
                         "preset process override skipped: invalid snapshot"
                     )
-                    return
+                    return False
                 self._button_combos.reset()
                 self._bindings = replacement
                 # Overlays stack, so the untouched mapping is kept: switching
@@ -5356,6 +5360,30 @@ class RC003App:
                     "preset process override applied; foreground=%s",
                     self._preset_switch_foreground,
                 )
+                return True
+
+    def _refresh_preset_override_if_changed(self) -> None:
+        """Re-resolve the live overlay after app_profiles.json was edited.
+
+        Saving an app's mapping only rewrites that file, so the overlay in
+        memory would keep the snapshot from the moment it was applied and a
+        newly assigned key would stay dead until the scope switched away and
+        back. A busy gesture keeps the edit pending for the next poll.
+        """
+
+        mtime_ns = self._settings_file_mtime_ns(self._preset_store.path)
+        if mtime_ns == self._preset_content_mtime_ns:
+            return
+        identity = self._preset_override_id
+        if identity is None:
+            # Nothing is overlaid right now; the next apply reads the fresh
+            # file anyway.
+            self._preset_content_mtime_ns = mtime_ns
+            return
+        if not self._apply_preset_override(identity):
+            return
+        self._preset_content_mtime_ns = mtime_ns
+        self._logger.info("preset override refreshed; profile=%s", identity)
 
     def _reset_preset_override_locked(self) -> None:
         if self._preset_override_id is None and self._preset_base_bindings is None:
@@ -5389,6 +5417,11 @@ class RC003App:
             self._logger.warning("applied profile marker was not saved")
             return
         self._preset_applied_id = identity
+        # Writing the marker rewrites the same file, so the content fingerprint
+        # has to follow it or the next poll would treat it as a mapping edit.
+        self._preset_content_mtime_ns = self._settings_file_mtime_ns(
+            self._preset_store.path
+        )
 
     def _build_preset_hotkey_targets(self) -> dict:
         try:

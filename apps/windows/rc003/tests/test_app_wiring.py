@@ -7721,6 +7721,28 @@ class PresetSwitchRuntimeTests(_AppWiringTestCase):
         self.assertEqual(self.app._preset_override_id, identity)
         self.assertEqual(self.app._bindings["bindings"]["ok"]["kind"], "escape")
 
+    def test_editing_the_live_profile_refreshes_the_overlay(self):
+        identity = self._create_preset(name="浏览器", process="chrome.exe", button="ok")
+        self._poll_with_foreground("chrome.exe")
+        self.assertNotEqual(
+            self.app._bindings["bindings"]["down"]["kind"], "escape"
+        )
+
+        # The settings window auto-saves an app mapping while that overlay is
+        # live; the next poll must resolve the file again instead of keeping
+        # the snapshot taken when the overlay was applied.
+        mapping = app_profiles.snapshot(
+            self.app._bindings, self.app._remote_profile
+        )
+        mapping["bindings"]["down"] = {"kind": "escape", "keys": []}
+        self.app._preset_store.update_mapping(identity, mapping)
+
+        self._poll_with_foreground("chrome.exe")
+
+        self.assertEqual(self.app._bindings["bindings"]["down"]["kind"], "escape")
+        self.assertEqual(self.app._bindings["bindings"]["ok"]["kind"], "escape")
+        self.assertEqual(self.app._preset_override_id, identity)
+
     def test_switch_hotkey_is_persistent_and_holds_until_foreground_changes(self):
         identity = self._create_preset(
             name="快捷键配置", process="chrome.exe", hotkey="ctrl+alt+1"
