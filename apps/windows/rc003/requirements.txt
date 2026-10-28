@@ -70,7 +70,7 @@ frida==17.15.3
 # semantic tree avoids screen coordinates, OCR, process injection, and direct
 # writes to Tencent's private MMKV storage.
 uiautomation==2.0.29
-comtypes==1.4.16
+comtypes==1.4.17
 
 # OpenMexia 语音键的本地离线识别（local_asr.py）：sherpa-onnx 在进程内跑
 # SenseVoice 模型，不联网、不需要 API 密钥。
