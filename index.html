@@ -113,6 +113,7 @@
       <li>按键、组合键、鼠标动作、应用切换、Quicker 动作都能挂到任意按法上</li>
       <li>长按支持鼠标左键、右键、X1、X2，按住即按下，松手立即释放</li>
       <li>档案可复制、重命名、单独删除，删一份不影响全局和其它应用</li>
+      <li>应用条上的条目可以按住左右拖动排序，松手即按新位置保存</li>
     </ul>
   </div>
   <div class="demo" data-r>
@@ -130,8 +131,8 @@
   <div class="band-in" data-r>
     <span class="band-logo" aria-hidden="true"><svg viewBox="0 0 64 64"><g stroke="currentColor" stroke-width="5.6" stroke-linecap="round" transform="translate(32 32) scale(1.25) translate(-32 -32)"><path d="M14 32h36M32 14v36M19.3 19.3l25.4 25.4M44.7 19.3 19.3 44.7"/></g></svg></span>
     <div class="band-copy">
-      <h3>联动预告：遥控器也能控制米家</h3>
-      <p>正在和同作者的智能家居中枢 OpenMexia 对接：以后在沙发上按一下遥控器，就能开关灯、调亮度和色温。MoteDeck 只负责「按键 → 指令」，米家登录与设备状态都交给 OpenMexia。</p>
+      <h3>联动 OpenMexia：遥控器也能控制米家</h3>
+      <p>和同作者的智能家居中枢 OpenMexia 已经打通：在沙发上按一下遥控器，就能开关灯、调亮度和色温，按住话筒说一句「空调 26 度」也能执行。MoteDeck 只负责「按键 → 指令」，米家登录与设备状态都交给 OpenMexia。</p>
     </div>
     <a class="band-link" href="https://hzdavy.github.io/OpenMexia/">OpenMexia 官网 ↗</a>
   </div>
@@ -323,7 +324,7 @@
   <div data-r><h2>先说清楚的几件事</h2></div>
   <div class="faq" style="margin-top:48px" data-r>
     <details><summary>支持哪些遥控器？<svg class="ic"><use href="#i-chevron"/></svg></summary><p>目前主要面向小米遥控器 2 Pro 和 RC003 同型号设备，经蓝牙连接 Windows。其它蓝牙遥控器的支持范围以每次的<a href="https://github.com/HZDavy/MoteDeck/releases">版本说明 ↗</a>为准。</p></details>
-    <details><summary>语音识别准不准？<svg class="ic"><use href="#i-chevron"/></svg></summary><p>MoteDeck 只负责把声音送进输入法并触发它的语音快捷键，识别由你本机的输入法完成，准确度取决于输入法本身。</p></details>
+    <details><summary>语音识别准不准？<svg class="ic"><use href="#i-chevron"/></svg></summary><p>默认由你本机的输入法识别，准确度取决于输入法本身。联动 OpenMexia 时也可以下载本机离线识别模型（SenseVoice，约 228MB），识别结果直接交给 OpenMexia 执行，不必经过输入法。</p></details>
     <details><summary>能在游戏里用吗？<svg class="ic"><use href="#i-chevron"/></svg></summary><p>能发出按键，但部分游戏和反作弊软件会把模拟按键视为自动化操作。请按目标软件的规则使用。</p></details>
     <details><summary>公司电脑装不上怎么办？<svg class="ic"><use href="#i-chevron"/></svg></summary><p>受管理的电脑可能禁止 UAC 提权、按键组件或虚拟音频安装。这类情况需要找管理员放行，或改用个人电脑。</p></details>
     <details><summary>Windows 提示「已保护你的电脑」？<svg class="ic"><use href="#i-chevron"/></svg></summary><p>安装包暂未签名，SmartScreen 会拦一下。点「更多信息」再选「仍要运行」即可。源代码公开，可以自行核对或编译。</p></details>
