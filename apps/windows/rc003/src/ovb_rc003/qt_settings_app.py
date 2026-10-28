@@ -97,6 +97,7 @@ from __future__ import annotations
 import atexit
 from dataclasses import dataclass
 import gc
+import json
 import os
 import sys
 import threading
@@ -126,8 +127,10 @@ from . import (
     hotkey_capture_windows,
     key_detection_bridge,
     key_mapping,
+    local_asr,
     local_microphone_windows,
     app_profiles,
+    openmexia_client,
     log_export,
     logging_setup,
     product_identity,
@@ -156,7 +159,7 @@ APPLICATION_UPDATE_CHECK_ENABLED = True
 VOKIE_WEBSITE_URL = "https://www.vokie.com"
 VOKIE_PLUGIN_URL = (
     f"https://github.com/{application_update.REPOSITORY_SLUG}"
-    "/releases/download/v0.1.3/MoteDeck2Vokie-0.1.1.zip"
+    "/releases/download/v0.1.4/MoteDeck2Vokie-0.1.2.zip"
 )
 OPENMEXIA_WEBSITE_URL = "https://hzdavy.github.io/OpenMexia/"
 OPENMEXIA_DOWNLOAD_URL = "https://github.com/HZDavy/OpenMexia/releases"
@@ -186,6 +189,15 @@ _SECONDARY_ACTION_OPTIONS: List[str] = list(
 _VOICE_MODE_CYCLE_LABEL = settings_ui._REFERENCE_ACTION_LABELS[
     key_mapping.ActionKind.VOICE_MODE_CYCLE
 ]
+
+
+def _with_openmexia_options(options: List[str]) -> List[str]:
+    """Append the connected OpenMexia actions to one dropdown's options."""
+
+    labels = settings_ui.openmexia_action_labels()
+    if not labels:
+        return options
+    return options + [label for label in labels if label not in options]
 
 _COMBO_MODIFIER_LABELS = {
     "tv": "TV",
@@ -1210,6 +1222,8 @@ def _load_qt_classes() -> dict:
         voiceSlotHotkeysChanged = Signal()
         voiceKeyConfigsChanged = Signal()
         voicePluginStateChanged = Signal()
+        openMexiaStateChanged = Signal()
+        openMexiaActionsChanged = Signal()
         voiceInputSourceChanged = Signal()
         voiceCycleConfigChanged = Signal()
         localMicrophoneOptionsChanged = Signal()
@@ -1290,6 +1304,8 @@ def _load_qt_classes() -> dict:
         _applicationUpdateCheckReady = Signal(object)
         _applicationUpdateDownloadReady = Signal(object)
         _applicationUpdateProgressReady = Signal(object)
+        asrModelStateChanged = Signal()
+        _asrModelInstallReady = Signal(object)
 
         _DEVICE_ORDER = (device_catalog.RC003_ID,)
         _DEVICE_PAGE_INDEX = 0
@@ -1335,6 +1351,8 @@ def _load_qt_classes() -> dict:
             self._applicationUpdateProgressReady.connect(
                 self._on_application_update_progress_ready
             )
+            self._asrModelInstallReady.connect(self._on_asr_model_install_ready)
+            self._asr_model_busy = False
             self._input_worker_result_lock = threading.Lock()
             self._input_worker_result = None
             self._hid_helper_repair_busy = False
@@ -1646,6 +1664,11 @@ def _load_qt_classes() -> dict:
             self._vokie_bridge.pluginDisconnected.connect(
                 self._on_vokie_plugin_disconnected
             )
+            # OpenMexia 联动：连接状态只存在内存里，设备清单是外部程序的，
+            # 每次连接/刷新时重新拉一遍。
+            self._openmexia_client = openmexia_client.OpenMexiaClient()
+            self._openmexia_connected = False
+            self._openmexia_devices: List[openmexia_client.OpenMexiaDevice] = []
             self._active_page_index = self._DEVICE_PAGE_INDEX
             self._feedback_page_index = (
                 self._BUTTONS_PAGE_INDEX
@@ -1726,6 +1749,9 @@ def _load_qt_classes() -> dict:
             # 上次离开时插件连接是开着的，这次启动就照原样把监听开回来。
             if self._config.get("voice_plugin_auto_connect") is True:
                 QTimer.singleShot(0, self._restore_voice_plugin_connection)
+            # OpenMexia 同理：上次离开时连着，这次启动就自动连回去。
+            if self._config.get("openmexia_auto_connect") is True:
+                QTimer.singleShot(0, self._restore_openmexia_connection)
 
         # -- internal helpers -------------------------------------------------
 
@@ -4924,6 +4950,85 @@ def _load_qt_classes() -> dict:
             new_config["voice_cycle_toast_offset"] = value
             self._save_voice_config_data(new_config)
 
+        def _get_asr_model_ready(self) -> bool:
+            return local_asr.model_available(self._config_root)
+
+        asrModelReady = Property(bool, _get_asr_model_ready, notify=asrModelStateChanged)
+
+        def _get_asr_model_busy(self) -> bool:
+            return self._asr_model_busy
+
+        asrModelBusy = Property(bool, _get_asr_model_busy, notify=asrModelStateChanged)
+
+        def _get_asr_model_status_text(self) -> str:
+            if self._asr_model_busy:
+                return "正在下载模型…"
+            return "已就绪" if self._get_asr_model_ready() else "未安装"
+
+        asrModelStatusText = Property(
+            str, _get_asr_model_status_text, notify=asrModelStateChanged
+        )
+
+        @Slot()
+        def installAsrModel(self) -> None:
+            """用户点了「安装」才下载模型，不默认下载。"""
+
+            if self._asr_model_busy or self._get_asr_model_ready():
+                return
+            self._asr_model_busy = True
+            self.asrModelStateChanged.emit()
+            self._set_error_message("")
+            self._set_status_message(
+                "正在下载语音识别模型，约 228MB，下载期间可以继续用其他设置。",
+                self._VOICE_PAGE_INDEX,
+            )
+
+            def run() -> None:
+                try:
+                    local_asr.install_model(self._config_root)
+                    payload: object = (True, "")
+                except local_asr.LocalAsrError as exc:
+                    payload = (False, str(exc))
+                except BaseException:  # noqa: BLE001 - 后台线程不能甩异常
+                    payload = (False, "下载语音识别模型失败，请检查网络后重试。")
+                self._emit_background_result(self._asrModelInstallReady, payload)
+
+            try:
+                self._start_background_task(run, "local-asr-model-install")
+            except Exception:  # noqa: BLE001 - 窗口正在关闭
+                self._asr_model_busy = False
+                self.asrModelStateChanged.emit()
+
+        def _on_asr_model_install_ready(self, payload: object) -> None:
+            ok, message = payload if isinstance(payload, tuple) else (False, "")
+            self._asr_model_busy = False
+            self.asrModelStateChanged.emit()
+            if ok:
+                self._set_status_message(
+                    "语音识别模型已安装好，按住 OpenMexia 语音键说话即可。",
+                    self._VOICE_PAGE_INDEX,
+                )
+            else:
+                self._set_error_message(
+                    str(message) or "下载语音识别模型失败，请检查网络后重试。",
+                    self._VOICE_PAGE_INDEX,
+                )
+
+        @Slot()
+        def uninstallAsrModel(self) -> None:
+            if self._asr_model_busy:
+                return
+            try:
+                local_asr.remove_model(self._config_root)
+            except local_asr.LocalAsrError as exc:
+                self._set_error_message(str(exc), self._VOICE_PAGE_INDEX)
+                return
+            self.asrModelStateChanged.emit()
+            self._set_error_message("")
+            self._set_status_message(
+                "已卸载语音识别模型。", self._VOICE_PAGE_INDEX
+            )
+
         @Slot(result=bool)
         def placeVoiceToastTuner(self) -> bool:
             """Fill the tuner mask over the work area of the settings window's screen."""
@@ -5029,8 +5134,10 @@ def _load_qt_classes() -> dict:
                         "shortPressResend": bool(
                             entry.get("short_press_resend", False)
                         ),
+                        "gainSteps": config.voice_key_gain_steps(self._config, slot),
+                        "gainAuto": config.voice_key_gain_auto(self._config, slot),
                         "plugin": plugin,
-                        "locked": bool(plugin),
+                        "locked": config.is_locked_plugin_id(plugin),
                         "first": index == 0,
                         "last": index == len(entries) - 1,
                     }
@@ -5065,10 +5172,12 @@ def _load_qt_classes() -> dict:
             entry = config.voice_key_config(self._config, slot)
             if entry is None:
                 return
-            if entry.get("plugin"):
+            if config.is_locked_plugin_id(entry.get("plugin")):
                 self._set_status_message("")
                 self._set_error_message(
-                    "该语音键由 MoteDeck2Vokie 插件提供，不能删除。",
+                    "该语音键由 OpenMexia 联动提供，断开连接后会自动清除。"
+                    if config.is_openmexia_plugin_id(entry.get("plugin"))
+                    else "该语音键由 MoteDeck2Vokie 插件提供，不能删除。",
                     self._VOICE_PAGE_INDEX,
                 )
                 return
@@ -5104,6 +5213,12 @@ def _load_qt_classes() -> dict:
                 )
             )
 
+        @Slot(int, int, bool)
+        def setVoiceKeyConfigGain(self, slot: int, steps: int, auto: bool) -> None:
+            self._save_voice_config_data(
+                config.set_voice_key_config_gain(self._config, slot, steps, auto)
+            )
+
         @Slot(int, str)
         def setVoiceKeyConfigName(self, slot: int, value: str) -> None:
             self._save_voice_config_data(
@@ -5113,10 +5228,12 @@ def _load_qt_classes() -> dict:
         @Slot(int, str)
         def setVoiceKeyConfigHotkey(self, slot: int, value: str) -> None:
             entry = config.voice_key_config(self._config, slot)
-            if entry is not None and entry.get("plugin"):
+            if entry is not None and config.is_locked_plugin_id(entry.get("plugin")):
                 self._set_status_message("")
                 self._set_error_message(
-                    "该快捷键由 MoteDeck2Vokie 插件自带，不能在这里修改。",
+                    "该语音键由 OpenMexia 联动提供，快捷键不可编辑。"
+                    if config.is_openmexia_plugin_id(entry.get("plugin"))
+                    else "该快捷键由 MoteDeck2Vokie 插件自带，不能在这里修改。",
                     self._VOICE_PAGE_INDEX,
                 )
                 return
@@ -5289,7 +5406,9 @@ def _load_qt_classes() -> dict:
                 "已断开插件连接，插件提供的语音键已清除。", self._VOICE_PAGE_INDEX
             )
 
-        def _release_voice_plugin_keys(self) -> None:
+        def _release_voice_plugin_keys(
+            self, plugin_id: str = config.VOICE_KEY_PLUGIN_VOKIE
+        ) -> None:
             """插件断开后把它带来的语音键清掉，绑过它的按键回到禁用。"""
 
             if not any(
@@ -5297,9 +5416,7 @@ def _load_qt_classes() -> dict:
             ):
                 return
             previous_labels = config.voice_key_labels(self._config)
-            new_config = config.release_plugin_voice_keys(
-                self._config, config.VOICE_KEY_PLUGIN_VOKIE
-            )
+            new_config = config.release_plugin_voice_keys(self._config, plugin_id)
             if not self._save_voice_config_data(new_config):
                 return
             for slot, label in previous_labels.items():
@@ -5378,6 +5495,196 @@ def _load_qt_classes() -> dict:
             bool,
             lambda self: bool(self._vokie_bridge.connected()),
             notify=voicePluginStateChanged,
+        )
+
+        # -- 语音页：OpenMexia 联动 ------------------------------------------
+
+        def _openmexia_register_actions(self) -> None:
+            """把当前设备清单注册成动作下拉里的「设备 · 操作」条目。"""
+
+            settings_ui.set_openmexia_actions(
+                [
+                    (control.label, control.device, control.op)
+                    for device in self._openmexia_devices
+                    for control in device.controls
+                ]
+            )
+
+        @Slot(result=bool)
+        def connectOpenMexia(self) -> bool:
+            """连上正在运行的 OpenMexia：拉设备、加语音键、加应用配置。"""
+
+            return self._openmexia_connect(announce=True)
+
+        def _openmexia_connect(self, *, announce: bool) -> bool:
+            """真正的连接流程；启动时自动恢复用 announce=False 静默处理。"""
+
+            try:
+                self._openmexia_devices = self._openmexia_client.devices()
+            except openmexia_client.OpenMexiaError as exc:
+                if announce:
+                    self._set_error_message(str(exc), self._VOICE_PAGE_INDEX)
+                return False
+            except Exception as exc:  # noqa: BLE001 - Qt 槽不能甩异常
+                if announce:
+                    self._set_error_message(
+                        f"连接 OpenMexia 失败：{exc}", self._VOICE_PAGE_INDEX
+                    )
+                return False
+            self._openmexia_register_actions()
+            self._openmexia_ensure_voice_key()
+            self._openmexia_ensure_app_profile()
+            self._openmexia_connected = True
+            self._remember_openmexia_connection(True)
+            self.openMexiaStateChanged.emit()
+            self.openMexiaActionsChanged.emit()
+            self._set_error_message("")
+            if announce:
+                self._set_status_message(
+                    f"已连接 OpenMexia，读取到 {len(self._openmexia_devices)} 台设备；"
+                    "按键动作里已可以选择它们。",
+                    self._VOICE_PAGE_INDEX,
+                )
+            return True
+
+        @Slot()
+        def disconnectOpenMexia(self) -> None:
+            self._openmexia_connected = False
+            self._openmexia_devices = []
+            self._remember_openmexia_connection(False)
+            settings_ui.set_openmexia_actions(())
+            # 这条语音键由联动提供，断开后它已经没有意义，直接清掉。
+            self._release_voice_plugin_keys(config.VOICE_KEY_PLUGIN_OPENMEXIA)
+            # 插件自带的软件配置也跟着断开移除，但之前调好的按键映射先存下来，
+            # 下次连上时原样恢复。
+            self._openmexia_release_app_profile()
+            self.openMexiaStateChanged.emit()
+            self.openMexiaActionsChanged.emit()
+            self.voiceKeyConfigsChanged.emit()
+            self._set_error_message("")
+            self._set_status_message(
+                "已断开 OpenMexia，它添加的语音键已清除。", self._VOICE_PAGE_INDEX
+            )
+
+        @Slot(result=bool)
+        def refreshOpenMexiaDevices(self) -> bool:
+            if not self._openmexia_connected:
+                return False
+            return self.connectOpenMexia()
+
+        def _openmexia_ensure_voice_key(self) -> None:
+            """连接后自动多一条 OpenMexia 语音键（已有就不重复加）。"""
+
+            if config.openmexia_voice_key_slot(self._config) is not None:
+                return
+            new_config, slot = config.ensure_openmexia_voice_key(self._config)
+            if slot is None:
+                return
+            self._save_voice_config_data(new_config)
+
+        def _openmexia_ensure_app_profile(self) -> None:
+            """连接后自动多一条 OpenMexia 的软件配置，不动全局和其他软件。"""
+
+            if self.configurationReadOnly:
+                return
+            profile = self._selected_device_id()
+            store = app_profiles.AppProfileStore(self._config_root)
+            try:
+                mapping = app_profiles.snapshot(self._bindings, profile)
+                restored = self._openmexia_read_app_stash(profile)
+                if restored is not None:
+                    mapping = restored
+                store.ensure_app(
+                    openmexia_client.APP_PROFILE_NAME,
+                    openmexia_client.PROCESS_NAME,
+                    mapping,
+                )
+                if restored is not None:
+                    try:
+                        self._openmexia_app_stash_path().unlink(missing_ok=True)
+                    except OSError:
+                        pass
+            except Exception as exc:  # noqa: BLE001 - 配置写不进去不影响连接
+                self._set_error_message(f"OpenMexia 应用配置添加失败：{exc}", self._VOICE_PAGE_INDEX)
+                return
+            self._refresh_mapping_presets()
+
+        def _openmexia_app_stash_path(self) -> Path:
+            return Path(self._config_root) / "openmexia_app_mapping.json"
+
+        def _openmexia_read_app_stash(self, profile: str) -> Optional[dict]:
+            """断开时暂存的那份按键映射；读不出来就当没有。"""
+
+            try:
+                with self._openmexia_app_stash_path().open("r", encoding="utf-8") as handle:
+                    stored = json.load(handle)
+                return app_profiles.validate_mapping(stored["mapping"], profile, partial=True)
+            except Exception:  # noqa: BLE001 - 暂存只是锦上添花
+                return None
+
+        def _openmexia_release_app_profile(self) -> None:
+            """断开插件：移除它自带的软件配置，但把按键映射暂存下来。"""
+
+            if self.configurationReadOnly:
+                return
+            store = app_profiles.AppProfileStore(self._config_root)
+            try:
+                entry = store.find_app(openmexia_client.PROCESS_NAME)
+                if entry is None:
+                    return
+                try:
+                    config._save_json_atomic(self._openmexia_app_stash_path(), {
+                        "name": entry["name"],
+                        "mapping": entry["mapping"],
+                    })
+                except Exception:  # noqa: BLE001 - 存不下也照常移除
+                    pass
+                store.delete(entry["id"])
+                if entry["id"] == self._mapping_edit_target:
+                    self._mapping_edit_target = ""
+                    self.mappingEditTargetChanged.emit()
+                    self._load_bindings_into_model()
+                self._refresh_mapping_presets()
+            except Exception:  # noqa: BLE001 - 断开流程不能因此中断
+                pass
+
+        def _remember_openmexia_connection(self, enabled: bool) -> None:
+            """记住 OpenMexia 的连接开关，下次启动照它决定要不要自动连回去。"""
+
+            if self.configurationReadOnly:
+                return
+            if bool(self._config.get("openmexia_auto_connect")) == enabled:
+                return
+            next_config = dict(self._config)
+            next_config["openmexia_auto_connect"] = enabled
+            try:
+                self._config = config.save_config_and_load(
+                    config.config_path(self._config_root), next_config
+                )
+            except Exception:  # noqa: BLE001 - 只影响下次自动连，当前连接照常
+                pass
+            else:
+                self._bump_settings_revision()
+
+        def _restore_openmexia_connection(self) -> None:
+            """启动时按上次的状态自动连回 OpenMexia，不弹成功提示。"""
+
+            if not self._config.get("openmexia_auto_connect"):
+                return
+            self._openmexia_connect(announce=False)
+
+        def _get_openmexia_connected(self) -> bool:
+            return bool(self._openmexia_connected)
+
+        openMexiaConnected = Property(
+            bool, _get_openmexia_connected, notify=openMexiaStateChanged
+        )
+
+        def _get_openmexia_device_count(self) -> int:
+            return len(self._openmexia_devices)
+
+        openMexiaDeviceCount = Property(
+            int, _get_openmexia_device_count, notify=openMexiaStateChanged
         )
 
         voicePluginState = Property(
@@ -6091,20 +6398,22 @@ def _load_qt_classes() -> dict:
 
         @Slot(str, result=list)
         def primaryActionOptionsFor(self, button_id: str) -> List[str]:
+            options = list(_ORDINARY_PRIMARY_ACTION_OPTIONS)
             if not button_id:
-                return list(_ORDINARY_PRIMARY_ACTION_OPTIONS)
+                return options
             voice_options = self._voice_action_displays(button_id == "mic")
-            return self._mapping_options_available_now(
-                list(
-                    dict.fromkeys(
-                        voice_options + list(_ORDINARY_PRIMARY_ACTION_OPTIONS)
-                    )
+            return _with_openmexia_options(
+                self._mapping_options_available_now(
+                    list(dict.fromkeys(voice_options + options))
                 )
             )
 
         @Slot(str, result=str)
         def actionOptionGroupTitle(self, option: str) -> str:
-            return settings_ui.ACTION_OPTION_GROUP_BY_LABEL.get(option, "")
+            return (
+                settings_ui.ACTION_OPTION_GROUP_BY_LABEL.get(option, "")
+                or settings_ui.openmexia_action_group_title(option)
+            )
 
         @Slot(str, result=bool)
         def actionOptionStartsGroup(self, option: str) -> bool:
@@ -6153,7 +6462,9 @@ def _load_qt_classes() -> dict:
         def secondaryActionOptionsFor(self, button_id: str) -> List[str]:
             if not button_id:
                 return list(_SECONDARY_ACTION_OPTIONS)
-            return self._mapping_options_available_now(_SECONDARY_ACTION_OPTIONS)
+            return _with_openmexia_options(
+                self._mapping_options_available_now(_SECONDARY_ACTION_OPTIONS)
+            )
 
         @Slot(str, result=list)
         def longPressActionOptionsFor(self, button_id: str) -> List[str]:
@@ -7979,6 +8290,9 @@ def _load_qt_classes() -> dict:
                     "name": entry["name"],
                     "process": entry["process"],
                     "icon": self._icon_for(executable),
+                    # 插件自带的条目（OpenMexia）不能删，只能等插件断开时自动移除。
+                    "plugin": str(entry["process"]).casefold()
+                        == openmexia_client.PROCESS_NAME,
                     "active": entry["id"] == self._mapping_edit_target,
                 })
             self._mapping_app_rows = rows
@@ -8175,6 +8489,9 @@ def _load_qt_classes() -> dict:
                     raise ValueError("自动保存项不能删除。")
                 store = app_profiles.AppProfileStore(self._config_root)
                 entry = store.get(identity)
+                if str(entry["process"]).casefold() == openmexia_client.PROCESS_NAME:
+                    raise ValueError(
+                        "这是 OpenMexia 插件自带的应用程序，不能删除；断开插件后会自动移除。")
                 store.delete(identity)
                 if identity == self._mapping_edit_target:
                     self._mapping_edit_target = ""
@@ -8183,6 +8500,24 @@ def _load_qt_classes() -> dict:
                 self._refresh_mapping_presets()
                 return {"ok": True, "id": "",
                         "message": f"已删除「{entry['name']}」；该应用改用全局按键映射。"}
+            except Exception as exc:  # noqa: BLE001 - Qt slots must not escape
+                detail = str(exc)
+                message = detail if len(detail) <= 240 else detail[:240] + "…"
+                return {"ok": False, "id": identity, "message": message}
+
+        @Slot(str, int, result="QVariantMap")
+        def moveMappingAppProfile(self, identity: str, position: int) -> dict:
+            """Reorder one application in the app bar (``position`` is 0-based)."""
+            try:
+                self._busy_for_app_edit()
+                if self._mapping_dirty:
+                    self._run_mapping_auto_save()
+                    if self._mapping_dirty:
+                        raise ValueError("按键映射尚未保存完成，请稍后重试。")
+                app_profiles.AppProfileStore(self._config_root).move_app(
+                    str(identity or ""), int(position))
+                self._refresh_mapping_apps()
+                return {"ok": True, "id": identity, "message": ""}
             except Exception as exc:  # noqa: BLE001 - Qt slots must not escape
                 detail = str(exc)
                 message = detail if len(detail) <= 240 else detail[:240] + "…"

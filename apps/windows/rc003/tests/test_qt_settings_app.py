@@ -11337,10 +11337,11 @@ class SettingsShellSourceContractTests(unittest.TestCase):
         self.assertIn("renderType: Text.QtRendering", self.icon_glyph_qml)
         self.assertEqual(self.buttons_qml.count("DialogCloseButton {"), 1)
         # Voice page: driver confirm, bridge-test confirm, profile name,
-        # profile delete, the profile manager, the voice-key manager and the
+        # profile delete, the profile manager, the voice-key manager, the
+        # recording-gain dialog, the speech-recognition dialog and the
         # external-application dialog; the three file pickers reuse Qt's own
         # FileDialog.
-        self.assertEqual(self.voice_qml.count("SettingsDialog {"), 7)
+        self.assertEqual(self.voice_qml.count("SettingsDialog {"), 9)
 
     def test_tooltips_are_compact_and_follow_each_truncated_text(self):
         self.assertIn("ToolTip {", self.compact_tooltip_qml)
@@ -11405,8 +11406,9 @@ class SettingsShellSourceContractTests(unittest.TestCase):
             self.buttons_qml,
         )
         self.assertIn("injectMode !== originalInjectMode", self.buttons_qml)
-        # One derived property surfaces the missing driver, the per-action
-        # block reason, and the "not an ordinary key action" case alike.
+        # One derived property surfaces the missing driver; a per-action block is
+        # silent: the Interception option is greyed out, unselectable, and the
+        # editor falls back to SendInput without printing a reason.
         self.assertIn(
             "readonly property string injectModeHintText", self.buttons_qml
         )
@@ -11418,7 +11420,10 @@ class SettingsShellSourceContractTests(unittest.TestCase):
         self.assertIn(
             "SettingsController.interceptionUnavailableHint", self.buttons_qml
         )
-        self.assertIn("injectModeBlockReason", self.buttons_qml)
+        self.assertIn("readonly property bool interceptionBlocked", self.buttons_qml)
+        self.assertIn("actionEditor.interceptionBlocked", self.buttons_qml)
+        self.assertIn("syncInjectModeToActions()", self.buttons_qml)
+        self.assertNotIn("injectModeBlockReason", self.buttons_qml)
         self.assertNotIn(
             "未安装 Interception 驱动，仅可用 SendInput", self.buttons_qml
         )

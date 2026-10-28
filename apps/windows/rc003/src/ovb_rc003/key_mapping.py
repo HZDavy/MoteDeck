@@ -117,6 +117,9 @@ class ActionKind(str, Enum):
     OPEN_CHROME = "open_chrome"
     OPEN_EDGE = "open_edge"
     OPEN_ZED = "open_zed"
+    # 直接控制 OpenMexia 里的一台米家设备。动作本身只描述「哪台设备 + 哪个
+    # 操作」，具体怎么执行由 OpenMexia 自己决定。
+    OPENMEXIA_DEVICE = "openmexia_device"
 
     @classmethod
     def _missing_(cls, value: object):
@@ -370,12 +373,44 @@ def semantic_action_for_keys(keys: Tuple[str, ...]) -> Optional["ButtonAction"]:
     return ButtonAction(action_kind)
 
 
+MAX_OPENMEXIA_FIELD_LENGTH = 256
+
+
+def _normalize_openmexia_field(value: object, label: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"OpenMexia {label} must be text")
+    text = value.strip()
+    if not text:
+        raise ValueError(f"OpenMexia {label} must not be empty")
+    if len(text) > MAX_OPENMEXIA_FIELD_LENGTH:
+        raise ValueError(f"OpenMexia {label} is too long")
+    if any(character in text for character in ("\x00", "\r", "\n")):
+        raise ValueError(f"OpenMexia {label} must stay on one line")
+    return text
+
+
+def validate_openmexia_device(value: object) -> str:
+    return _normalize_openmexia_field(value, "device")
+
+
+def validate_openmexia_op(value: object) -> str:
+    return _normalize_openmexia_field(value, "operation")
+
+
+def validate_openmexia_label(value: object) -> str:
+    return _normalize_openmexia_field(value, "label")
+
+
 @dataclass(frozen=True)
 class ButtonAction:
     kind: ActionKind
     keys: Tuple[str, ...] = field(default_factory=tuple)
     uri: str = ""
     inject_mode: str = "sendinput"
+    # 只有 OPENMEXIA_DEVICE 会带这三个字段：设备 id、操作 id、显示名。
+    device: str = ""
+    op: str = ""
+    label: str = ""
 
     def to_dict(self) -> dict:
         if self.kind in (ActionKind.MOUSE_WHEEL_UP, ActionKind.MOUSE_WHEEL_DOWN):
@@ -385,6 +420,10 @@ class ButtonAction:
             data = {"kind": self.kind.value, "keys": list(self.keys)}
             if self.kind == ActionKind.QUICKER_URI:
                 data["uri"] = normalize_quicker_uri(self.uri)
+            elif self.kind == ActionKind.OPENMEXIA_DEVICE:
+                data["device"] = validate_openmexia_device(self.device)
+                data["op"] = validate_openmexia_op(self.op)
+                data["label"] = validate_openmexia_label(self.label)
         # Only written when the button opted out of the default backend, so
         # every file written before per-button injection modes existed keeps
         # its exact previous bytes.
@@ -416,12 +455,29 @@ class ButtonAction:
             uri = normalize_quicker_uri(uri)
         elif uri:
             raise ValueError("non-URI action must not contain a URI")
+        device = ""
+        op = ""
+        label = ""
+        if kind == ActionKind.OPENMEXIA_DEVICE:
+            device = validate_openmexia_device(data.get("device"))
+            op = validate_openmexia_op(data.get("op"))
+            label = validate_openmexia_label(data.get("label"))
+        elif any(key in data for key in ("device", "op", "label")):
+            raise ValueError("non-OpenMexia action must not contain a device")
         if kind in (ActionKind.MOUSE_WHEEL_UP, ActionKind.MOUSE_WHEEL_DOWN):
             page_key = "pageup" if kind == ActionKind.MOUSE_WHEEL_UP else "pagedown"
             return cls(
                 kind=ActionKind.KEY_COMBO, keys=(page_key,), inject_mode=inject_mode
             )
-        return cls(kind=kind, keys=keys, uri=uri, inject_mode=inject_mode)
+        return cls(
+            kind=kind,
+            keys=keys,
+            uri=uri,
+            inject_mode=inject_mode,
+            device=device,
+            op=op,
+            label=label,
+        )
 
 
 def button_action_for(

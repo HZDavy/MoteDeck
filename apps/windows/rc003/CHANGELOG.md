@@ -1,12 +1,22 @@
 # Changelog — MoteDeck RC003 (Windows)
 
 候选阶段使用持续递增的 `candidate.N` 测试序号。内部构建版本号唯一来源是
-`src/ovb_rc003/VERSION`（当前 `0.1.3`，RC003 重写批次），程序、冻结构建和
+`src/ovb_rc003/VERSION`（当前 `0.1.4`，RC003 重写批次），程序、冻结构建和
 包装都读取该文件。新发布 tag 为 `v<VERSION>`，历史 tag 与包名保持原样。
 
 正式版把最终采用的候选序号放在最后一位：采用 `candidate.30` 时发布为 `v1.0.30`，
 后续候选继续从 `candidate.31` 递增。正式 tag 不带 `windows`、`rc003` 或 `candidate`。
 完整命名规则以 `VALIDATION-AND-DELIVERY.md` 的“版本与命名规则”为准。
+
+## [0.1.4] — 2026-10-29（正式版）
+
+- 新增 OpenMexia 联动：语音页点「连接 OpenMexia」（需 0.1.11 及以上）后，按键页动作下拉里多出「米家设备」分组，条目形如「客厅灯 · 开灯」，遥控器按键即由 OpenMexia 执行；应用条同时多出带黑色图标的 OpenMexia 条目，跟着插件走、不能删除或重命名。连接状态会被记住，下次启动自动恢复；OpenMexia 没启动时静默跳过。通信只走本机回环地址与随机端口，token 由 OpenMexia 随机生成并写在 `%APPDATA%\OpenMexia\mote-deck.json`，MoteDeck 只读不存。
+- 新增可选的本机离线语音识别：语音页「语音识别…」可下载 SenseVoice 模型（约 228MB，只下一次，可随时卸载），按住话筒说话时由 sherpa-onnx 在本机识别，文字直接交给 OpenMexia 执行，不必经过输入法；不装仍走原来的输入法路径。
+- 每条语音键可以单独设置录音增益：「自动」按这一段录音的峰值归一化，选「自动」后滑块不生效；关掉「自动」则按 −3 ~ +3 共七档手动调整（每档 6dB，0 为不调整）。
+- 应用条上的应用可以按住左右拖动调整顺序，松手即按新位置保存。
+- 插件 `MoteDeck2Vokie 0.1.2`：重新列出「闪记」并按 Vokie 的 `quickNoteConfig` 走闪记会话；语音指令类会话以 `mode: "command"` 交给插件处理；插件拒绝时回退到按住说话；用 `vokie-session.json` 记录会话，`handshake_ok` 时补发 stale `session_stop`，清掉 Vokie 侧卡住的 activeSession。
+- 运行依赖新增 `sherpa-onnx 2.0.1`（Apache-2.0），安装包内含其运行库（`onnxruntime.dll`、`sherpa-onnx-c-api.dll`、`sherpa-onnx-cxx-api.dll`、`_sherpa_onnx` 扩展）；识别模型不进安装包，由用户按需下载。
+- 已用唯一正式构建入口 `build/build-candidate.ps1` 完成完整门禁（3451 项 unittest、11 项按环境条件跳过，其余通过）与冻结构建。交付未签名安装包 `MoteDeckSetup-0.1.4-unsigned.exe`（181530651 字节，SHA-256 `b9d8d20497f7baca5a72d375cda229afd7d27049f80fb1a66e1274dfa986a198`）与插件包 `MoteDeck2Vokie-0.1.2.zip`（20173 字节，SHA-256 `d89d1e80d492a4dcf9ee4945dfe703d7269232d36154de91f8807f00988a92cf`）。
 
 ## [0.1.3] — 2026-10-27（正式版）
 

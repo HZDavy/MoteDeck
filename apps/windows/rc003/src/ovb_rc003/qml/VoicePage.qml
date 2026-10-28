@@ -21,6 +21,11 @@ Item {
     }
     // 语音快捷键只在语音页录入：这个槽号指向正在录入的那条语音键。
     property int voiceRecorderSlot: 1
+    // 录音增益弹窗当前编辑的那条语音键。
+    property int voiceGainSlot: 0
+    property string voiceGainKeyName: ""
+    // 弹窗自己的「自动」状态：开关只改这里，再写回配置，避免绑定被点击打断。
+    property bool voiceGainAuto: false
     // Status line of the saved-profile list; the C++ actions return {ok,message}.
     property string voiceProfileMessage: ""
     // Name of the profile currently applied, shown by the compact section row.
@@ -562,6 +567,10 @@ Item {
                             // 插件带来的语音键固定由插件维护：快捷键不能改、也不能删。
                             readonly property bool pluginLocked:
                                 Boolean(modelData.locked)
+                            // OpenMexia 联动加的那条键同样锁快捷键，但说明文字要
+                            // 说清是联动提供的，不能写成 Vokie。
+                            readonly property bool openMexiaKey:
+                                String(modelData.plugin || "") === "openmexia"
                             readonly property bool shortPressResend:
                                 modelData.shortPressResend === true
                             readonly property string slotHotkey: {
@@ -656,15 +665,25 @@ Item {
                                             tokens: root.tokens
                                             kind: noteKind
                                             visible: keyCard.pluginLocked
-                                            x: Math.max(
+                                            // 只占快捷键框和右边「录音增益」之间的空白：
+                                            // 居中显示，太窄就省略，绝不压到按钮上。
+                                            readonly property real noteLeft:
                                                 keyHotkeyField.width
-                                                    + root.tokens.spacingSmall,
-                                                Math.round((keyMoveUpButton.x
-                                                    - keyHotkeyField.x
-                                                    + keyHotkeyField.width
-                                                    - implicitWidth) / 2))
+                                                    + root.tokens.spacingSmall
+                                            readonly property real noteRight:
+                                                Math.max(noteLeft,
+                                                    voiceKeyGainButton.x
+                                                        - keyHotkeyField.x
+                                                        - root.tokens.spacingSmall)
+                                            x: noteLeft
+                                            width: Math.max(0, noteRight - noteLeft)
+                                            horizontalAlignment: Text.AlignHCenter
+                                            elide: Text.ElideRight
+                                            maximumLineCount: 1
                                             anchors.verticalCenter: parent.verticalCenter
-                                            text: qsTr("该按键来自Vokie，默认使用插件通信，不可编辑快捷键映射")
+                                            text: keyCard.openMexiaKey
+                                                ? qsTr("该按键来自OpenMexia，默认使用插件通信，不可编辑快捷键映射")
+                                                : qsTr("该按键来自Vokie，默认使用插件通信，不可编辑快捷键映射")
                                         }
                                     }
 
@@ -721,6 +740,49 @@ Item {
                                             && !root.configurationWriteBusy
                                         onClicked: SettingsController.removeVoiceKeyConfig(
                                             keyCard.slot)
+                                    }
+
+                                    CompactButton {
+                                        id: voiceKeyGainButton
+                                        objectName: "voiceKeyGainButton"
+                                        tokens: root.tokens
+                                        // 和「延迟发送」一样的固定小方块，整行不位移。
+                                        implicitWidth: 32
+                                        Layout.preferredWidth: 32
+                                        compactMinimumWidth: 32
+                                        leftPadding: 4
+                                        rightPadding: 4
+                                        flat: !(keyCard.modelData.gainAuto === true
+                                            || Number(keyCard.modelData.gainSteps || 0) !== 0)
+                                        highlighted: keyCard.modelData.gainAuto === true
+                                            || Number(keyCard.modelData.gainSteps || 0) !== 0
+                                        enabled: !root.configurationWriteBusy
+                                        Accessible.name: qsTr("录音增益")
+                                        onClicked: {
+                                            root.voiceGainSlot = keyCard.slot
+                                            root.voiceGainKeyName = String(
+                                                keyCard.modelData.displayName || "")
+                                            root.voiceGainAuto =
+                                                keyCard.modelData.gainAuto === true
+                                            voiceGainSlider.value = root.voiceGainAuto
+                                                ? 0
+                                                : Number(keyCard.modelData.gainSteps || 0)
+                                            voiceGainDialog.open()
+                                        }
+
+                                        contentItem: Label {
+                                            text: "录音\n增益"
+                                            textFormat: Text.PlainText
+                                            horizontalAlignment: Text.AlignHCenter
+                                            verticalAlignment: Text.AlignVCenter
+                                            color: keyCard.modelData.gainAuto === true
+                                                || Number(keyCard.modelData.gainSteps || 0) !== 0
+                                                ? root.tokens.accentText
+                                                : root.tokens.textSecondary
+                                            font.family: root.tokens.fontFamily
+                                            font.pixelSize: root.tokens.fontSizeTiny
+                                            font.weight: Font.Medium
+                                        }
                                     }
 
                                     CompactButton {
@@ -875,12 +937,248 @@ Item {
                     elide: Text.ElideRight
                 }
 
+                Item { Layout.fillWidth: true }
+
+                CompactButton {
+                    objectName: "openSpeechRecognitionButton"
+                    tokens: root.tokens
+                    flat: true
+                    radiusless: true
+                    compactMinimumWidth: tokens.buttonWidth4Chars
+                    text: qsTr("语音识别…")
+                    onClicked: asrSettingsDialog.open()
+                }
+
                 CompactButton {
                     objectName: "closeVoiceKeyManagerButton"
                     tokens: root.tokens
                     compactMinimumWidth: tokens.buttonWidth4Chars
                     text: qsTr("关闭")
                     onClicked: voiceKeyManagerDialog.reject()
+                }
+            }
+        }
+    }
+
+    // 每条语音键单独调录音增益：-3 ~ +3 共 7 档，松手自动保存。
+    SettingsDialog {
+        id: voiceGainDialog
+        objectName: "voiceGainDialog"
+        tokens: root.tokens
+        preferredWidth: 460
+        title: qsTr("录音增益")
+        titleNote: root.voiceGainKeyName
+        closeButtonObjectName: "closeVoiceGainButton"
+
+        contentItem: ColumnLayout {
+            spacing: root.tokens.spacingMedium
+
+            UiLabel {
+                objectName: "voiceGainNote"
+                tokens: root.tokens
+                kind: noteKind
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                text: qsTr("只调整这条语音键的录音音量：−3 ~ +3 共七档，0 为不调整；勾选「自动」后按峰值自动拉齐，滑块不再生效。拖动后自动保存。")
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: root.tokens.spacingSmall
+
+                UiLabel {
+                    tokens: root.tokens
+                    kind: noteKind
+                    text: qsTr("−3")
+                }
+
+                Slider {
+                    id: voiceGainSlider
+                    objectName: "voiceGainSlider"
+                    Layout.fillWidth: true
+                    from: -3
+                    to: 3
+                    stepSize: 1
+                    snapMode: Slider.SnapAlways
+                    enabled: !root.voiceGainAuto
+                    Accessible.name: qsTr("录音增益")
+                    onMoved: SettingsController.setVoiceKeyConfigGain(
+                        root.voiceGainSlot, Math.round(value), false)
+
+                    background: Rectangle {
+                        x: voiceGainSlider.leftPadding
+                        y: voiceGainSlider.topPadding
+                            + voiceGainSlider.availableHeight / 2 - height / 2
+                        width: voiceGainSlider.availableWidth
+                        height: 4
+                        radius: 2
+                        color: root.tokens.line
+
+                        Rectangle {
+                            width: voiceGainSlider.visualPosition * parent.width
+                            height: parent.height
+                            radius: 2
+                            color: root.tokens.accent
+                        }
+                    }
+
+                    handle: Rectangle {
+                        x: voiceGainSlider.leftPadding
+                            + voiceGainSlider.visualPosition
+                                * (voiceGainSlider.availableWidth - width)
+                        y: voiceGainSlider.topPadding
+                            + voiceGainSlider.availableHeight / 2 - height / 2
+                        width: 16
+                        height: 16
+                        radius: 8
+                        color: root.tokens.accent
+                        border.color: root.tokens.borderStrong
+                    }
+                }
+
+                UiLabel {
+                    tokens: root.tokens
+                    kind: noteKind
+                    text: qsTr("+3")
+                }
+
+                UiLabel {
+                    objectName: "voiceGainValue"
+                    tokens: root.tokens
+                    Layout.preferredWidth: 32
+                    horizontalAlignment: Text.AlignHCenter
+                    text: {
+                        const value = Math.round(voiceGainSlider.value)
+                        if (value === 0)
+                            return "0"
+                        return (value > 0 ? "+" : "−") + Math.abs(value)
+                    }
+                }
+
+                CompactSwitch {
+                    id: voiceGainAutoSwitch
+                    objectName: "voiceGainAutoSwitch"
+                    tokens: root.tokens
+                    // 用 Binding 保持同步：点击后开关自己也会改 checked，
+                    // 直接写 checked 绑定会被点击打断，进度就停在上一条语音键上。
+                    Binding {
+                        target: voiceGainAutoSwitch
+                        property: "checked"
+                        value: root.voiceGainAuto
+                        restoreMode: Binding.RestoreNone
+                    }
+                    enabled: !root.configurationWriteBusy
+                    Accessible.name: qsTr("自动增益")
+                    onToggled: {
+                        root.voiceGainAuto = checked
+                        SettingsController.setVoiceKeyConfigGain(
+                            root.voiceGainSlot,
+                            Math.round(voiceGainSlider.value),
+                            checked)
+                    }
+                }
+
+                UiLabel {
+                    tokens: root.tokens
+                    kind: noteKind
+                    text: qsTr("自动")
+                }
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: root.tokens.spacingSmall
+
+                CompactButton {
+                    objectName: "resetVoiceGainButton"
+                    tokens: root.tokens
+                    flat: true
+                    radiusless: true
+                    compactMinimumWidth: tokens.buttonWidth4Chars
+                    text: qsTr("还原")
+                    enabled: root.voiceGainSlot > 0
+                        && (root.voiceGainAuto
+                            || Math.round(voiceGainSlider.value) !== 0)
+                    onClicked: {
+                        root.voiceGainAuto = false
+                        voiceGainSlider.value = 0
+                        SettingsController.setVoiceKeyConfigGain(
+                            root.voiceGainSlot, 0, false)
+                    }
+                }
+
+                Item { Layout.fillWidth: true }
+
+                CompactButton {
+                    objectName: "closeVoiceGainButton"
+                    tokens: root.tokens
+                    compactMinimumWidth: tokens.buttonWidth4Chars
+                    text: qsTr("关闭")
+                    onClicked: voiceGainDialog.reject()
+                }
+            }
+        }
+    }
+
+    // 语音识别：本地 SenseVoice 离线模型，不联网也不需要密钥。
+    SettingsDialog {
+        id: asrSettingsDialog
+        objectName: "asrSettingsDialog"
+        tokens: root.tokens
+        preferredWidth: 520
+        title: qsTr("语音识别")
+        titleNote: qsTr("给 OpenMexia 语音键用的语音转文字")
+        closeButtonObjectName: "closeAsrSettingsButton"
+
+        contentItem: ColumnLayout {
+            spacing: root.tokens.spacingMedium
+
+            UiLabel {
+                objectName: "asrSettingsNote"
+                tokens: root.tokens
+                kind: noteKind
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                text: qsTr("使用本地 SenseVoice 模型离线识别：不用联网、不用注册、不限次数。模型需要先安装（约 228MB，只下一次）；安装后按住 OpenMexia 语音键说话，松手后识别出的文字交给 OpenMexia 执行。")
+            }
+
+            InlineSettingsRow {
+                objectName: "asrModelRow"
+                tokens: root.tokens
+                Layout.fillWidth: true
+                actionColumnWidth: root.settingsActionColumnWidth
+                titleText: qsTr("识别模型")
+                descriptionText: qsTr("SenseVoice 中文模型（本地）")
+                stateText: SettingsController.asrModelStatusText
+                stateColor: SettingsController.asrModelReady
+                    ? tokens.successColor : tokens.textSecondary
+                showDivider: false
+
+                CompactButton {
+                    objectName: "asrModelActionButton"
+                    tokens: root.tokens
+                    compactMinimumWidth: tokens.buttonWidth4Chars
+                    text: SettingsController.asrModelReady
+                        ? qsTr("卸载") : qsTr("安装")
+                    enabled: !SettingsController.asrModelBusy
+                    onClicked: SettingsController.asrModelReady
+                        ? SettingsController.uninstallAsrModel()
+                        : SettingsController.installAsrModel()
+                }
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: root.tokens.spacingSmall
+
+                Item { Layout.fillWidth: true }
+
+                CompactButton {
+                    objectName: "closeAsrSettingsButton"
+                    tokens: root.tokens
+                    compactMinimumWidth: tokens.buttonWidth4Chars
+                    text: qsTr("关闭")
+                    onClicked: asrSettingsDialog.reject()
                 }
             }
         }
@@ -908,7 +1206,7 @@ Item {
             property bool statusOk: false
             property color statusColor: root.tokens.textSecondary
             property string connectText: qsTr("连接插件")
-            property bool connectHighlighted: true
+            property string downloadText: qsTr("下载插件")
             property bool connectEnabled: true
             signal openWebsiteRequested()
             signal downloadRequested()
@@ -1034,8 +1332,8 @@ Item {
                         tokens: root.tokens
                         flat: true
                         radiusless: true
-                        text: qsTr("下载插件")
-                        Accessible.name: card.appName + " " + qsTr("下载插件")
+                        text: card.downloadText
+                        Accessible.name: card.appName + " " + card.downloadText
                         onClicked: card.downloadRequested()
                     }
 
@@ -1044,7 +1342,7 @@ Item {
                         Layout.alignment: Qt.AlignRight
                         tokens: root.tokens
                         text: card.connectText
-                        highlighted: card.connectHighlighted
+                        highlighted: true
                         enabled: card.connectEnabled
                         Accessible.name: card.appName + " " + card.connectText
                         onClicked: card.connectRequested()
@@ -1084,7 +1382,6 @@ Item {
                         ? qsTr("断开连接")
                         : String(SettingsController.voicePluginState) === "listening"
                             ? qsTr("取消连接") : qsTr("连接插件")
-                    connectHighlighted: !SettingsController.voicePluginConnected
                     onOpenWebsiteRequested: SettingsController.openVokieWebsite()
                     onDownloadRequested: SettingsController.openVokiePluginDownload()
                     onConnectRequested: {
@@ -1105,12 +1402,24 @@ Item {
                     tagline: qsTr("开源智能家居控制中枢")
                     description: qsTr("把遥控器变成家里的控制面板，目前支持米家设备")
                     logoSource: Qt.resolvedUrl("assets/openmexia-mark.svg")
-                    statusText: qsTr("即将发布")
-                    statusColor: tokens.textTertiary
-                    connectText: qsTr("即将发布")
-                    connectEnabled: false
+                    statusText: SettingsController.openMexiaConnected
+                        ? qsTr("已连接 · %1 台设备").arg(SettingsController.openMexiaDeviceCount)
+                        : qsTr("未连接")
+                    statusOk: SettingsController.openMexiaConnected
+                    statusColor: SettingsController.openMexiaConnected
+                        ? tokens.successColor : tokens.textSecondary
+                    downloadText: qsTr("下载软件")
+                    connectText: SettingsController.openMexiaConnected
+                        ? qsTr("断开连接") : qsTr("连接软件")
                     onOpenWebsiteRequested: SettingsController.openOpenMexiaWebsite()
                     onDownloadRequested: SettingsController.openOpenMexiaDownload()
+                    onConnectRequested: {
+                        if (SettingsController.openMexiaConnected) {
+                            SettingsController.disconnectOpenMexia()
+                        } else {
+                            SettingsController.connectOpenMexia()
+                        }
+                    }
                 }
             }
 
@@ -1385,6 +1694,7 @@ Item {
                             wrapMode: Text.WrapAnywhere
                         }
                     }
+
                 }
 
                 ColumnLayout {
@@ -1532,14 +1842,19 @@ Item {
                     descriptionText: SettingsController.voicePluginConnected
                         ? qsTr("已接收 %1 个语音模式")
                             .arg(SettingsController.voicePluginModeCount)
-                        : String(SettingsController.voicePluginState) === "listening"
-                            ? qsTr("等待 MoteDeck2Vokie 插件连接")
-                            : qsTr("接入第三方语音工具")
-                    stateText: SettingsController.voicePluginConnected
+                        : SettingsController.openMexiaConnected
+                            ? qsTr("已连接 OpenMexia · %1 台设备")
+                                .arg(SettingsController.openMexiaDeviceCount)
+                            : String(SettingsController.voicePluginState) === "listening"
+                                ? qsTr("等待 MoteDeck2Vokie 插件连接")
+                                : qsTr("接入第三方语音工具")
+                    stateText: (SettingsController.voicePluginConnected
+                            || SettingsController.openMexiaConnected)
                         ? qsTr("已连接")
                         : String(SettingsController.voicePluginState) === "listening"
                             ? qsTr("等待连接") : qsTr("未连接")
-                    stateColor: SettingsController.voicePluginConnected
+                    stateColor: (SettingsController.voicePluginConnected
+                            || SettingsController.openMexiaConnected)
                         ? tokens.successColor
                         : String(SettingsController.voicePluginState) === "listening"
                             ? tokens.voiceAccent : tokens.textSecondary

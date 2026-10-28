@@ -82,7 +82,11 @@ Button {
             : root.flat
                 ? (root.down || root.hovered ? root.tokens.hover : "transparent")
                 : root.highlighted
-                    ? (root.down ? "#000000" : root.tokens.accent)
+                    ? (root.down
+                        ? (root.tokens.darkMode ? "#c9c9c9" : "#000000")
+                        : root.hovered
+                            ? (root.tokens.darkMode ? "#dcdcdc" : "#2b2b2b")
+                            : root.tokens.accent)
                     : (root.down || root.hovered ? root.tokens.surfaceMuted : root.tokens.surface)
         border.width: root.flat || root.highlighted ? 0 : root.tokens.hairlineWidth
         border.color: root.inverse ? "#f2f2f2" : root.tokens.borderStrong

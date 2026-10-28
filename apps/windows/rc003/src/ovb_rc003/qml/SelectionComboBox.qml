@@ -11,6 +11,33 @@ ComboBox {
     property int effectiveIndex: currentIndex
     property bool showEffectiveMarker: false
 
+    // 下拉列表宽度按最长选项自适应，长设备名/端点名不再被省略号截断。
+    readonly property real popupIdealWidth: {
+        if (!tokens)
+            return root.width
+        const optionModel = root.model
+        if (!optionModel)
+            return root.width
+        let widest = 0
+        for (let i = 0; i < root.count; ++i)
+            widest = Math.max(widest, optionMetrics.advanceWidth(
+                root.decoratedText(i, root.textAt(i))))
+        return widest
+    }
+
+    FontMetrics {
+        id: optionMetrics
+        font.family: root.tokens ? root.tokens.fontFamily : "Microsoft YaHei UI"
+        font.pixelSize: root.tokens ? root.tokens.fontSizeControl : 13
+    }
+
+    Binding {
+        target: root.popup
+        property: "width"
+        value: Math.max(root.width, root.popupIdealWidth + 30
+            + (root.showEffectiveMarker ? 18 : 0))
+    }
+
     function decoratedText(index, rawText) {
         const value = rawText === undefined || rawText === null
             ? "" : String(rawText)

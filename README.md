@@ -35,21 +35,22 @@ MoteDeck 是一个开源的 Windows 小工具：把**小米蓝牙语音遥控器
 - **语音输入**：按住遥控器语音键说话，文字直接落进当前输入框；录音源可以是遥控器自带话筒，也可以是电脑本机麦克风。
 - **按应用切换**：为不同前台应用保存不同按键布局，切到该应用时自动生效，未配置的按键回落到全局映射。
 - **驱动级注入**：每个按键可单独选择 `SendInput` 或 Interception 驱动级注入，长按和组合键更接近真实键盘手感。
-- **配置管理**：复制、应用、重命名、删除配置副本，支持导出／导入；当前映射自动保存。
+- **米家设备联动**：和同作者的 [OpenMexia](https://github.com/HZDavy/OpenMexia) 连接后，按键动作里多出「米家设备」分组，可以直接开关灯、调亮度与色温。
+- **配置管理**：复制、应用、重命名、删除配置副本，支持导出／导入；当前映射自动保存，应用条可以直接拖动排序。
 
 ---
 
-## 联动预告：用遥控器控制米家设备
+## 联动 OpenMexia：用遥控器控制米家设备
 
-<img src="./assets/readme/integration-banner.svg" width="100%" alt="联动预告：MoteDeck 把遥控器按键变成设备指令，经本机回环 HTTP 交给 OpenMexia，由 OpenMexia 完成米家登录与设备控制">
+<img src="./assets/readme/integration-banner.svg" width="100%" alt="联动 OpenMexia：MoteDeck 把遥控器按键变成设备指令，经本机回环 HTTP 交给 OpenMexia，由 OpenMexia 完成米家登录与设备控制">
 
-正在与同作者的智能家居控制中枢 [OpenMexia](https://github.com/HZDavy/OpenMexia) 对接：以后可以直接用 RC003 的按键开关灯、调亮度与色温，不必先走到电脑前。
+已随 0.1.4 发布，配合同作者的智能家居控制中枢 [OpenMexia](https://github.com/HZDavy/OpenMexia)（0.1.11 及以上）使用：在沙发上按一下遥控器，就能开关灯、调亮度和色温，不必先走到电脑前。
 
 分工保持清晰——MoteDeck 只负责「按键 → 指令」，米家登录、设备状态与通信全部由 OpenMexia 承担。两者通过本机回环 HTTP 通信（仅监听 `127.0.0.1`，每次启动随机 token 校验），MoteDeck 不会接触你的米家凭据，也不会上传任何设备数据。
 
-- 计划覆盖：开关、亮度、色温、风速，以及部分设备的自定义动作
-- 配置方式：在按键页直接拉取 OpenMexia 的设备与可控项，选完即完成绑定
-- 当前状态：接口设计与对接阶段，尚未发布；进展见 [Issues](https://github.com/HZDavy/MoteDeck/issues)
+- 覆盖范围：开关、亮度、色温、风速，以及 OpenMexia 里支持的自定义动作
+- 配置方式：在「语音」页点「连接 OpenMexia」，按键页的动作下拉里就多出「米家设备」分组，选中「客厅灯 · 开灯」即完成绑定
+- 语音控制：OpenMexia 连接后会多出一条专属语音键，按住说话、松手后由本机 SenseVoice 模型离线识别成文字交给 OpenMexia 执行；识别模型在「语音识别…」里按需安装（约 228MB，只下一次），不联网也不需要账号
 
 ---
 
@@ -57,11 +58,12 @@ MoteDeck 是一个开源的 Windows 小工具：把**小米蓝牙语音遥控器
 
 <img src="./assets/readme/vokie-support.svg" width="100%" alt="原生支持 Vokie：MoteDeck 通过本机回环 TCP 把遥控器话筒的声音交给 Vokie 插件，由 Vokie 整理成文字后自动上屏">
 
-Vokie 原生支持外接语音设备，MoteDeck 按它的插件协议做了适配，配套插件 [MoteDeck2Vokie](https://github.com/HZDavy/MoteDeck/tree/main/plugins/MoteDeck2Vokie) 已随 0.1.3 发布。装上之后，遥控器就是 Vokie 自己的语音设备：按住话筒键说话，音频由插件推进 Vokie 会话，松手后整理成完整文字再落进输入框。
+Vokie 原生支持外接语音设备，MoteDeck 按它的插件协议做了适配，配套插件 [MoteDeck2Vokie](https://github.com/HZDavy/MoteDeck/tree/main/plugins/MoteDeck2Vokie) 已随 0.1.4 发布（插件版本 0.1.2）。装上之后，遥控器就是 Vokie 自己的语音设备：按住话筒键说话，音频由插件推进 Vokie 会话，松手后整理成完整文字再落进输入框。
 
 - 不用再配虚拟声卡和模拟快捷键：插件与 MoteDeck 走本机回环 `127.0.0.1` 直连（随机端口 + 共享 token），控制指令和音频都从这里过
 - Vokie 的语音模式会同步到 MoteDeck 的语音键配置，遥控器上按一下就能切换
-- 安装：在 MoteDeck「语音」页点「下载插件」，把 [MoteDeck2Vokie-0.1.1.zip](https://github.com/HZDavy/MoteDeck/releases/download/v0.1.3/MoteDeck2Vokie-0.1.1.zip) 装进 Vokie 的插件目录，再在插件里点「开启连接」
+- 插件按 Vokie 当前会话类型走：闪记、翻译、语音指令各有各的通道，被拒时自动退回普通语音输入，不会出现「按了没反应」
+- 安装：在 MoteDeck「语音」页点「下载插件」，把 [MoteDeck2Vokie-0.1.2.zip](https://github.com/HZDavy/MoteDeck/releases/download/v0.1.4/MoteDeck2Vokie-0.1.2.zip) 装进 Vokie 的插件目录，再在插件里点「开启连接」
 
 <img src="./assets/readme/plugin-flow.svg" width="660" alt="插件语音通路总图：左边不开插件时走 CABLE Input、CABLE Output 到输入框，右边开插件后经本机回环 TCP 直连，短按只切换语音模式、长按才唤醒 Vokie 会话；下方是插件与 MoteDeck 的连接流程和语音键同步">
 
@@ -81,9 +83,9 @@ Vokie 原生支持外接语音设备，MoteDeck 按它的插件协议做了适�
 
 到 [Releases](https://github.com/HZDavy/MoteDeck/releases) 下载最新的 `MoteDeckSetup-<版本号>-unsigned.exe`，也可以先在 [官网](https://hzdavy.github.io/MoteDeck/) 查看当前版本与更新说明。
 
-当前正式版为 **0.1.3**。直接下载 [MoteDeckSetup-0.1.3-unsigned.exe](https://github.com/HZDavy/MoteDeck/releases/download/v0.1.3/MoteDeckSetup-0.1.3-unsigned.exe)，或查看 [v0.1.3 版本说明](https://github.com/HZDavy/MoteDeck/releases/tag/v0.1.3)。发布页同时提供 `SHA256SUMS.txt`，下载后可用 `Get-FileHash -Algorithm SHA256` 核对文件。
+当前正式版为 **0.1.4**。直接下载 [MoteDeckSetup-0.1.4-unsigned.exe](https://github.com/HZDavy/MoteDeck/releases/download/v0.1.4/MoteDeckSetup-0.1.4-unsigned.exe)，或查看 [v0.1.4 版本说明](https://github.com/HZDavy/MoteDeck/releases/tag/v0.1.4)。发布页同时提供 `SHA256SUMS.txt`，下载后可用 `Get-FileHash -Algorithm SHA256` 核对文件。
 
-需要 Vokie 插件时，同一版本页提供 [MoteDeck2Vokie-0.1.1.zip](https://github.com/HZDavy/MoteDeck/releases/download/v0.1.3/MoteDeck2Vokie-0.1.1.zip)，也可以直接在软件「语音」页的「外部应用程序支持」里点「下载插件」。
+需要 Vokie 插件时，同一版本页提供 [MoteDeck2Vokie-0.1.2.zip](https://github.com/HZDavy/MoteDeck/releases/download/v0.1.4/MoteDeck2Vokie-0.1.2.zip)，也可以直接在软件「语音」页的「外部应用程序支持」里点「下载插件」。
 
 - 系统要求：64 位 Windows 10 1809 或更高版本。
 - 双击安装包按提示安装，默认装到 `%LOCALAPPDATA%\MoteDeck`，并创建开始菜单与桌面快捷方式；之后从 Windows 设置 → 应用 → MoteDeck 卸载。

@@ -34,6 +34,45 @@ const LOG_PATH = path.join(
   'vokie-plugin.log'
 );
 
+// 上一次会话的 requestId：Vokie 侧只要没收到配对的 session_stop，就会一直占着
+// activeSession，之后所有会话都被 busy 拒绝。Worker 重启后拿这条记录补一个
+// session_stop，把卡住的会话清掉。
+const SESSION_RECORD_PATH = path.join(
+  process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'),
+  'RemoteMic',
+  'RC003',
+  'vokie-session.json'
+);
+
+function rememberSession(requestId) {
+  try {
+    fs.mkdirSync(path.dirname(SESSION_RECORD_PATH), { recursive: true });
+    fs.writeFileSync(SESSION_RECORD_PATH, JSON.stringify({ requestId }), 'utf8');
+  } catch {
+    // 记录失败只影响下次启动的自愈。
+  }
+}
+
+function forgetSession() {
+  try {
+    fs.rmSync(SESSION_RECORD_PATH, { force: true });
+  } catch {
+    // 删不掉也无妨：下次会话会覆盖这份记录。
+  }
+}
+
+function readRememberedSession() {
+  try {
+    const value = JSON.parse(fs.readFileSync(SESSION_RECORD_PATH, 'utf8'));
+    const requestId = value && typeof value.requestId === 'string'
+      ? value.requestId.trim()
+      : '';
+    return requestId;
+  } catch {
+    return '';
+  }
+}
+
 function log(...args) {
   // Worker 的 stdout/stderr 只是日志，不参与协议。
   console.error('[motedeck]', ...args);
@@ -489,12 +528,20 @@ function readTranslationTargetLanguage() {
 
 function resolveSessionMode(name) {
   const label = typeof name === 'string' ? name : '';
+  // 闪记：Vokie 的 quickNote 录音管线（recording + outputRoute=quickNote）。
+  if (label.includes('闪记')) {
+    return { mode: 'recording', extra: { outputRoute: 'quickNote' } };
+  }
   if (label.includes('翻译')) {
     const target = readTranslationTargetLanguage();
     // 翻译会话必须带非空目标语言，拿不到就退回普通语音输入。
     if (target) return { mode: 'translation', extra: { targetLanguage: target } };
   }
-  // Vokie 的 command 模式没有能力位，语音指令也走 ptt。
+  // 语音指令：Vokie 1.6.6 起插件协议支持 command（需要 manifest 里声明
+  // capabilities.command），走它自己的指令会话。
+  if (label.includes('指令')) {
+    return { mode: 'command', extra: {} };
+  }
   return { mode: 'ptt', extra: {} };
 }
 
@@ -520,13 +567,19 @@ function sendSessionStop(entry, reason) {
 
 function dropSession(entry, reason) {
   clearSessionTimers(entry);
-  if (session === entry) session = null;
+  if (session === entry) {
+    session = null;
+    forgetSession();
+  }
   if (reason) sendSessionStop(entry, reason);
 }
 
 function finishVoiceSession(entry) {
   clearSessionTimers(entry);
-  if (session === entry) session = null;
+  if (session === entry) {
+    session = null;
+    forgetSession();
+  }
   sendSessionStop(entry, 'user');
 }
 
@@ -555,17 +608,20 @@ function sendAudioFrame(entry, pcm) {
   entry.sequence += 1;
 }
 
-function startVoiceSession(name) {
+function startVoiceSession(name, forcedMode) {
   if (!started || stopped || shuttingDown) {
     log('audio_start ignored: plugin not ready');
     return;
   }
   abortVoiceSession('device');
-  const resolved = resolveSessionMode(name);
+  const resolved = forcedMode
+    ? { mode: forcedMode, extra: {} }
+    : resolveSessionMode(name);
   log(`audio_start received: ${name} host=${Boolean(client && client.opened)} bridge=${LINK.status}`);
   const entry = {
     requestId: crypto.randomUUID(),
     mode: resolved.mode,
+    label: name,
     sequence: 0,
     accepted: false,
     stopping: false,
@@ -574,6 +630,7 @@ function startVoiceSession(name) {
     acceptTimer: null,
   };
   session = entry;
+  rememberSession(entry.requestId);
   entry.acceptTimer = setTimeout(() => {
     if (session !== entry) return;
     log('vokie session was not accepted in time');
@@ -624,7 +681,16 @@ function handleSessionResponse(message) {
   if (!entry || message.requestId !== entry.requestId) return;
   if (message.type === 'session_rejected') {
     log(`session_rejected: ${message.reason || 'unknown'}`);
+    // 闪记 / 语音指令会话被拒（老版本 Vokie 没开放）时，退回普通语音输入，
+    // 至少让这次按键能正常说话，而不是没反应。
+    const retryAsPtt = (entry.mode === 'recording' || entry.mode === 'command')
+      && message.reason !== 'busy';
+    const label = entry.label;
     dropSession(entry);
+    if (retryAsPtt) {
+      log('quick note session rejected, retrying as ptt');
+      startVoiceSession(label, 'ptt');
+    }
     return;
   }
   entry.accepted = true;
@@ -963,10 +1029,24 @@ function handleHostMessage(text) {
   if (!message || typeof message !== 'object') return;
 
   switch (message.type) {
-    case 'handshake_ok':
+    case 'handshake_ok': {
       log(`handshake ok: ${message.pluginId} (${message.connectionId})`);
       publishState();
+      // 上一次进程没来得及收尾的会话：补一条 session_stop，把 Vokie 侧
+      // 占着的 activeSession 清掉，否则之后每次都会被告知 busy。
+      const staleRequestId = readRememberedSession();
+      if (staleRequestId) {
+        send({
+          type: 'session_stop',
+          requestId: staleRequestId,
+          timestampMs: Date.now(),
+          reason: 'restart',
+        });
+        forgetSession();
+        log(`sent stale session_stop ${staleRequestId}`);
+      }
       break;
+    }
     case 'initialize':
       send({ type: 'initialized' });
       break;

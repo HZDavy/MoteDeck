@@ -165,6 +165,13 @@ class AppProfileStoreTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             app_profiles.validate_mapping(self.mapping, "unsupported")
 
+    def test_openmexia_device_actions_survive_profile_validation(self):
+        action = {"kind": "openmexia_device", "keys": [], "device": "123",
+                  "op": "toggle", "label": "台灯 · 开关切换"}
+        sparse = self.sparse(action=action)
+        self.assertEqual(
+            app_profiles.validate_mapping(sparse, self.profile, partial=True), sparse)
+
     def test_snapshot_fills_absent_primary_actions_and_drops_unknown_fields(self):
         bindings = copy.deepcopy(self.bindings)
         del bindings["bindings"]["ok"]

@@ -68,6 +68,23 @@ PyInstaller also preserves NumPy's complete package license tree under
 Only the normal non-ASIO PortAudio DLL is required and distributed. The
 separately supplied ASIO-enabled DLL is excluded from the PyInstaller output.
 
+### sherpa-onnx and onnxruntime
+
+- Package: `sherpa-onnx==2.0.1` (runtime package `sherpa-onnx-core==2.0.1`)
+- Project: sherpa-onnx
+- Source: <https://github.com/k2-fsa/sherpa-onnx>
+- License: Apache License 2.0
+- License text: `THIRD_PARTY_LICENSES/sherpa-onnx-2.0.1/LICENSE.txt`
+- Distributed form: `sherpa_onnx` Python extension module, `sherpa-onnx-c-api.dll`,
+  `sherpa-onnx-cxx-api.dll` and the bundled ONNX Runtime library
+  `onnxruntime.dll` (MIT, © Microsoft Corporation)
+
+The package provides the in-process, fully offline speech recognition used by
+the OpenMexia voice key. The Windows wheel already ships the ONNX Runtime
+library, so no separate runtime package is installed. The SenseVoice model
+itself is not bundled: it is downloaded only after an explicit user action in
+the settings window and stored in the user's own configuration directory.
+
 ### pywinrt projections
 
 The following packages are all version 3.2.1 and licensed under MIT:

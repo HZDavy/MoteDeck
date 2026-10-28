@@ -56,6 +56,14 @@ if source_root_override:
 elif LEGACY_COMPARISON:
     raise SystemExit("legacy comparison requires an explicit staged source root")
 navigation_binaries = []
+# 本地离线语音识别用 sherpa-onnx：它在 local_asr.py 里是函数内懒加载，静态
+# 分析看不到，而且自带原生 DLL（sherpa-onnx / onnxruntime），打包时必须一起收。
+try:
+    from PyInstaller.utils.hooks import collect_dynamic_libs
+
+    navigation_binaries = collect_dynamic_libs("sherpa_onnx")
+except Exception:
+    navigation_binaries = []
 if NATIVE_STAGE:
     ELEMENT_NAVIGATION_SOURCE_DIR = SRC_ROOT.parent / "scripts"
 DEVICE_PROFILES_DIR = REPO_ROOT / "device-profiles"
@@ -316,6 +324,8 @@ hiddenimports = [
     # PyInstaller's static analysis cannot always auto-detect:
     "sounddevice",
     "numpy",
+    # 本地离线语音识别（local_asr.py 里函数内懒加载），静态分析扫不到。
+    "sherpa_onnx",
     "winrt.windows.devices.bluetooth",
     "winrt.windows.devices.bluetooth.genericattributeprofile",
     "winrt.windows.devices.enumeration",

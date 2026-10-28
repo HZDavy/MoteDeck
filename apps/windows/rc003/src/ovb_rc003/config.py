@@ -59,6 +59,10 @@ VOICE_INPUT_SOURCES = (
     VOICE_INPUT_SOURCE_LOCAL,
 )
 
+# 每条语音键单独的录音增益：-3 ~ +3 档，每档 6dB，0 表示不调整。
+VOICE_KEY_GAIN_MIN = -3
+VOICE_KEY_GAIN_MAX = 3
+
 # 模式切换气泡配色。深色（黑底白字）是默认值；off 表示切换时不弹气泡。
 VOICE_CYCLE_TOAST_DARK = "dark"
 VOICE_CYCLE_TOAST_LIGHT = "light"
@@ -182,6 +186,22 @@ def key_bindings_path(root: Path = None) -> Path:  # type: ignore[assignment]
 # 外部插件（Vokie）下发的语音键统一打这个标记：它们自带快捷键，只能排序、
 # 开关，不能改快捷键，也不能在插件仍然连接时删除。
 VOICE_KEY_PLUGIN_VOKIE = "vokie"
+# OpenMexia 联动后由本软件自己加的那条语音键。它和 Vokie 的键一样由外部
+# 提供：快捷键不可编辑、连接期间不能删，断开连接时随连接一起清掉。真正的
+# 用途是切到它时切到对应的 OpenMexia 应用配置。
+VOICE_KEY_PLUGIN_OPENMEXIA = "openmexia"
+
+
+def is_locked_plugin_id(value: object) -> bool:
+    """Whether one plugin id means “this key is owned by an external plugin”."""
+
+    return bool(_normalize_plugin_id(value))
+
+
+def is_openmexia_plugin_id(value: object) -> bool:
+    """Whether one plugin id belongs to the OpenMexia voice key."""
+
+    return _normalize_plugin_id(value) == VOICE_KEY_PLUGIN_OPENMEXIA
 
 
 def _normalize_plugin_id(value: object) -> str:
@@ -200,6 +220,8 @@ def _default_voice_key_config(
     enabled: bool = True,
     plugin: str = "",
     short_press_resend: bool = False,
+    gain_steps: int = 0,
+    gain_auto: bool = False,
 ) -> Dict[str, Any]:
     return {
         "id": int(slot),
@@ -216,7 +238,19 @@ def _default_voice_key_config(
         # 快捷键推迟一小段时间再注入（松手不再补发第二次），避开同时支持
         # 短按/长按的输入法；插件键的快捷键由插件自己接管，这里保持 False。
         "short_press_resend": bool(short_press_resend),
+        # 这条语音键单独的录音增益，-3~+3 档，每档 6dB，0 表示不调整。
+        "gain_steps": _clamp_gain_steps(gain_steps),
+        # 自动增益：按峰值把整段录音归一化到 70%，与手动档二选一。
+        "gain_auto": bool(gain_auto),
     }
+
+
+def _clamp_gain_steps(value: object) -> int:
+    try:
+        steps = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0
+    return max(VOICE_KEY_GAIN_MIN, min(VOICE_KEY_GAIN_MAX, steps))
 
 
 def default_config() -> Dict[str, Any]:
@@ -273,6 +307,9 @@ def default_config() -> Dict[str, Any]:
         # 记住用户离开时 Vokie 插件连接是开还是关：开着的话下次启动直接恢复
         # 监听，不用再点一次「开启插件连接」；关着的话启动后也保持关闭。
         "voice_plugin_auto_connect": False,
+        # 记住用户离开时 OpenMexia 是连着的还是断开的：连着的话下次启动自动
+        # 再连一次；断开或从未连过就保持不连。
+        "openmexia_auto_connect": False,
         "diagnostic_trace_enabled": False,
         "close_behavior": CLOSE_BEHAVIOR_HIDE_TO_TRAY,
         # A portable build offers each exact helper binary once. The explicit
@@ -677,6 +714,8 @@ def _normalize_voice_key_configs(config: Dict[str, Any]) -> None:
                 plugin=raw_entry.get("plugin", ""),
                 short_press_resend=raw_entry.get("short_press_resend", False)
                 is not False,
+                gain_steps=raw_entry.get("gain_steps", 0),
+                gain_auto=raw_entry.get("gain_auto", False) is not False,
             )
         )
     if not normalized:
@@ -740,6 +779,8 @@ def voice_key_configs(config_data: Dict[str, Any]) -> List[Dict[str, Any]]:
                 plugin=raw_entry.get("plugin", ""),
                 short_press_resend=raw_entry.get("short_press_resend", False)
                 is not False,
+                gain_steps=raw_entry.get("gain_steps", 0),
+                gain_auto=raw_entry.get("gain_auto", False) is not False,
             )
         )
     if not entries:
@@ -949,6 +990,8 @@ def update_voice_key_config(
     device: object = _VOICE_KEY_FIELD_UNSET,
     enabled: object = _VOICE_KEY_FIELD_UNSET,
     short_press_resend: object = _VOICE_KEY_FIELD_UNSET,
+    gain_steps: object = _VOICE_KEY_FIELD_UNSET,
+    gain_auto: object = _VOICE_KEY_FIELD_UNSET,
     force: bool = False,
 ) -> Dict[str, Any]:
     """Return a copy with one voice key's fields replaced.
@@ -970,13 +1013,20 @@ def update_voice_key_config(
         return dict(config_data)
     if name is not _VOICE_KEY_FIELD_UNSET:
         target["name"] = _normalize_voice_key_name(name)
-    if hotkey is not _VOICE_KEY_FIELD_UNSET and (force or not target.get("plugin")):
+    if hotkey is not _VOICE_KEY_FIELD_UNSET and (force or not is_locked_plugin_id(target.get("plugin"))):
         target["hotkey"] = _normalize_hotkey_text(hotkey)
     if enabled is not _VOICE_KEY_FIELD_UNSET:
         target["enabled"] = bool(enabled)
     # 插件键的快捷键由插件接管，短按延迟发送对它没有意义，所以不写入。
-    if short_press_resend is not _VOICE_KEY_FIELD_UNSET and not target.get("plugin"):
+    if short_press_resend is not _VOICE_KEY_FIELD_UNSET and not is_locked_plugin_id(
+        target.get("plugin")
+    ):
         target["short_press_resend"] = bool(short_press_resend)
+    # 录音增益对每一条语音键都有效，插件键也能单独调。
+    if gain_steps is not _VOICE_KEY_FIELD_UNSET:
+        target["gain_steps"] = _clamp_gain_steps(gain_steps)
+    if gain_auto is not _VOICE_KEY_FIELD_UNSET:
+        target["gain_auto"] = bool(gain_auto)
     if source is not _VOICE_KEY_FIELD_UNSET:
         target["source"] = _normalize_voice_source(source)
         if target["source"] == VOICE_INPUT_SOURCE_REMOTE:
@@ -1005,6 +1055,44 @@ def add_voice_key_config(config_data: Dict[str, Any]) -> Dict[str, Any]:
     return _with_voice_key_configs(config_data, entries)
 
 
+def openmexia_voice_key_slot(config_data: Dict[str, Any]) -> Optional[int]:
+    """The id of the OpenMexia voice key, or ``None`` when there is none."""
+
+    for entry in voice_key_configs(config_data):
+        if _normalize_plugin_id(entry.get("plugin")) == VOICE_KEY_PLUGIN_OPENMEXIA:
+            return int(entry["id"])
+    return None
+
+
+def ensure_openmexia_voice_key(
+    config_data: Dict[str, Any], *, name: str = "OpenMexia"
+) -> Tuple[Dict[str, Any], Optional[int]]:
+    """Make sure the OpenMexia voice key exists; return the copy and its id.
+
+    Created only when there is none yet, so connecting twice never adds a
+    second key. The new key is appended after every existing one, which keeps
+    the user's own voice keys where they were.
+    """
+
+    from . import key_mapping
+
+    existing = openmexia_voice_key_slot(config_data)
+    if existing is not None:
+        return dict(config_data), existing
+    entries = voice_key_configs(config_data)
+    if len(entries) >= key_mapping.MAX_VOICE_SLOTS:
+        return dict(config_data), None
+    slot = max((entry["id"] for entry in entries), default=1) + 1
+    entries.append(
+        _default_voice_key_config(
+            slot=slot,
+            name=name,
+            plugin=VOICE_KEY_PLUGIN_OPENMEXIA,
+        )
+    )
+    return _with_voice_key_configs(config_data, entries), slot
+
+
 def remove_voice_key_config(
     config_data: Dict[str, Any], slot: int, *, force: bool = False
 ) -> Dict[str, Any]:
@@ -1019,7 +1107,8 @@ def remove_voice_key_config(
     remaining = [
         entry
         for entry in entries
-        if entry["id"] != int(slot) or (entry.get("plugin") and not force)
+        if entry["id"] != int(slot)
+        or (is_locked_plugin_id(entry.get("plugin")) and not force)
     ]
     if not remaining or len(remaining) == len(entries):
         return dict(config_data)
@@ -1064,6 +1153,49 @@ def set_voice_key_config_short_press_resend(
     return update_voice_key_config(
         config_data, int(slot), short_press_resend=bool(enabled)
     )
+
+
+def set_voice_key_config_gain_steps(
+    config_data: Dict[str, Any], slot: int, steps: int
+) -> Dict[str, Any]:
+    """Return a copy with one voice key's recording gain (-3..+3) replaced."""
+
+    return update_voice_key_config(config_data, int(slot), gain_steps=steps)
+
+
+def set_voice_key_config_gain(
+    config_data: Dict[str, Any], slot: int, steps: int, auto: bool
+) -> Dict[str, Any]:
+    """Return a copy with one voice key's manual/automatic gain replaced."""
+
+    return update_voice_key_config(
+        config_data, int(slot), gain_steps=steps, gain_auto=bool(auto)
+    )
+
+
+def voice_key_gain_auto(config_data: Dict[str, Any], slot: int) -> bool:
+    """Whether one voice key uses the automatic peak normalization."""
+
+    entry = voice_key_config(config_data, slot)
+    return bool(entry.get("gain_auto", False)) if entry else False
+
+
+def voice_key_gain_steps(config_data: Dict[str, Any], slot: int) -> int:
+    """Return one voice key's recording gain in steps; 0 means untouched."""
+
+    entry = voice_key_config(config_data, slot)
+    if entry is None:
+        return 0
+    return _clamp_gain_steps(entry.get("gain_steps", 0))
+
+
+def voice_key_gain_scale(config_data: Dict[str, Any], slot: int) -> float:
+    """Return the linear multiplier for one voice key (6dB per step)."""
+
+    steps = voice_key_gain_steps(config_data, slot)
+    if not steps:
+        return 1.0
+    return 10 ** (steps * 6.0 / 20.0)
 
 
 def apply_plugin_voice_keys(
@@ -1136,6 +1268,9 @@ def apply_plugin_voice_keys(
                 hotkey=hotkey,
                 enabled=bool(previous.get("enabled", True)) if previous else True,
                 plugin=plugin,
+                # 插件重连时保留用户给这条键调过的录音增益。
+                gain_steps=previous.get("gain_steps", 0) if previous else 0,
+                gain_auto=previous.get("gain_auto", False) if previous else False,
             )
         )
     return _with_voice_key_configs(config_data, merged)

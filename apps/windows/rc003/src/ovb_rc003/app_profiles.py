@@ -61,10 +61,10 @@ GLOBAL_NAME = mapping_presets.AUTO_NAME
 VOICE_FIELDS = ("voice_input_source", "voice_local_input_device")
 # 一条语音键的完整快照：列表顺序就是用户排好的顺序，关闭的语音键也保留。
 VOICE_KEY_FIELDS = ("id", "name", "hotkey", "source", "device", "enabled", "plugin")
-# config.json 的语音键后来多了“延迟发送”开关。旧版保存的 profile 快照里
-# 没有这个字段，所以它只能是可选字段，不能参与“字段集合必须完全相等”
+# config.json 的语音键后来多了“延迟发送”开关和录音增益；旧版保存的 profile
+# 快照里没有这些字段，所以它们只能是可选字段，不能参与“字段集合必须完全相等”
 # 的校验，否则老数据会让整份配置读取失败。
-OPTIONAL_VOICE_KEY_FIELDS = ("short_press_resend",)
+OPTIONAL_VOICE_KEY_FIELDS = ("short_press_resend", "gain_steps", "gain_auto")
 VOICE_KEYS_FIELD = "voice_keys"
 ENTRY_FIELDS = ("id", "name", "scope", "process", "hotkey", "mapping",
                 *VOICE_FIELDS, VOICE_KEYS_FIELD)
@@ -185,11 +185,17 @@ def validate_voice_keys(value: object) -> list[dict]:
                 or not isinstance(raw["enabled"], bool)):
             raise ValueError("配置里的语音键内容无效。")
         source, device = validate_voice(raw["source"], raw["device"])
+        try:
+            gain_steps = int(raw.get("gain_steps", 0))
+        except (TypeError, ValueError):
+            raise ValueError("配置里的语音键录音增益无效。") from None
         result.append({"id": slot, "name": name.strip(),
                        "hotkey": hotkey.strip().lower(), "source": source,
                        "device": device, "enabled": raw["enabled"],
                        "plugin": plugin.strip().lower(),
-                       "short_press_resend": raw.get("short_press_resend", False) is not False})
+                       "short_press_resend": raw.get("short_press_resend", False) is not False,
+                       "gain_steps": max(-3, min(3, gain_steps)),
+                       "gain_auto": raw.get("gain_auto", False) is not False})
     return result
 
 
@@ -864,6 +870,25 @@ class AppProfileStore:
         if existing is not None:
             return existing["id"]
         return self.create(name, mapping, unique=True, scope="app", process=process)
+
+    def move_app(self, identity: str, position: int) -> None:
+        """Move one application to a new position in the app-bar order.
+
+        The document keeps the user's ordering, so reordering only rewrites
+        the app entries in place and leaves every other entry untouched.
+        """
+        document = self._load_document()
+        entries = document["profiles"]
+        apps = [entry for entry in entries if entry["scope"] == "app"]
+        self._find(apps, identity)
+        target = max(0, min(int(position), len(apps) - 1))
+        index = next(i for i, entry in enumerate(apps) if entry["id"] == identity)
+        apps.insert(target, apps.pop(index))
+        ordered = iter(apps)
+        document["profiles"] = [
+            next(ordered) if entry["scope"] == "app" else entry for entry in entries
+        ]
+        self._save(document)
 
     def replace_apps(self, apps: list[dict], *,
                      voice_input_source: str = config.VOICE_INPUT_SOURCE_REMOTE,

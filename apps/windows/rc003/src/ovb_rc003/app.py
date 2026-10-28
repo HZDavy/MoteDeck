@@ -49,6 +49,7 @@ import array
 import asyncio
 import json
 import logging
+import math
 import os
 from pathlib import Path
 import sys
@@ -84,8 +85,10 @@ from . import (
     input_method_watch_windows,
     key_detection_bridge,
     key_mapping,
+    local_asr,
     local_microphone_windows,
     logging_setup,
+    openmexia_client,
     preset_switch_windows,
     raw_input_windows,
     remote_selection,
@@ -206,6 +209,16 @@ _VOICE_SHORTCUT_PRESS_DELAY_SECONDS = _VOICE_TAP_MAX_SECONDS
 # 每次都误触发，所以这里只认时间。
 _PLUGIN_VOICE_PREROLL_SECONDS = 0.8
 _PLUGIN_VOICE_HOLD_SECONDS = 0.25
+# OpenMexia 语音键走本地离线识别：一次最多缓存 55 秒录音，超出的旧声音
+# 直接丢掉。和插件键一样，只有按满 ``_OPENMEXIA_ASR_HOLD_SECONDS`` 才开始
+# 识别并弹出电平胶囊；不到阈值就松手算短按，照旧切模式。
+_OPENMEXIA_ASR_MAX_SECONDS = 55.0
+_OPENMEXIA_ASR_HOLD_SECONDS = 0.25
+# 松手后继续收这么久的音频：BLE 有传输延迟，立刻关话筒会把最后一个字切掉
+# （"调冷" 听起来像 "调了"）。
+_OPENMEXIA_ASR_TAIL_SECONDS = 0.3
+# 电平胶囊上的波形柱子数：一帧 PCM 切成这么多段，各算峰值。
+_OPENMEXIA_ASR_LEVEL_BARS = 9
 _VOICE_KEY_PHYSICALIZER_RETRY_SECONDS = 1.0
 _VOICE_KEY_PHYSICALIZER_DEGRADED_RETRY_WINDOW_SECONDS = 10.0
 _VOICE_KEY_PHYSICALIZER_FAILED_RETRY_SECONDS = 30.0
@@ -276,6 +289,10 @@ class RC003App:
             self._preset_applied_id = None
         self._preset_manual_foreground: Optional[str] = None
         self._preset_switch_foreground = ""
+        # OpenMexia 设备动作的网络请求都在这个后台线程里排队执行。
+        self._openmexia_runner = openmexia_client.OpenMexiaRunner()
+        # 当前这套映射是不是被 OpenMexia 语音键临时换上的（用来在切走时退回）。
+        self._openmexia_profile_override = False
         self._preset_switch_task: Optional[asyncio.Task] = None
         self._preset_hotkey_listener: Optional[
             preset_switch_windows.PresetSwitchListener
@@ -472,6 +489,27 @@ class RC003App:
         self._plugin_voice_started_this_press = False
         # 本次按下是否已经替插件发过 MIC_OPEN（收尾时据此决定要不要关）。
         self._plugin_voice_mic_opened = False
+        # OpenMexia 语音键：录音走本地 SenseVoice 离线识别，识别文字再交给
+        # OpenMexia 执行设备指令。识别在后台线程里做，这里只攒 PCM。
+        self._asr_runner = local_asr.LocalAsrRunner(self._config_root)
+        self._asr_active = False
+        self._asr_slot: Optional[int] = None
+        self._asr_frames: List[array.array] = []
+        # 按下后先攒着等长按阈值：短按只切模式，按满才开始识别。
+        self._asr_capture_armed = False
+        self._asr_hold_timer: Optional[threading.Timer] = None
+        self._asr_hold_token: Optional[object] = None
+        # 松手后的尾音收集：再等一小段才真正收尾送识别。
+        self._asr_finalize_pending = False
+        self._asr_tail_timer: Optional[threading.Timer] = None
+        # 电平胶囊：最近若干帧的平均峰值（滚动波形）和上一次推送的时间。
+        self._asr_recent_peaks: List[float] = []
+        # 自动增益的平滑值，按语音键分别保存。
+        self._voice_auto_gain: dict = {}
+        self._asr_pending_sum = 0.0
+        self._asr_pending_count = 0
+        self._asr_level_sent_at = 0.0
+        self._asr_samples = 0
         self._voice_raw_input_trigger_pending = False
         self._ble_session: Optional[ble_transport_winrt.RC003BleSession] = None
         self._hid_listener: Optional[raw_input_windows.RawInputButtonListener] = None
@@ -3174,6 +3212,57 @@ class RC003App:
         self._voice_cycle_slot = next_slot
         return next_slot
 
+    def _schedule_openmexia_profile_for_slot(self, slot: Optional[int]) -> None:
+        """Queue the OpenMexia mapping switch instead of switching inline.
+
+        语音按下这一下正握着语音/按键锁，现场换整套映射会把正在注入的
+        快捷键搅乱，所以只把「该看哪条语音键」投回事件循环，等这一轮空下来
+        再换。
+        """
+
+        loop = getattr(self, "_event_loop", None)
+        if loop is None:
+            return
+        loop.call_soon_threadsafe(self._sync_openmexia_profile_for_slot, slot)
+
+    def _sync_openmexia_profile_for_slot(self, slot: Optional[int]) -> None:
+        """语音键切到 OpenMexia 那条时，临时换成它的应用配置。
+
+        只有那一条语音键会触发：切到别的语音键不再换，前台进程一变化，
+        原有的进程级覆盖也会自己退回全局，所以日常的全局和别的软件配置
+        不会被它挤占。
+        """
+
+        if not self._accept_input_events or slot is None:
+            return
+        entry = config.voice_key_config(self._config, slot)
+        uses_openmexia = (
+            entry is not None
+            and entry.get("plugin") == config.VOICE_KEY_PLUGIN_OPENMEXIA
+        )
+        try:
+            app_entry = self._preset_store.find_app(openmexia_client.PROCESS_NAME)
+        except Exception:  # noqa: BLE001 - 配置读不出来就当没有
+            return
+        if not uses_openmexia:
+            # 切回普通语音键时，把上次为 OpenMexia 临时换上的那套退回去。
+            if not self._openmexia_profile_override:
+                return
+            self._openmexia_profile_override = False
+            if app_entry is None or self._preset_override_id != app_entry["id"]:
+                return
+            with self._button_mapping_lock:
+                self._reset_preset_override_locked()
+            self._preset_manual_foreground = None
+            return
+        if app_entry is None or self._preset_override_id == app_entry["id"]:
+            return
+        self._apply_preset_override(app_entry["id"])
+        self._remember_applied_profile(app_entry["id"])
+        self._openmexia_profile_override = True
+        # 像快捷键手动切换一样把当前前台钉住，避免下一次轮询立刻又切走。
+        self._preset_manual_foreground = self._preset_switch_foreground
+
     def _voice_slot_uses_local_microphone(self, slot: Optional[int]) -> bool:
         """Whether one voice key takes its audio from this PC's microphone."""
 
@@ -3210,6 +3299,7 @@ class RC003App:
         self._cancel_plugin_voice_hold_pending_locked()
         self._end_plugin_voice_audio_locked(reason)
         self._cancel_plugin_voice_capture_locked(reason)
+        self._end_openmexia_asr_locked(reason)
         if not tokens:
             return
         self._plugin_voice_injected_tokens = None
@@ -3297,6 +3387,370 @@ class RC003App:
         self._plugin_voice_mic_opened = True
         self._logger.info("plugin voice capture armed: slot=%s", slot)
         return True
+
+    def _openmexia_asr_ready(self, slot: Optional[int]) -> bool:
+        """这条语音键是不是 OpenMexia 的，并且本地识别模型已经装好。"""
+
+        if slot is None:
+            return False
+        entry = config.voice_key_config(self._config, slot)
+        if entry is None:
+            return False
+        if not config.is_openmexia_plugin_id(entry.get("plugin")):
+            return False
+        return local_asr.model_available(self._config_root)
+
+    def _voice_key_gain_locked(self, slot: Optional[int]) -> float:
+        """这条语音键的录音增益倍数（1.0 表示不调整）。"""
+
+        if slot is None:
+            return 1.0
+        try:
+            return config.voice_key_gain_scale(self._config, int(slot))
+        except BaseException:  # noqa: BLE001 - 增益只是可选调整
+            return 1.0
+
+    def _voice_key_gain_auto_locked(self, slot: Optional[int]) -> bool:
+        """这条语音键是不是选了「自动」增益。"""
+
+        if slot is None:
+            return False
+        try:
+            return config.voice_key_gain_auto(self._config, int(slot))
+        except BaseException:  # noqa: BLE001 - 增益只是可选调整
+            return False
+
+    def _auto_gain_scale_locked(self, slot: Optional[int], frame) -> float:
+        """自动增益：按这一帧的峰值把音量往 70% 拉，平滑避免忽大忽小。"""
+
+        source = array.array("h", frame)
+        peak = 0
+        for value in source:
+            magnitude = value if value >= 0 else -value
+            if magnitude > peak:
+                peak = magnitude
+        if peak <= 0:
+            return 1.0
+        target = min(6.0, max(0.5, 0.7 * 32768.0 / peak))
+        key = int(slot) if slot is not None else 0
+        current = self._voice_auto_gain.get(key, target)
+        value = current * 0.7 + target * 0.3
+        self._voice_auto_gain[key] = value
+        return value
+
+    def _frame_gain_locked(self, slot: Optional[int], frame) -> float:
+        """这一帧该乘的增益：自动档按峰值算，否则用手动档位。"""
+
+        if self._voice_key_gain_auto_locked(slot):
+            return self._auto_gain_scale_locked(slot, frame)
+        return self._voice_key_gain_locked(slot)
+
+    @staticmethod
+    def _apply_voice_gain(samples, scale: float):
+        """把一帧 PCM 整体放大/缩小，结果夹在 16bit 范围内。"""
+
+        if scale == 1.0:
+            return samples
+        source = array.array("h", samples)
+        if not source:
+            return source
+        return array.array(
+            "h",
+            [max(-32768, min(32767, int(value * scale))) for value in source],
+        )
+
+    def _reset_asr_capture_locked(self) -> None:
+        self._asr_frames = []
+        self._asr_samples = 0
+        self._asr_recent_peaks = []
+        self._asr_pending_sum = 0.0
+        self._asr_pending_count = 0
+
+    def _handle_asr_frame_locked(self, samples, generation: Optional[int]) -> None:
+        """缓存一帧 PCM，留着松手后整段送去识别。"""
+
+        if not self._accepts_ble_callback(generation):
+            return
+        frame = array.array("h", samples)
+        if not frame:
+            return
+        self._asr_frames.append(frame)
+        self._asr_samples += len(frame)
+        self._update_asr_level_locked(frame)
+        limit = int(16000 * _OPENMEXIA_ASR_MAX_SECONDS)
+        while self._asr_samples > limit and self._asr_frames:
+            dropped = self._asr_frames.pop(0)
+            self._asr_samples -= len(dropped)
+
+    def _update_asr_level_locked(self, frame: "array.array") -> None:
+        """按时间顺序滚动播报波形：每段取一个峰值，跟着录音往左走。"""
+
+        if not frame:
+            return
+        peak = 0
+        for value in frame:
+            magnitude = value if value >= 0 else -value
+            if magnitude > peak:
+                peak = magnitude
+        # 这一小段里取平均峰值（而不是最大值），个别爆音不会直接顶满。
+        self._asr_pending_sum += peak
+        self._asr_pending_count += 1
+        now = time.monotonic()
+        if now - self._asr_level_sent_at < 0.05:
+            return
+        self._asr_level_sent_at = now
+        average = self._asr_pending_sum / max(1, self._asr_pending_count)
+        self._asr_pending_sum = 0.0
+        self._asr_pending_count = 0
+        count = _OPENMEXIA_ASR_LEVEL_BARS
+        self._asr_recent_peaks.append(average / 32768.0)
+        if len(self._asr_recent_peaks) > count:
+            del self._asr_recent_peaks[: len(self._asr_recent_peaks) - count]
+        levels = [0.0] * (count - len(self._asr_recent_peaks))
+        for value in self._asr_recent_peaks:
+            # 放宽到 55dB、最高只到 0.9：声音起伏依旧能看出来，但不会整天满格。
+            if value <= 0.0005:
+                levels.append(0.0)
+                continue
+            dbfs = 20.0 * math.log10(value)
+            levels.append(min(0.9, max(0.0, (dbfs + 60.0) / 55.0)))
+        try:
+            self._voice_mode_toast.update_level(levels)
+        except BaseException as exc:  # noqa: BLE001 - the capsule is best effort
+            self._logger.warning(
+                "voice level capsule update failed: error_type=%s",
+                type(exc).__name__,
+            )
+
+    def _arm_openmexia_asr_locked(self, slot: int) -> bool:
+        """按下 OpenMexia 语音键：先开遥控器话筒，PCM 攒着等长按阈值。
+
+        不到 ``_OPENMEXIA_ASR_HOLD_SECONDS`` 就松手算短按：只切模式，不弹
+        胶囊也不识别。按满了才进入识别状态，预录的这段音频一起用上，开口
+        第一个字不会丢。
+        """
+
+        self._cancel_openmexia_asr_hold_locked()
+        self._reset_asr_capture_locked()
+        self._asr_slot = int(slot)
+        session = self._ble_session
+        if session is None:
+            self._logger.info(
+                "openmexia asr ignored: BLE voice session is not connected"
+            )
+            self._set_runtime_voice_result(
+                bridge_runtime_status.VOICE_RUNTIME_HOST_START_FAILED
+            )
+            return False
+        try:
+            session.send_mic_open_threadsafe()
+        except BaseException as exc:  # noqa: BLE001 - never trap input
+            self._asr_slot = None
+            self._logger.warning(
+                "openmexia asr MIC_OPEN failed: error_type=%s",
+                type(exc).__name__,
+            )
+            self._set_runtime_voice_result(
+                bridge_runtime_status.VOICE_RUNTIME_HOST_START_FAILED
+            )
+            return False
+        self._asr_capture_armed = True
+        token = object()
+        self._asr_hold_token = token
+        try:
+            timer = threading.Timer(
+                _OPENMEXIA_ASR_HOLD_SECONDS,
+                lambda pending=token: self._openmexia_asr_hold_elapsed(pending),
+            )
+            timer.daemon = True
+            self._asr_hold_timer = timer
+            timer.start()
+        except BaseException as exc:  # noqa: BLE001 - never trap input
+            self._asr_capture_armed = False
+            self._asr_slot = None
+            self._logger.warning(
+                "openmexia asr hold timer failed: error_type=%s",
+                type(exc).__name__,
+            )
+            return False
+        self._logger.info("openmexia asr capture armed: slot=%s", slot)
+        return True
+
+    def _cancel_openmexia_asr_hold_locked(self) -> None:
+        timer = self._asr_hold_timer
+        self._asr_hold_timer = None
+        self._asr_hold_token = None
+        if timer is not None:
+            try:
+                timer.cancel()
+            except BaseException:  # noqa: BLE001 - token is already invalid
+                pass
+
+    def _openmexia_asr_hold_elapsed(self, token: object) -> None:
+        """按满长按阈值：正式进入识别并弹出电平胶囊。"""
+
+        with self._voice_shortcut.lock:
+            if token is not self._asr_hold_token:
+                return
+            self._cancel_openmexia_asr_hold_locked()
+            if not self._asr_capture_armed or self._asr_slot is None:
+                return
+            self._start_openmexia_asr_locked(self._asr_slot)
+
+    def _start_openmexia_asr_locked(self, slot: int) -> bool:
+        """长按确认：话筒已经开着，进入识别状态并弹出电平胶囊。"""
+
+        self._asr_capture_armed = False
+        self._asr_active = True
+        # 这一下已经用于语音识别，不能再被当成短按切模式。
+        self._plugin_voice_started_this_press = True
+        self._voice_pcm_forwarding_enabled = False
+        self._set_runtime_voice_active(True)
+        self._set_runtime_voice_result(bridge_runtime_status.VOICE_RUNTIME_ACTIVE)
+        # 长按期间的反馈：在模式气泡的位置弹出电平胶囊，告诉用户开始说话。
+        self._show_voice_level_capsule()
+        self._logger.info("openmexia asr started: slot=%s", slot)
+        return True
+
+    def _end_openmexia_asr_locked(
+        self, reason: str, *, close_mic: bool = True
+    ) -> None:
+        """松手（或设备停流）：把这段录音交给本地模型识别，文字交给 OpenMexia。"""
+
+        was_active = self._asr_active
+        if not (was_active or self._asr_capture_armed):
+            return
+        self._cancel_openmexia_asr_hold_locked()
+        if was_active and close_mic and not self._asr_finalize_pending:
+            # 松手瞬间最后一个字还在 BLE 链路上，立刻关话筒会被切掉：
+            # 再收 `_OPENMEXIA_ASR_TAIL_SECONDS` 秒，然后才真正送识别。
+            self._asr_finalize_pending = True
+            self._hide_voice_level_capsule()
+            timer = threading.Timer(
+                _OPENMEXIA_ASR_TAIL_SECONDS, self._openmexia_asr_tail_elapsed
+            )
+            timer.daemon = True
+            self._asr_tail_timer = timer
+            timer.start()
+            self._logger.info("openmexia asr tail capture on %s", reason)
+            return
+        self._finish_openmexia_asr_locked(reason, close_mic=close_mic)
+
+    def _openmexia_asr_tail_elapsed(self) -> None:
+        """尾音收够了：正式收尾并送识别。"""
+
+        with self._voice_shortcut.lock:
+            if not self._asr_finalize_pending:
+                return
+            self._finish_openmexia_asr_locked("release tail", close_mic=True)
+
+    def _finish_openmexia_asr_locked(
+        self, reason: str, *, close_mic: bool
+    ) -> None:
+        """真正结束这次录音：关话筒、把攒下的 PCM 交给识别线程。"""
+
+        was_active = self._asr_active
+        slot = self._asr_slot
+        self._asr_finalize_pending = False
+        timer = self._asr_tail_timer
+        self._asr_tail_timer = None
+        if timer is not None:
+            try:
+                timer.cancel()
+            except BaseException:  # noqa: BLE001 - token is already invalid
+                pass
+        self._asr_active = False
+        self._asr_capture_armed = False
+        self._asr_slot = None
+        self._voice_pcm_forwarding_enabled = False
+        self._set_runtime_voice_active(False)
+        frames = self._asr_frames
+        self._reset_asr_capture_locked()
+        self._hide_voice_level_capsule()
+        if close_mic:
+            session = self._ble_session
+            if session is not None:
+                try:
+                    session.send_mic_close_threadsafe()
+                except BaseException as exc:  # noqa: BLE001 - never trap input
+                    self._logger.warning(
+                        "openmexia asr MIC_CLOSE failed: error_type=%s",
+                        type(exc).__name__,
+                    )
+        if not was_active:
+            # 短按：这段预录原样丢掉，只当一次切模式。
+            self._logger.info(
+                "openmexia asr cancelled on %s: short press", reason
+            )
+            return
+        pcm = b"".join(frame.tobytes() for frame in frames)
+        if pcm:
+            samples = array.array("h")
+            samples.frombytes(pcm)
+            if self._voice_key_gain_auto_locked(slot):
+                # 自动：整段按峰值归一化到 70%，最多放大 6 倍。
+                peak = 0
+                for value in samples:
+                    magnitude = value if value >= 0 else -value
+                    if magnitude > peak:
+                        peak = magnitude
+                gain = (
+                    min(6.0, max(0.5, 0.7 * 32768.0 / peak)) if peak > 0 else 1.0
+                )
+            else:
+                gain = self._voice_key_gain_locked(slot)
+            if gain != 1.0:
+                pcm = self._apply_voice_gain(samples, gain).tobytes()
+        peak = 0
+        for frame in frames:
+            if not frame:
+                continue
+            local = max(max(frame), -min(frame))
+            if local > peak:
+                peak = local
+        self._logger.info(
+            "openmexia asr ended on %s: samples=%s peak=%s",
+            reason,
+            len(pcm) // 2,
+            peak,
+        )
+        if not pcm:
+            return
+        # 排查识别问题时用：设了 MOTEDECK_ASR_DUMP 就把这段录音存下来。
+        dump_root = os.environ.get("MOTEDECK_ASR_DUMP", "").strip()
+        if dump_root:
+            try:
+                local_asr.write_wav(
+                    Path(dump_root) / f"asr-{int(time.time() * 1000)}.wav", pcm
+                )
+            except BaseException as exc:  # noqa: BLE001 - 调试输出不能影响识别
+                self._logger.warning(
+                    "openmexia asr dump failed: error_type=%s",
+                    type(exc).__name__,
+                )
+        try:
+            self._asr_runner.submit(
+                pcm,
+                on_result=self._on_asr_result,
+            )
+        except BaseException as exc:  # noqa: BLE001 - never trap input
+            self._logger.warning(
+                "openmexia asr submit failed: error_type=%s",
+                type(exc).__name__,
+            )
+
+    def _on_asr_result(self, text: str, error: Optional[str]) -> None:
+        """识别线程回调：成功就把文字交给 OpenMexia 去执行。"""
+
+        if error:
+            self._logger.info("openmexia asr failed: %s", error)
+            return
+        value = str(text).strip()
+        if not value:
+            self._logger.info("openmexia asr returned no text")
+            return
+        self._logger.info("openmexia asr text: %s", value)
+        self._openmexia_runner.submit_text(value)
 
     def _reset_plugin_voice_capture_locked(self) -> None:
         """清空预录缓冲与待定状态，不碰话筒与插件会话。"""
@@ -3444,6 +3898,9 @@ class RC003App:
         self._plugin_voice_started_this_press = True
         self._voice_pcm_forwarding_enabled = True
         for frame in buffered:
+            frame = self._apply_voice_gain(
+                frame, self._frame_gain_locked(slot, frame)
+            )
             if not bridge.send_audio(frame.tobytes()):
                 self._voice_pcm_forwarding_enabled = False
                 break
@@ -3562,6 +4019,31 @@ class RC003App:
                 type(exc).__name__,
             )
 
+    def _show_voice_level_capsule(self) -> None:
+        """长按 OpenMexia 语音键：在和模式气泡同一位置弹出电平胶囊。"""
+
+        theme = config.voice_cycle_toast_theme(self._config)
+        if theme == config.VOICE_CYCLE_TOAST_OFF:
+            theme = config.VOICE_CYCLE_TOAST_DARK
+        try:
+            self._voice_mode_toast.show_level(
+                theme, config.voice_cycle_toast_offset(self._config)
+            )
+        except BaseException as exc:  # noqa: BLE001 - the capsule is best effort
+            self._logger.warning(
+                "voice level capsule failed: error_type=%s",
+                type(exc).__name__,
+            )
+
+    def _hide_voice_level_capsule(self) -> None:
+        try:
+            self._voice_mode_toast.hide_level()
+        except BaseException as exc:  # noqa: BLE001 - the capsule is best effort
+            self._logger.warning(
+                "voice level capsule hide failed: error_type=%s",
+                type(exc).__name__,
+            )
+
     def _start_local_voice_capture_locked(self) -> bool:
         """模式2：会话开始时打开本机麦克风。
 
@@ -3651,6 +4133,8 @@ class RC003App:
                 "voice mapping ignored: voice key %s is switched off", slot
             )
             return False
+        # 切到 OpenMexia 那条语音键时，整套按键临时换成米家设备那套配置。
+        self._schedule_openmexia_profile_for_slot(slot)
         hotkey_text = self._voice_hotkey_text_for_slot(slot)
         if not hotkey_text and button_id == "mic" and self._voice_cycle_follows_mic():
             # 循环到的这条语音键还没录快捷键：清空当前热键即可。注入空
@@ -3868,6 +4352,7 @@ class RC003App:
         self._end_latched_voice_session_for_cycle_locked()
         slot = self._advance_voice_cycle_slot_locked()
         self._show_voice_mode_toast(slot)
+        self._schedule_openmexia_profile_for_slot(slot)
         self._logger.info(
             "voice mode switched by short press: slot=%s reason=%s",
             slot,
@@ -3897,6 +4382,7 @@ class RC003App:
             self._end_latched_voice_session_for_cycle_locked()
             slot = self._advance_voice_cycle_slot_locked()
             self._show_voice_mode_toast(slot)
+        self._schedule_openmexia_profile_for_slot(slot)
         self._logger.info(
             "voice mode switched by button: slot=%s button=%s trigger=%s",
             slot,
@@ -6068,6 +6554,9 @@ class RC003App:
                 )
             elif action.kind == key_mapping.ActionKind.QUICKER_URI:
                 action_executor.open_quicker_uri(action)
+            elif action.kind == key_mapping.ActionKind.OPENMEXIA_DEVICE:
+                # 网络请求交给后台线程，输入回调里只负责排队。
+                self._openmexia_runner.submit(action.device, action.op)
             elif action_executor.is_application_action(action):
                 if not open_configured_application(action):
                     action_error = "application_unavailable"
@@ -6441,6 +6930,16 @@ class RC003App:
             with self._voice_shortcut.lock:
                 if not self._accepts_ble_callback(_ble_generation):
                     return
+                if self._asr_active:
+                    # OpenMexia 语音识别：收下这条流，PCM 由 _on_pcm_frame
+                    # 缓存，松手后整段送百度识别。
+                    self._voice_audio_stream_active = True
+                    self._voice_audio_stop_processed = False
+                    self._voice_audio_start_fallback_pending = False
+                    self._voice_pcm_forwarding_enabled = True
+                    self._voice_audio.stats.reset()
+                    self._logger.info("openmexia asr audio stream accepted")
+                    return
                 if self._plugin_voice_capture_pending:
                     # 按住插件键时话筒已经开了：先收着这条流，PCM 由
                     # _on_pcm_frame 缓存，检测到人声才真正开会话。
@@ -6714,6 +7213,11 @@ class RC003App:
                     self._plugin_voice_audio_stream = False
                     self._end_plugin_voice_audio_locked("device audio stop")
                 self._voice_pcm_forwarding_enabled = latched_session
+                if self._asr_active or self._asr_capture_armed:
+                    # 设备自己停流了：拿到的这段录音照常送识别。
+                    self._end_openmexia_asr_locked(
+                        "device audio stop", close_mic=False
+                    )
                 if not latched_session:
                     self._set_runtime_voice_active(False)
                 flush_result = self._voice_audio.flush("audio stop")
@@ -7001,6 +7505,15 @@ class RC003App:
         if self._voice_slot_is_plugin(voice_slot):
             # 插件模式（Vokie）：插件已连接时长按会把遥控器的 PCM 直接推给
             # 它；插件没连上时退回只重放它的那条快捷键。两种都不开虚拟声卡。
+            if self._openmexia_asr_ready(voice_slot):
+                # OpenMexia 的语音键：录音攒到松手，送百度识别，文字交给
+                # OpenMexia 执行，不走插件会话。
+                self._drop_voice_delayed_press_locked()
+                self._force_release_plugin_voice_tokens_locked(
+                    "openmexia asr press superseded"
+                )
+                self._plugin_voice_started_this_press = False
+                return self._arm_openmexia_asr_locked(voice_slot)
             self._drop_voice_delayed_press_locked()
             self._voice_pcm_forwarding_enabled = False
             if self._voice_shortcut.pending_tokens is not None:
@@ -7289,6 +7802,10 @@ class RC003App:
         """Queue one immutable PCM frame without blocking the BLE worker."""
 
         with self._voice_shortcut.lock:
+            if self._asr_active or self._asr_capture_armed:
+                # OpenMexia 语音识别：先按原样收流，松手后整段送识别。
+                self._handle_asr_frame_locked(samples, _ble_generation)
+                return
             if self._plugin_voice_audio_active:
                 # 插件会话：遥控器的 PCM 直接经回环桥交给 Vokie 的插件，
                 # 不碰虚拟声卡。
@@ -7301,7 +7818,11 @@ class RC003App:
                 if bridge is None:
                     self._voice_pcm_forwarding_enabled = False
                     return
-                if not bridge.send_audio(array.array("h", samples).tobytes()):
+                frame = self._apply_voice_gain(
+                    samples,
+                    self._frame_gain_locked(self._plugin_voice_press_slot, samples),
+                )
+                if not bridge.send_audio(array.array("h", frame).tobytes()):
                     self._voice_pcm_forwarding_enabled = False
                 return
             if self._plugin_voice_capture_pending:
@@ -7325,7 +7846,11 @@ class RC003App:
                 self._voice_pcm_forwarding_enabled = False
                 return
             writer = self._voice_audio.writer
-            if writer is None or not writer.submit(samples):
+            scaled = self._apply_voice_gain(
+                samples,
+                self._frame_gain_locked(self._active_voice_slot(), samples),
+            )
+            if writer is None or not writer.submit(scaled):
                 self._voice_pcm_forwarding_enabled = False
 
 

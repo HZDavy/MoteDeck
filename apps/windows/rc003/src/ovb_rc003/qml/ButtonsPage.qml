@@ -20,7 +20,8 @@ Item {
         const chips = [{ id: "", name: qsTr("全局"), icon: "" }]
         const apps = SettingsController.mappingAppProfiles
         for (let i = 0; i < apps.length; ++i)
-            chips.push({ id: apps[i].id, name: apps[i].name, icon: apps[i].icon })
+            chips.push({ id: apps[i].id, name: apps[i].name, icon: apps[i].icon,
+                process: apps[i].process, plugin: apps[i].plugin === true })
         return chips
     }
     // The chip that is currently in effect, i.e. the layout the bridge is
@@ -534,6 +535,28 @@ Item {
     }
 
     SettingsDialog {
+        id: pluginAppLockedDialog
+        tokens: root.tokens
+        objectName: "pluginAppLockedDialog"
+        title: qsTr("无法删除")
+        modal: true
+        anchors.centerIn: parent
+        width: Math.min(430, root.width - 28)
+        standardButtons: Dialog.Ok
+
+        contentItem: ColumnLayout {
+            spacing: root.tokens.spacingLarge
+            UiLabel {
+                tokens: root.tokens
+                kind: bodyKind
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                text: qsTr("这是插件自带的应用程序，不能删除。断开插件后它会自动移除，已保存的按键配置会保留。")
+            }
+        }
+    }
+
+    SettingsDialog {
         id: interceptionInstallConfirmDialog
         tokens: root.tokens
         preferredWidth: 340 + tokens.dialogPadding * 2
@@ -592,6 +615,41 @@ Item {
         // 与其他下拉列表一致：弹层高度/位置交给 Fluent 样式（撑满窗口、超长可滚动）
         font.family: tokens.fontFamily
         font.pixelSize: tokens.fontSizeControl
+
+        // 下拉列表宽度按最长选项（含分组标题）自适应，长设备名不再被省略号截断。
+        readonly property real popupIdealWidth: {
+            if (!tokens)
+                return editorCombo.width
+            const optionModel = editorCombo.model
+            if (!optionModel)
+                return editorCombo.width
+            let widest = 0
+            for (let i = 0; i < editorCombo.count; ++i) {
+                widest = Math.max(widest, optionMetrics.advanceWidth(
+                    SettingsController.formatActionText(String(optionModel[i]))))
+                widest = Math.max(widest, groupMetrics.advanceWidth(
+                    SettingsController.actionOptionGroupTitle(String(optionModel[i]))))
+            }
+            return widest
+        }
+
+        FontMetrics {
+            id: optionMetrics
+            font.family: tokens ? tokens.fontFamily : "Microsoft YaHei UI"
+            font.pixelSize: tokens ? tokens.fontSizeControl : 13
+        }
+
+        FontMetrics {
+            id: groupMetrics
+            font.family: tokens ? tokens.fontFamily : "Microsoft YaHei UI"
+            font.pixelSize: tokens ? tokens.fontSizeTiny : 11
+        }
+
+        Binding {
+            target: editorCombo.popup
+            property: "width"
+            value: Math.max(editorCombo.width, editorCombo.popupIdealWidth + 30)
+        }
 
         // 可编辑 ComboBox 的弹层默认用「紧贴输入框展开」的背景图（顶部直角），
         // 这里换成普通 ComboBox 的弹层背景，四角才都是圆角，与设备下拉一致。
@@ -710,6 +768,34 @@ Item {
         displayText: currentIndex >= 0 && currentIndex < model.length
             ? String(model[currentIndex].label) : ""
 
+        // 下拉列表宽度按最长选项自适应，长模式名不再被省略号截断。
+        readonly property real popupIdealWidth: {
+            if (!tokens)
+                return injectCombo.width
+            const optionModel = injectCombo.model
+            if (!optionModel)
+                return injectCombo.width
+            let widest = 0
+            for (let i = 0; i < injectCombo.count; ++i) {
+                const option = optionModel[i]
+                widest = Math.max(widest, optionMetrics.advanceWidth(
+                    option ? String(option.label) : ""))
+            }
+            return widest
+        }
+
+        FontMetrics {
+            id: optionMetrics
+            font.family: tokens ? tokens.fontFamily : "Microsoft YaHei UI"
+            font.pixelSize: tokens ? tokens.fontSizeControl : 13
+        }
+
+        Binding {
+            target: injectCombo.popup
+            property: "width"
+            value: Math.max(injectCombo.width, injectCombo.popupIdealWidth + 30)
+        }
+
         indicator: DropDownIndicator {
             x: injectCombo.width - width - 7
             y: (injectCombo.height - height) / 2
@@ -727,7 +813,9 @@ Item {
         delegate: ItemDelegate {
             id: injectOptionDelegate
             readonly property var option: modelData
-            readonly property bool unavailable: option && option.available === false
+            readonly property bool unavailable: option && (option.available === false
+                || (String(option.value) === "interception"
+                    && actionEditor.interceptionBlocked))
             objectName: injectCombo.objectName + "_option_" + index
             width: ListView.view ? ListView.view.width : injectCombo.width
             height: tokens.controlHeight
@@ -829,9 +917,27 @@ Item {
         property string originalInjectMode: "sendinput"
         property bool syncing: false
         property bool validationRequested: false
-        onPrimaryTextChanged: validationRequested = false
-        onDoubleTextChanged: validationRequested = false
-        onLongTextChanged: validationRequested = false
+        onPrimaryTextChanged: {
+            validationRequested = false
+            if (!syncing)
+                syncInjectModeToActions()
+        }
+        onDoubleTextChanged: {
+            validationRequested = false
+            if (!syncing)
+                syncInjectModeToActions()
+        }
+        onLongTextChanged: {
+            validationRequested = false
+            if (!syncing)
+                syncInjectModeToActions()
+        }
+        // 下拉选项是在 syncing=true 时写进 primaryText 的，上面三个处理器会跳过；
+        // 等这批写入结束再补一次检查，动作用不了驱动级就静默退回 SendInput。
+        onSyncingChanged: {
+            if (!syncing)
+                syncInjectModeToActions()
+        }
         readonly property string normalizedPrimaryText: primaryText.trim()
         readonly property string normalizedDoubleText: doubleText.trim()
         readonly property string normalizedLongText: longText.trim()
@@ -849,7 +955,6 @@ Item {
         readonly property bool longHotkeyLocked:
             primaryIsVoice
             || SettingsController.isVoiceModeCycleText(normalizedLongText)
-        property string injectModeBlockReason: ""
         readonly property string primaryValidationError: rowIndex >= 0
             ? SettingsController.buttonActionValidationMessage(
                 buttonId, "single_click", primaryText, injectMode
@@ -880,18 +985,18 @@ Item {
             }
             return ""
         }
-        readonly property string injectModeHintText: {
-            if (injectModeBlockReason.length > 0)
-                return injectModeBlockReason
-            if (injectMode === "interception") {
-                const reason = interceptionBlockReason()
-                if (reason.length > 0)
-                    return reason
+        // 当前动作（元素导航、打开应用、OpenMexia 设备等）用不了 Interception 时，
+        // 直接退回 SendInput，不弹任何提示。
+        readonly property bool interceptionBlocked: rowIndex >= 0
+            && interceptionBlockReason().length > 0
+        function syncInjectModeToActions() {
+            if (injectMode === "interception" && interceptionBlocked) {
+                injectMode = "sendinput"
+                injectModeCombo.syncFromMode("sendinput")
             }
-            if (!SettingsController.interceptionAvailable)
-                return SettingsController.interceptionUnavailableHint
-            return ""
         }
+        readonly property string injectModeHintText: SettingsController.interceptionAvailable
+            ? "" : SettingsController.interceptionUnavailableHint
         readonly property string validationError:
             primaryValidationError.length > 0 ? primaryValidationError
             : doubleValidationError.length > 0 ? doubleValidationError
@@ -910,7 +1015,6 @@ Item {
                             primaryNoteValue, doubleNoteValue, longNoteValue) {
             syncing = true
             validationRequested = false
-            injectModeBlockReason = ""
             rowIndex = rowIndexValue
             buttonId = buttonIdValue
             buttonName = buttonNameValue
@@ -932,6 +1036,7 @@ Item {
             doubleCombo.setEditorValue(doubleValue)
             longCombo.setEditorValue(longValue)
             injectModeCombo.syncFromMode(injectMode)
+            syncInjectModeToActions()
             primaryNoteField.text = primaryNoteValue
             doubleNoteField.text = doubleNoteValue
             longNoteField.text = longNoteValue
@@ -959,6 +1064,12 @@ Item {
 
         function saveDraft() {
             validationRequested = true
+            // 兜底：动作用不了驱动级时，保存这一步直接按 SendInput 存，
+            // 不把「请改用 SendInput」当成错误拦下来。
+            if (injectMode === "interception" && interceptionBlocked) {
+                injectMode = "sendinput"
+                injectModeCombo.syncFromMode("sendinput")
+            }
             if (rowIndex < 0 || validationError.length > 0)
                 return false
             ButtonMappingModel.setActionTextAt(rowIndex, primaryText)
@@ -1049,6 +1160,8 @@ Item {
                         SettingsController.voiceOtherKeySwitch
                         // 语音键被停用后也要马上从列表里消失
                         SettingsController.voiceKeyConfigs
+                        // 连上 OpenMexia 后设备动作要马上出现
+                        SettingsController.openMexiaDeviceCount
                         return SettingsController.primaryActionOptionsFor(
                             actionEditor.buttonId
                         )
@@ -1124,6 +1237,8 @@ Item {
                     model: {
                         // 依赖“使用其他按键切换模式”，开关变化后重新取列表
                         SettingsController.voiceOtherKeySwitch
+                        // 连上 OpenMexia 后设备动作要马上出现
+                        SettingsController.openMexiaDeviceCount
                         return SettingsController.secondaryActionOptionsFor(
                             actionEditor.buttonId
                         )
@@ -1276,19 +1391,15 @@ Item {
                         Accessible.name: actionEditor.buttonName + qsTr("注入方式")
                         onActivated: {
                             const option = model[index]
-                            if (!option || option.available === false) {
+                            const value = option ? String(option.value) : ""
+                            // 驱动级用不了的动作：这一项直接不可选，选了也停回原来的值，
+                            // 不再弹任何解释。
+                            if (!option || option.available === false
+                                    || (value === "interception"
+                                        && actionEditor.interceptionBlocked)) {
                                 injectModeCombo.syncFromMode(actionEditor.injectMode)
                                 return
                             }
-                            const value = String(option.value)
-                            const blockReason = value === "interception"
-                                ? actionEditor.interceptionBlockReason() : ""
-                            if (blockReason.length > 0) {
-                                actionEditor.injectModeBlockReason = blockReason
-                                injectModeCombo.syncFromMode(actionEditor.injectMode)
-                                return
-                            }
-                            actionEditor.injectModeBlockReason = ""
                             actionEditor.injectMode = value
                         }
                     }
@@ -1396,7 +1507,26 @@ Item {
                         KeyNavigation.backtab: root.backTabTarget
                         KeyNavigation.tab: root.tabTarget
                         onAddRequested: mappingAppPickerDialog.open()
+                        // 除「全局」外都能拖动排序，包括插件自带的 OpenMexia。
+                        onMoveRequested: function(fromIndex, toIndex) {
+                            const chips = root.mappingChips
+                            const target = Math.max(0,
+                                Math.min(chips.length - 2, toIndex))
+                            if (fromIndex === target || !chips[fromIndex + 1])
+                                return
+                            const result = SettingsController.moveMappingAppProfile(
+                                chips[fromIndex + 1].id, target)
+                            if (!result.ok && result.message)
+                                root.mappingMessage = result.message
+                        }
                         onRemoveRequested: function(profileId, profileName) {
+                            const chips = root.mappingChips
+                            for (let i = 1; i < chips.length; ++i) {
+                                if (chips[i].id === profileId && chips[i].plugin) {
+                                    pluginAppLockedDialog.open()
+                                    return
+                                }
+                            }
                             removeMappingAppConfirmDialog.pendingProfileId = profileId
                             removeMappingAppConfirmDialog.pendingProfileName = profileName
                             removeMappingAppConfirmDialog.open()

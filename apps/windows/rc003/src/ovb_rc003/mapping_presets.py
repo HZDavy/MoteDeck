@@ -116,13 +116,21 @@ def validate_mapping(value: object, profile: str) -> dict:
 
 
 def _validate_action(raw: object, button: str, trigger: str, profile: str) -> key_mapping.ButtonAction:
-    if not isinstance(raw, dict) or set(raw) - {"kind", "keys", "uri", "inject_mode"}:
+    # OpenMexia 设备动作会额外带 device / op / label 三个字段。
+    if not isinstance(raw, dict) or set(raw) - {
+        "kind", "keys", "uri", "inject_mode", "device", "op", "label"
+    }:
         raise ValueError("按键动作格式无效。")
     action = key_mapping.ButtonAction.from_dict(raw)
     if action.kind in {key_mapping.ActionKind.VOICE, key_mapping.ActionKind.VOICE_TOGGLE}:
         raise ValueError("配置含已停用的语音动作，请重新选择后保存。")
     if action.kind == key_mapping.ActionKind.KEY_COMBO:
         win32_keys.resolve_vk_codes(action.keys)
+    if action.kind == key_mapping.ActionKind.OPENMEXIA_DEVICE:
+        # OpenMexia 设备动作不是按键文本，没法按显示名反解析；
+        # 设备 / 操作 / 名称三个字段已经在 from_dict 里校验过了，
+        # 这里直接通过，OpenMexia 没连上时也能正常保存。
+        return action
     try:
         settings_ui._validated_button_action(button, trigger, settings_ui._action_to_display(action))
     except settings_ui.SettingsValidationError as exc:

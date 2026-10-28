@@ -12,6 +12,11 @@ Item {
     property bool interactive: true
     signal addRequested()
     signal removeRequested(string profileId, string name)
+    // 拖动排序：两个下标都是「应用区」里的位置（全局不参与）。
+    signal moveRequested(int fromIndex, int toIndex)
+    // 拖动中的实时位置：dragFrom 是被拖的那一格，dragTo 是松手后落点。
+    property int dragFrom: -1
+    property int dragTo: -1
 
     readonly property real slotSize: 32
     readonly property real slotGap: 4
@@ -119,6 +124,24 @@ Item {
         visible: root.appCount > 0
         clip: true
 
+        // 落点占位符：拖动时右边让出来的空位画一个浅色块，松手就落在这里。
+        Rectangle {
+            objectName: "mappingAppsDropPlaceholder"
+            visible: root.dragFrom >= 0
+            width: root.slotSize
+            height: root.slotSize
+            y: 6
+            x: 5 + root.dragTo * root.step - track.contentX
+            radius: 9
+            color: root.tokens.surfaceMuted
+            border.width: 1
+            border.color: root.tokens.borderStrong
+            opacity: 0.55
+            Behavior on x {
+                NumberAnimation { duration: 140; easing.type: Easing.OutCubic }
+            }
+        }
+
         ListView {
             id: track
             objectName: "mappingAppsTrack"
@@ -157,6 +180,20 @@ Item {
                 readonly property var profile: root.chips[index + 1]
                 readonly property bool active:
                     profile && SettingsController.mappingEditTarget === profile.id
+                // 插件自带的条目（OpenMexia）：图标自带黑色底，且不能删。
+                readonly property bool isPlugin: !!(profile && profile.plugin)
+                property bool dragging: false
+                property real dragX: 0
+                // 拖动时其它图标往两边让位，落点空出来当占位符。
+                readonly property real shiftX: {
+                    if (root.dragFrom < 0 || dragging)
+                        return 0
+                    if (root.dragFrom < index && root.dragTo >= index)
+                        return -root.step
+                    if (root.dragFrom > index && root.dragTo <= index)
+                        return root.step
+                    return 0
+                }
 
                 objectName: "mappingChip_" + index
                 width: root.slotSize
@@ -167,6 +204,14 @@ Item {
                 border.width: 1
                 border.color: active ? root.tokens.borderStrong : "transparent"
                 Accessible.name: profile ? profile.name : ""
+                z: dragging ? 10 : 0
+                transform: Translate {
+                    x: appCell.dragging ? appCell.dragX : appCell.shiftX
+                    Behavior on x {
+                        enabled: !appCell.dragging
+                        NumberAnimation { duration: 140; easing.type: Easing.OutCubic }
+                    }
+                }
 
                 // .app.on 阴影：0 1px 2px rgba(0,0,0,.08)
                 Rectangle {
@@ -195,15 +240,34 @@ Item {
                     width: 20
                     height: 20
                     source: appCell.profile ? appCell.profile.icon : ""
-                    visible: source.toString().length > 0
+                    visible: !appCell.isPlugin && source.toString().length > 0
                     sourceSize.width: 40
                     sourceSize.height: 40
                     fillMode: Image.PreserveAspectFit
                     smooth: true
                 }
+                // 插件自带的图标不绿底：黑底白色星标，和 OpenMexia 的图标一致。
+                Rectangle {
+                    objectName: "mappingAppPluginIcon_" + appCell.index
+                    anchors.centerIn: parent
+                    visible: appCell.isPlugin
+                    width: 20
+                    height: 20
+                    radius: 5
+                    color: "#111111"
+
+                    SvgIcon {
+                        anchors.centerIn: parent
+                        name: "openmexia"
+                        size: 14
+                        strokeWidth: 1.8
+                        color: "#ffffff"
+                    }
+                }
                 Rectangle {
                     anchors.centerIn: parent
-                    visible: !appCell.profile || appCell.profile.icon.length === 0
+                    visible: !appCell.isPlugin
+                        && (!appCell.profile || appCell.profile.icon.length === 0)
                     width: 20
                     height: 20
                     radius: 5
@@ -246,6 +310,41 @@ Item {
                                 return
                             root.removeRequested(appCell.profile.id, appCell.profile.name)
                         }
+                    }
+                }
+
+                // 拖动排序：按住图标左右拖，松手后换到落点那一格。
+                DragHandler {
+                    id: cellDrag
+                    target: null
+                    enabled: root.interactive && !!appCell.profile
+                    yAxis.enabled: false
+                    cursorShape: Qt.ClosedHandCursor
+                    onActiveChanged: {
+                        if (active) {
+                            appCell.dragging = true
+                            appCell.dragX = 0
+                            root.dragFrom = appCell.index
+                            root.dragTo = appCell.index
+                            tipPopup.close()
+                            return
+                        }
+                        const from = appCell.index
+                        const target = root.dragTo
+                        appCell.dragging = false
+                        appCell.dragX = 0
+                        root.dragFrom = -1
+                        root.dragTo = -1
+                        if (target >= 0 && target !== from)
+                            root.moveRequested(from, target)
+                    }
+                    onTranslationChanged: {
+                        if (!active)
+                            return
+                        appCell.dragX = translation.x
+                        root.dragTo = Math.max(0, Math.min(
+                            root.appCount - 1,
+                            appCell.index + Math.round(appCell.dragX / root.step)))
                     }
                 }
 

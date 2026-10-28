@@ -30,7 +30,7 @@ from __future__ import annotations
 import copy
 import re
 from dataclasses import dataclass, replace
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from . import (
     audio_output,
@@ -226,6 +226,50 @@ def set_voice_slot_labels(labels: Optional[Dict[int, str]]) -> None:
         if slot > 0 and label:
             _VOICE_SLOT_LABELS[slot] = label
 
+
+# OpenMexia 里每台米家设备的每个操作都对应动作下拉里的一项，显示成
+# 「客厅灯 · 开灯」。设备清单来自 OpenMexia，所以这张表在运行时注册，
+# 和语音键名字用的是同一套思路：界面上只认名字，存档里存设备 id + 操作 id。
+_OPENMEXIA_GROUP_TITLE = "米家设备"
+_OPENMEXIA_ACTION_BY_LABEL: Dict[str, Tuple[str, str]] = {}
+_OPENMEXIA_ACTION_LABELS: Tuple[str, ...] = ()
+
+
+def set_openmexia_actions(entries: Optional[object]) -> None:
+    """Register the OpenMexia device actions currently selectable.
+
+    Passing an empty list simply empties today's dropdown, while every label
+    seen so far stays parseable: an already-bound key must still load and save
+    while OpenMexia happens to be closed.
+    """
+
+    global _OPENMEXIA_ACTION_LABELS
+    by_label: Dict[str, Tuple[str, str]] = {}
+    order: List[str] = []
+    for raw in entries or ():
+        try:
+            label, device, op = (str(part).strip() for part in tuple(raw)[:3])
+        except (TypeError, ValueError):
+            continue
+        if not label or not device or not op or label in by_label:
+            continue
+        by_label[label] = (device, op)
+        order.append(label)
+    _OPENMEXIA_ACTION_BY_LABEL.update(by_label)
+    _OPENMEXIA_ACTION_LABELS = tuple(order)
+
+
+def openmexia_action_labels() -> Tuple[str, ...]:
+    """Every registered 「设备 · 操作」 label, in device order."""
+
+    return _OPENMEXIA_ACTION_LABELS
+
+
+def openmexia_action_group_title(text: str) -> str:
+    """Return the dropdown group title for one OpenMexia option."""
+
+    return _OPENMEXIA_GROUP_TITLE if str(text).strip() in _OPENMEXIA_ACTION_BY_LABEL else ""
+
 # Secondary gestures are optional.  Keep an explicit display value in the
 # editable ComboBox so Qt does not fall back to the first real preset (usually
 # ``escape``) when an older key_bindings.json has no secondary_bindings map.
@@ -327,6 +371,14 @@ def _action_to_display(action: key_mapping.ButtonAction) -> str:
         return voice_slot_display(voice_slot)
     if action.kind == key_mapping.ActionKind.QUICKER_URI:
         return action.uri
+    if action.kind == key_mapping.ActionKind.OPENMEXIA_DEVICE:
+        if action.label:
+            return action.label
+        registered = _OPENMEXIA_ACTION_BY_LABEL
+        for label, target in registered.items():
+            if target == (action.device, action.op):
+                return label
+        return " · ".join(part for part in (action.device, action.op) if part)
     reference_label = _REFERENCE_ACTION_LABELS.get(action.kind)
     if reference_label is not None:
         return reference_label
@@ -376,6 +428,15 @@ def _display_to_action(text: str) -> key_mapping.ButtonAction:
             return slot_action
     if text == "系统音量 -":
         text = "系统音量 −"
+    openmexia_target = _OPENMEXIA_ACTION_BY_LABEL.get(text)
+    if openmexia_target is not None:
+        device, op = openmexia_target
+        return key_mapping.ButtonAction(
+            key_mapping.ActionKind.OPENMEXIA_DEVICE,
+            device=device,
+            op=op,
+            label=text,
+        )
     reference_kind = _REFERENCE_ACTION_KINDS_BY_LABEL.get(text)
     if reference_kind is None:
         reference_kind = _LEGACY_REFERENCE_ACTION_KINDS_BY_LABEL.get(text)

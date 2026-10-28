@@ -25,6 +25,10 @@ from typing import Optional, Tuple
 WM_APP = 0x8000
 WM_TOAST_SHOW = WM_APP + 1
 WM_TOAST_HIDE = WM_APP + 2
+# 长按 OpenMexia 语音键时的电平胶囊：和模式气泡同一个窗口、同一个位置。
+WM_LEVEL_SHOW = WM_APP + 3
+WM_LEVEL_UPDATE = WM_APP + 4
+WM_LEVEL_HIDE = WM_APP + 5
 WM_TIMER = 0x0113
 WM_QUIT = 0x0012
 PM_NOREMOVE = 0x0000
@@ -71,6 +75,10 @@ TIMER_RAISE_ID = 2
 UINT_PTR = ctypes.c_size_t
 _TOAST_DURATION_MS = 1400
 _TOAST_RAISE_INTERVAL_MS = 120
+# 电平胶囊在 96dpi 下的宽度（高度跟模式气泡一致），比模式气泡窄一些。
+_LEVEL_CAPSULE_WIDTH = 88
+# 波形柱子的数量：每根柱子对应一小段录音，看起来像一段波形。
+_LEVEL_BAR_COUNT = 9
 _TOAST_CLASS_NAME = "MoteDeckVoiceModeToast"
 _FONT_FACE_PRIMARY = "Microsoft YaHei UI"
 _FONT_FACE_FALLBACK = "Microsoft YaHei"
@@ -154,6 +162,39 @@ def _colorref(rgb: Tuple[int, int, int]) -> int:
     return int(red) | (int(green) << 8) | (int(blue) << 16)
 
 
+def _capsule_coverage(
+    x: float, y: float, half_x: float, radius: float, border_px: int
+) -> Tuple[float, float]:
+    """跑道形胶囊在 (x, y) 处的外沿覆盖率和内部（描边以内）覆盖率。"""
+
+    qx = abs(x) - half_x
+    qy = abs(y)
+    far = qx if qx > qy else qy
+    if far > 0.0:
+        signed = (qx * qx + qy * qy) ** 0.5 if qx > 0.0 and qy > 0.0 else far
+        distance = signed - radius
+    else:
+        distance = far - radius
+    outer = _clamp(0.5 - distance, 0.0, 1.0)
+    inner = _clamp(0.5 - (distance + border_px), 0.0, 1.0)
+    return outer, inner
+
+
+def _bar_coverage(
+    x: float, y: float, cx: float, half_w: float, half_h: float, radius: float
+) -> float:
+    """圆头柱子（以 cx、0 为中心）在 (x, y) 处的覆盖率。"""
+
+    dx = abs(x - cx) - max(half_w - radius, 0.0)
+    dy = abs(y) - max(half_h - radius, 0.0)
+    if dx > radius or dy > radius:
+        return 0.0
+    dx = max(dx, 0.0)
+    dy = max(dy, 0.0)
+    distance = (dx * dx + dy * dy) ** 0.5 - radius
+    return _clamp(0.5 - distance, 0.0, 1.0)
+
+
 class VoiceModeToast:
     """Fire-and-forget bubble drawn at the bottom of the cursor's monitor."""
 
@@ -165,6 +206,10 @@ class VoiceModeToast:
         self._thread_id = 0
         self._ready_event = threading.Event()
         self._pending: Optional[Tuple[str, dict, int]] = None
+        # 电平胶囊的状态：样式（调色板 + 上移像素）、每根柱子的电平、是否可见。
+        self._level_style: Optional[Tuple[dict, int]] = None
+        self._level_values: Tuple[float, ...] = ()
+        self._level_visible = False
         self._stopped = False
         self._failed = False
         self._proc_keepalive: Optional[_WNDPROC] = None
@@ -238,9 +283,87 @@ class VoiceModeToast:
         except Exception:  # noqa: BLE001 - the bubble is best effort
             pass
 
+    def show_level(self, theme: str = "dark", offset: int = 0) -> None:
+        """开始录音：在和模式气泡相同的位置弹出电平胶囊（不带自动隐藏）。
+
+        ``offset`` 与模式气泡共用同一份设置，位置完全对齐。
+        """
+
+        if sys.platform != "win32":
+            return
+        palette = _TOAST_THEMES.get(
+            str(theme or "dark").strip().lower(), _TOAST_THEMES["dark"]
+        )
+        try:
+            offset_px = max(0, int(offset))
+        except (TypeError, ValueError):
+            offset_px = 0
+        with self._lock:
+            if self._stopped or self._failed:
+                return
+            if not self._ensure_thread_locked():
+                return
+            self._level_style = (palette, offset_px)
+            self._level_values = tuple(0.0 for _ in range(_LEVEL_BAR_COUNT))
+            self._level_visible = True
+            thread_id = self._thread_id
+        self._post_message(thread_id, WM_LEVEL_SHOW)
+
+    def update_level(self, levels) -> None:
+        """录音中每根柱子的电平（0~1，从左到右）。变化太小就跳过。"""
+
+        if sys.platform != "win32":
+            return
+        try:
+            values = tuple(_clamp(float(value), 0.0, 1.0) for value in levels)
+        except (TypeError, ValueError):
+            return
+        if not values:
+            return
+        with self._lock:
+            if not self._level_visible or self._stopped or self._failed:
+                return
+            previous = self._level_values
+            if len(previous) == len(values) and all(
+                abs(new - old) < 0.02 for new, old in zip(values, previous)
+            ):
+                return
+            self._level_values = values
+            thread_id = self._thread_id
+        self._post_message(thread_id, WM_LEVEL_UPDATE)
+
+    def hide_level(self) -> None:
+        """松手：立刻收掉电平胶囊。"""
+
+        if sys.platform != "win32":
+            return
+        with self._lock:
+            if not self._level_visible:
+                return
+            self._level_visible = False
+            self._level_values = ()
+            thread_id = self._thread_id
+        self._post_message(thread_id, WM_LEVEL_HIDE)
+
+    @staticmethod
+    def _post_message(thread_id: int, message: int) -> None:
+        if not thread_id:
+            return
+        try:
+            user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+            user32.PostThreadMessageW.argtypes = (
+                wintypes.DWORD,
+                wintypes.UINT,
+                wintypes.WPARAM,
+                wintypes.LPARAM,
+            )
+            user32.PostThreadMessageW.restype = wintypes.BOOL
+            user32.PostThreadMessageW(thread_id, message, 0, 0)
+        except Exception:  # noqa: BLE001 - the capsule is best effort
+            pass
+
     def stop(self) -> None:
         """Tear the pump down; safe to call more than once or before show()."""
-
         with self._lock:
             self._stopped = True
             self._pending = None
@@ -360,6 +483,23 @@ class VoiceModeToast:
                         self._draw(hwnd, pending[0], pending[1], pending[2])
                     continue
                 if message.message == WM_TOAST_HIDE:
+                    self._hide(hwnd)
+                    continue
+                if message.message == WM_LEVEL_SHOW:
+                    with self._lock:
+                        style = self._level_style
+                        values = self._level_values
+                    if style is not None:
+                        self._draw_level(hwnd, style[0], style[1], values)
+                    continue
+                if message.message == WM_LEVEL_UPDATE:
+                    with self._lock:
+                        style = self._level_style
+                        values = self._level_values
+                    if style is not None:
+                        self._draw_level(hwnd, style[0], style[1], values)
+                    continue
+                if message.message == WM_LEVEL_HIDE:
                     self._hide(hwnd)
                     continue
                 if message.message == WM_TIMER and message.hWnd == hwnd:
@@ -788,6 +928,188 @@ class VoiceModeToast:
                         gdi32.DeleteDC(monitor_dc)
                 except Exception:  # noqa: BLE001 - cleanup is best effort
                     pass
+
+    def _draw_level(self, hwnd, palette: dict, offset: int, levels) -> None:
+        """画电平胶囊：位置、高度与模式气泡一致，宽度固定窄一些。"""
+
+        user32, gdi32, _ = self._bind_win32()
+        monitor, info = self._monitor_for_cursor(user32)
+        if info is None:
+            return
+        work = info.rcWork
+        work_width = max(1, int(work.right) - int(work.left))
+
+        monitor_dc = None
+        if info.szDevice:
+            monitor_dc = gdi32.CreateDCW(info.szDevice, None, None, None)
+        owns_screen_dc = False
+        if not monitor_dc:
+            monitor_dc = user32.GetDC(None)
+            owns_screen_dc = True
+        if not monitor_dc:
+            return
+        mem_dc = None
+        bitmap = None
+        previous_bitmap = None
+        destination_dc = None
+        try:
+            try:
+                dpi = int(gdi32.GetDeviceCaps(monitor_dc, LOGPIXELSY)) or 96
+            except Exception:  # noqa: BLE001 - fall back to 96 dpi
+                dpi = 96
+            scale = _clamp(dpi / 96.0, 0.75, 4.0)
+            font_px = max(13, int(round(16 * scale)))
+            pad_y = max(7, int(round(8 * scale)))
+            # 与 _draw 使用同一套贴底位置，用户调过的上移像素也一起生效。
+            bottom_margin = max(6, int(round(10 * scale))) + int(
+                round(max(0, offset) * scale)
+            )
+            border_px = max(1, int(round(scale)))
+            width = max(2, int(round(_LEVEL_CAPSULE_WIDTH * scale)))
+            width = min(width, max(1, work_width - int(80 * scale)))
+            height = font_px + 2 * pad_y
+            position = wintypes.POINT(
+                int(work.left) + (work_width - width) // 2,
+                int(work.bottom) - height - bottom_margin,
+            )
+            # 细柱子 + 各自的电平，看起来才像一段跳动的波形。
+            bar_w = max(2.0, 3.0 * scale)
+            gap = max(1.5, 2.5 * scale)
+            count = len(levels) if levels else _LEVEL_BAR_COUNT
+            total = count * bar_w + (count - 1) * gap
+            usable_half = max(2.0, (height - 2 * max(3.0, 7.0 * scale)) / 2.0)
+            bars = []
+            start = -total / 2.0 + bar_w / 2.0
+            for index in range(count):
+                level = levels[index] if index < len(levels) else 0.0
+                half_h = max(0.75, usable_half * max(0.1, level))
+                bars.append(
+                    (
+                        start + index * (bar_w + gap),
+                        bar_w / 2.0,
+                        half_h,
+                        bar_w / 2.0,
+                    )
+                )
+            pixels = self._compose_level_pixels(
+                width, height, palette, border_px, bars
+            )
+
+            mem_dc = gdi32.CreateCompatibleDC(monitor_dc)
+            bitmap, bits = self._create_dib(gdi32, mem_dc, width, height)
+            if bitmap is None:
+                return
+            ctypes.memmove(bits, bytes(pixels), len(pixels))
+            previous_bitmap = gdi32.SelectObject(mem_dc, bitmap)
+            size = wintypes.SIZE(width, height)
+            source_origin = wintypes.POINT(0, 0)
+            blend = _BLENDFUNCTION(AC_SRC_OVER, 0, 255, AC_SRC_ALPHA)
+            destination_dc = user32.GetDC(None)
+            if not user32.UpdateLayeredWindow(
+                hwnd,
+                destination_dc or None,
+                ctypes.byref(position),
+                ctypes.byref(size),
+                mem_dc,
+                ctypes.byref(source_origin),
+                0,
+                ctypes.byref(blend),
+                ULW_ALPHA,
+            ):
+                self._warn("voice level capsule UpdateLayeredWindow failed")
+                return
+            self._raise(hwnd)
+            # 胶囊常驻到松手为止：只重申置顶，不排自动隐藏。
+            user32.SetTimer(hwnd, TIMER_RAISE_ID, _TOAST_RAISE_INTERVAL_MS, None)
+            user32.KillTimer(hwnd, TIMER_ID)
+        finally:
+            if destination_dc:
+                try:
+                    user32.ReleaseDC(None, destination_dc)
+                except Exception:  # noqa: BLE001 - cleanup is best effort
+                    pass
+            if mem_dc and bitmap:
+                try:
+                    gdi32.SelectObject(mem_dc, previous_bitmap)
+                except Exception:  # noqa: BLE001 - cleanup is best effort
+                    pass
+            if bitmap:
+                try:
+                    gdi32.DeleteObject(bitmap)
+                except Exception:  # noqa: BLE001 - cleanup is best effort
+                    pass
+            if mem_dc:
+                try:
+                    gdi32.DeleteDC(mem_dc)
+                except Exception:  # noqa: BLE001 - cleanup is best effort
+                    pass
+            if monitor_dc:
+                try:
+                    if owns_screen_dc:
+                        user32.ReleaseDC(None, monitor_dc)
+                    else:
+                        gdi32.DeleteDC(monitor_dc)
+                except Exception:  # noqa: BLE001 - cleanup is best effort
+                    pass
+
+    @staticmethod
+    def _compose_level_pixels(
+        width: int,
+        height: int,
+        palette: dict,
+        border_px: int,
+        bars,
+    ) -> bytearray:
+        """把胶囊底色、描边和电平柱子合成成预乘 BGRA（自底向上）。"""
+
+        fill = palette["fill"]
+        border = palette["border"]
+        bar_color = palette["text"]
+        radius = height / 2.0
+        half_x = width / 2.0 - radius
+        center_x = width / 2.0
+        center_y = height / 2.0
+        pixels = bytearray(width * height * 4)
+        stride = width * 4
+        for row in range(height):
+            y = row + 0.5 - center_y
+            base = (height - 1 - row) * stride
+            for column in range(width):
+                x = column + 0.5 - center_x
+                outer, inner = _capsule_coverage(x, y, half_x, radius, border_px)
+                if outer <= 0.0:
+                    continue
+                ring = outer - inner
+                coverage = 0.0
+                for cx, half_w, half_h, bar_radius in bars:
+                    # 先按横向范围粗筛，省掉绝大多数无效的逐个像素判断。
+                    if x < cx - half_w - 1.0 or x > cx + half_w + 1.0:
+                        continue
+                    coverage = _bar_coverage(
+                        x, y, cx, half_w, half_h, bar_radius
+                    )
+                    if coverage > 0.0:
+                        break
+                covered = coverage if inner > 0.0 else 0.0
+                keep = 1.0 - covered
+                red = bar_color[0] * covered + (
+                    fill[0] * inner + border[0] * ring
+                ) * keep
+                green = bar_color[1] * covered + (
+                    fill[1] * inner + border[1] * ring
+                ) * keep
+                blue = bar_color[2] * covered + (
+                    fill[2] * inner + border[2] * ring
+                ) * keep
+                alpha = covered + outer * keep
+                offset = base + column * 4
+                pixels[offset] = int(_clamp(blue + 0.5, 0.0, 255.0))
+                pixels[offset + 1] = int(_clamp(green + 0.5, 0.0, 255.0))
+                pixels[offset + 2] = int(_clamp(red + 0.5, 0.0, 255.0))
+                pixels[offset + 3] = int(
+                    _clamp(alpha * 255.0 + 0.5, 0.0, 255.0)
+                )
+        return pixels
 
     @staticmethod
     def _create_dib(gdi32, dc, width: int, height: int):
