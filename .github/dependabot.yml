@@ -1,4 +1,8 @@
 version: 2
+# 版本升级由维护者手动执行：依赖版本写死在安装包里，升级必须同步更新
+# THIRD_PARTY_NOTICES.md 与 THIRD_PARTY_LICENSES/，并重跑完整测试与冻结构建。
+# open-pull-requests-limit: 0 关闭常规版本升级 PR；安全更新（Dependabot alerts /
+# security updates）由仓库设置单独控制，不受这里影响。
 updates:
   - package-ecosystem: pip
     directory: /apps/windows/rc003
@@ -7,7 +11,7 @@ updates:
       day: monday
       time: "09:00"
       timezone: Asia/Shanghai
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 0
   - package-ecosystem: github-actions
     directory: /
     schedule:
@@ -15,4 +19,4 @@ updates:
       day: monday
       time: "09:30"
       timezone: Asia/Shanghai
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 0
