@@ -165,6 +165,12 @@ _SENDINPUT_CLICK_REPEAT_KINDS = frozenset(
     }
 )
 
+# An OpenMexia control has no key to hold down: a held button repeats the whole
+# action instead.  The bridge request is queued on its own thread, so the repeat
+# follows a human-paced interval rather than the machine's keyboard repeat rate
+# (30 ms would flood the bridge and leave a long backlog after release).
+_OPENMEXIA_HOLD_REPEAT_SECONDS = 0.2
+
 _RAW_FALLBACK_KEY_TOKENS = {
     "mic": "f5",
     "right": "right",
@@ -6149,6 +6155,10 @@ class RC003App:
         the key-down at the machine's keyboard repeat rate while the button
         stays down.  There is no per-button exception: arrows, backspace,
         volume and custom combinations all hold the same way.
+
+        An OpenMexia control has no key to hold, so it joins the same hold
+        path by repeating the whole action instead (see
+        ``_OPENMEXIA_HOLD_REPEAT_SECONDS``).
         """
 
         if self._is_mouse_hold_button(button_id):
@@ -6156,6 +6166,8 @@ class RC003App:
         action = key_mapping.button_action_for(
             self._bindings, button_id, key_mapping.ButtonTrigger.SINGLE_CLICK
         )
+        if action.kind == key_mapping.ActionKind.OPENMEXIA_DEVICE:
+            return True
         return self._button_action_key_tokens(action) is not None
 
     def _on_button_hold_start(self, button_id: str, token: object) -> None:
@@ -6224,6 +6236,18 @@ class RC003App:
         )
         tokens = self._button_action_key_tokens(action)
         if tokens is None:
+            if action.kind != key_mapping.ActionKind.OPENMEXIA_DEVICE:
+                return
+            with self._button_action_lock:
+                if not self._accept_input_events:
+                    return
+                # No key can be held for an OpenMexia control, so the action
+                # itself is repeated: this press delivers the first one and
+                # every repeat re-runs it until the button is released.
+                self._on_button_trigger(
+                    button_id, button_gesture.ButtonTrigger.SINGLE_CLICK
+                )
+                self._button_tap_hold_actions[owner] = action
             return
         with self._button_action_lock:
             if not self._accept_input_events:
@@ -6407,8 +6431,16 @@ class RC003App:
         re-sent by the app.  Following the user's own keyboard repeat rate
         keeps arrows, backspace and volume holds as smooth as holding a key on
         a physical keyboard, without any per-button exceptions.
+
+        OpenMexia controls are bridge requests rather than key taps, so they
+        repeat at a fixed, human-paced rate instead of the keyboard's.
         """
 
+        action = key_mapping.button_action_for(
+            self._bindings, button_id, key_mapping.ButtonTrigger.SINGLE_CLICK
+        )
+        if action.kind == key_mapping.ActionKind.OPENMEXIA_DEVICE:
+            return _OPENMEXIA_HOLD_REPEAT_SECONDS
         return self._keyboard_repeat_interval_seconds
 
     def _on_button_gesture_diagnostic(

@@ -63,6 +63,10 @@ Item {
                 return "paired"
             return SettingsController.activeRemotePairingState
         }
+        // 服务已经连上遥控器时以实连为准：启动时那次探测失败，不能把已连上
+        // 的链路显示成「点击“重新检查”」。
+        if (SettingsController.bridgeConnected)
+            return "paired"
         if (DiagnosticsController.isRefreshing)
             return "checking"
         const row = checkResult("ble_candidate")

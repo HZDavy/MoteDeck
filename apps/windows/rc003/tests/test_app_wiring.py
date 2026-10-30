@@ -7619,6 +7619,50 @@ class _FakePresetSwitchListener:
         self.is_running = False
 
 
+class OpenMexiaHoldRepeatTests(_AppWiringTestCase):
+    """Holding a button bound to an OpenMexia control repeats the action.
+
+    An OpenMexia control is a bridge request, not a key, so the ordinary
+    key-hold path cannot serve it.  With no separate long-press or
+    double-click action configured, the press keeps firing the same action
+    until release, so holding brightness-up keeps stepping the lamp up.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.submitted = []
+        runner = mock.Mock()
+        runner.submit.side_effect = lambda device, op: self.submitted.append(
+            (device, op)
+        )
+        self.app._openmexia_runner = runner
+        self.app._bindings["bindings"]["up"] = key_mapping.ButtonAction(
+            key_mapping.ActionKind.OPENMEXIA_DEVICE,
+            device="535009993",
+            op="brightness_up",
+            label="台灯 · 亮度+",
+        ).to_dict()
+
+    def test_hold_repeats_the_action_until_release(self):
+        token = object()
+        self.app._on_button_hold_start("up", token)
+        self.app._on_button_hold_repeat("up", token)
+        self.app._on_button_hold_repeat("up", token)
+        self.assertEqual(self.submitted, [("535009993", "brightness_up")] * 3)
+
+        self.app._on_button_hold_end(token)
+        self.app._on_button_hold_repeat("up", token)
+
+        self.assertEqual(len(self.submitted), 3)
+
+    def test_openmexia_button_repeats_at_the_bridge_rate(self):
+        self.assertTrue(self.app._is_default_hold_button("up"))
+        self.assertEqual(
+            self.app._button_repeat_interval("up", 1),
+            app_module._OPENMEXIA_HOLD_REPEAT_SECONDS,
+        )
+
+
 class PresetSwitchRuntimeTests(_AppWiringTestCase):
     """RC003App runtime preset switching (process scope + switch hotkey).
 
