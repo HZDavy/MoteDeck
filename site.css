@@ -234,6 +234,8 @@ h2{font-family:var(--display);font-size:44px;line-height:1.25;font-weight:700;le
 .foot .wrap{display:flex;align-items:center;gap:24px;flex-wrap:wrap}
 .foot .w{width:80px;height:13px;color:var(--text2)}
 .foot nav{display:flex;gap:24px;margin-left:auto}
+.foot .copy{margin:0;font-size:13px;color:var(--text2)}
+.foot .copy a{color:var(--text2)}
 .foot a:hover{color:var(--text)}
 
 /* 响应式 */
