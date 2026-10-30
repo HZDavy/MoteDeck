@@ -30,7 +30,7 @@ img,svg{display:block}
 .top nav{display:flex;gap:28px;margin-left:16px;font-size:15px;color:var(--text2)}
 .top nav a:hover,.gh:hover{color:var(--text)}
 .top .sp{flex:1}
-.gh{display:flex;align-items:center;gap:8px;font-size:15px;color:var(--text2)}
+.gh{display:flex;align-items:center;gap:8px;font-size:15px;color:var(--text2);white-space:nowrap}
 .gh svg{width:18px;height:18px}
 .b1{height:44px;padding:0 20px;border-radius:10px;background:var(--text);color:#fff;display:inline-flex;align-items:center;gap:8px;font-size:15px;font-weight:600;white-space:nowrap;transition:transform .15s,background .2s}
 .b1:hover{background:#2a2a2a}
@@ -248,6 +248,8 @@ h2{font-family:var(--display);font-size:44px;line-height:1.25;font-weight:700;le
   :root{--pad:20px}
   html{font-size:16px}
   .top nav,.top .gh span{display:none}
+  .top .wrap{gap:8px}
+  .top .gh.help{font-size:12.5px;gap:4px}
   h1{font-size:38px}
   h2{font-size:30px}
   .sub,.lead{font-size:17px}
