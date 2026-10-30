@@ -65,6 +65,8 @@ Vokie 原生支持外接语音设备，MoteDeck 按它的插件协议做了适�
 - 插件按 Vokie 当前会话类型走：闪记、翻译、语音指令各有各的通道，被拒时自动退回普通语音输入，不会出现「按了没反应」
 - 安装：在 MoteDeck「语音」页点「下载插件」，把 [MoteDeck2Vokie-0.1.2.zip](https://github.com/HZDavy/MoteDeck/releases/download/v0.1.4/MoteDeck2Vokie-0.1.2.zip) 装进 Vokie 的插件目录，再在插件里点「开启连接」
 
+<img src="docs/screenshots/plugin-page.png" width="100%" alt="语音页的「外部应用程序支持」面板：Vokie 与 OpenMexia 两个外部程序入口，各有访问官网、下载和连接按钮">
+
 <img src="./assets/readme/plugin-flow.svg" width="660" alt="插件语音通路总图：左边不开插件时走 CABLE Input、CABLE Output 到输入框，右边开插件后经本机回环 TCP 直连，短按只切换语音模式、长按才唤醒 Vokie 会话；下方是插件与 MoteDeck 的连接流程和语音键同步">
 
 这是插件界面里的通路总图：左边是不开插件时的虚拟声卡链路，右边是开插件后的直连链路，下方是两者的连接与语音键同步流程。
