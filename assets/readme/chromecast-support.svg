@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 300" width="1200" height="300" role="img" aria-labelledby="t d">
+  <title id="t">新增支持谷歌 Chromecast 遥控器</title>
+  <desc id="d">MoteDeck 0.1.7 起支持 Google TV 款谷歌遥控器：按键由提权后的固定 HID 工作进程接收，语音走蓝牙 GATT 私有服务，按住话筒键录音、松手发送。这条链路尚未经真机验证，欢迎测试。</desc>
+  <defs>
+    <linearGradient id="remoteBody" x1="0" y1="0" x2="84" y2="124" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#F0EEE9"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1200" height="300" rx="18" fill="#EEEDEA"/>
+
+  <text x="64" y="52" font-family="'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace" font-size="18" letter-spacing="1.6" fill="#6B6862">新增支持 · NEW DEVICE</text>
+  <text x="1136" y="52" text-anchor="end" font-family="'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace" font-size="18" fill="#8A867F">MoteDeck 0.1.7</text>
+
+  <g transform="translate(64 92)">
+    <rect width="84" height="124" rx="20" fill="url(#remoteBody)" stroke="#E2DFD8"/>
+    <circle cx="42" cy="44" r="24" fill="none" stroke="#C9C5BD" stroke-width="2.5"/>
+    <circle cx="42" cy="44" r="9" fill="#111111"/>
+    <rect x="39" y="86" width="6" height="12" rx="3" fill="#111111"/>
+    <path d="M35 95a7 7 0 0 0 14 0" fill="none" stroke="#111111" stroke-width="2" stroke-linecap="round"/>
+  </g>
+
+  <text x="176" y="138" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI Variable Text', 'Segoe UI', 'Microsoft YaHei UI', 'PingFang SC', sans-serif" font-size="34" font-weight="600" letter-spacing="-0.3" fill="#111111">谷歌遥控器</text>
+  <text x="176" y="176" font-family="'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace" font-size="18" fill="#6B6862">Chromecast · Google TV 款</text>
+
+  <line x1="470" y1="150" x2="900" y2="150" stroke="#B9B5AD" stroke-width="2"/>
+  <path d="M912 150 L900 144 L900 156 Z" fill="#B9B5AD"/>
+
+  <rect x="522" y="128" width="236" height="44" rx="22" fill="#111111"/>
+  <text x="640" y="156" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI Variable Text', 'Segoe UI', 'Microsoft YaHei UI', 'PingFang SC', sans-serif" font-size="18" fill="#FFFFFF">蓝牙直连 · 语音直传</text>
+
+  <text x="1136" y="138" text-anchor="end" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI Variable Text', 'Segoe UI', 'Microsoft YaHei UI', 'PingFang SC', sans-serif" font-size="34" font-weight="600" letter-spacing="-0.3" fill="#111111">MoteDeck</text>
+  <text x="1136" y="176" text-anchor="end" font-family="'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace" font-size="18" fill="#6B6862">小米 / 谷歌 双遥控器</text>
+
+  <rect x="1004" y="194" width="132" height="42" rx="21" fill="#111111"/>
+  <text x="1070" y="222" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI Variable Text', 'Segoe UI', 'Microsoft YaHei UI', 'PingFang SC', sans-serif" font-size="18" font-weight="600" fill="#FFFFFF">欢迎测试</text>
+
+  <text x="600" y="272" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI Variable Text', 'Segoe UI', 'Microsoft YaHei UI', 'PingFang SC', sans-serif" font-size="18" fill="#55524C">链路来自上游移植，尚未经真机验证；欢迎装上实测，结果反馈到 Issues</text>
+</svg>
