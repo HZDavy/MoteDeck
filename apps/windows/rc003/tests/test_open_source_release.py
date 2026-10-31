@@ -21,21 +21,27 @@ class CommunityHealthFileTests(unittest.TestCase):
             "CONTRIBUTING.md",
             "CODE_OF_CONDUCT.md",
             ".github/PULL_REQUEST_TEMPLATE.md",
-            ".github/ISSUE_TEMPLATE/bug_report.yml",
-            ".github/ISSUE_TEMPLATE/feature_request.yml",
+            ".github/ISSUE_TEMPLATE/bug_report.md",
+            ".github/ISSUE_TEMPLATE/feature_request.md",
             ".github/ISSUE_TEMPLATE/config.yml",
             ".github/dependabot.yml",
         ):
             self.assertTrue((REPO_ROOT / relative_path).is_file(), relative_path)
 
-    def test_bug_template_requires_version_reproduction_and_privacy_confirmation(self):
-        text = (REPO_ROOT / ".github/ISSUE_TEMPLATE/bug_report.yml").read_text(
-            encoding="utf-8"
+    def test_issue_templates_stay_two_freeform_choices(self):
+        # Deliberately not a structured form: one BUG entry and one Feature
+        # entry, body left free so reporters write in their own words.
+        template_dir = REPO_ROOT / ".github" / "ISSUE_TEMPLATE"
+        self.assertEqual(
+            sorted(path.name for path in template_dir.iterdir()),
+            ["bug_report.md", "config.yml", "feature_request.md"],
         )
-        for marker in ("版本来源", "Windows 环境", "复现步骤", "隐私确认"):
-            self.assertIn(marker, text)
+        bug = (template_dir / "bug_report.md").read_text(encoding="utf-8")
+        self.assertIn('title: "[Bug] "', bug)
+        feature = (template_dir / "feature_request.md").read_text(encoding="utf-8")
+        self.assertIn('title: "[Feature] "', feature)
         for sensitive_marker in ("蓝牙地址", "HID 路径", "个人绝对路径"):
-            self.assertIn(sensitive_marker, text)
+            self.assertIn(sensitive_marker, bug)
 
     def test_dependabot_covers_python_and_github_actions(self):
         text = (REPO_ROOT / ".github/dependabot.yml").read_text(encoding="utf-8")
