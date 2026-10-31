@@ -260,6 +260,12 @@ class RC003App:
         self._selected_remote_key = remote_selection.active_key(self._config)
         selected_profile = remote_selection.active_profile(self._config)
         self._remote_profile = selected_profile
+        # 谷歌遥控器只走真实接收链路（chromecast_runtime）。
+        self._chromecast_real = bool(
+            selected_profile == remote_selection.CHROMECAST_PROFILE
+            and self._selected_remote_key
+        )
+        self._chromecast_runtime = None
         if selected_profile and not remote_selection.runtime_ready(selected_profile):
             raise remote_selection.SelectionError("当前型号尚未提供接收，请在设备页重新选择。")
         self._config_mtime_ns = self._settings_file_mtime_ns(self._config_path)
@@ -620,13 +626,18 @@ class RC003App:
             self._runtime_status_heartbeat()
         )
         try:
+            if self._chromecast_real:
+                self._chromecast_runtime = self._create_chromecast_runtime()
+                await self._chromecast_runtime.run()
+                return
             self._start_input_channels()
             self._start_preset_switching()
             await self._supervisor.run_forever()
         finally:
             try:
-                await self._stop_preset_switching()
-                self._stop_input_channels()
+                if not self._chromecast_real:
+                    await self._stop_preset_switching()
+                    self._stop_input_channels()
                 self._voice_mode_toast_watch.stop()
                 self._voice_mode_toast.stop()
             finally:
@@ -636,9 +647,16 @@ class RC003App:
                 await asyncio.gather(heartbeat, return_exceptions=True)
 
     async def stop(self) -> None:
+        if self._chromecast_real:
+            if self._chromecast_runtime is not None:
+                await self._chromecast_runtime.stop()
+            return
         await self._supervisor.stop()
 
     def request_connection_retry_now(self) -> None:
+        if self._chromecast_real:
+            # The Chromecast receiver owns its own retry/stop cycle.
+            return
         self._logger.info("manual reconnect requested; waking retry backoff")
         self._supervisor.request_retry_now()
 
@@ -879,6 +897,76 @@ class RC003App:
                     type(exc).__name__,
                 )
 
+    def _create_chromecast_runtime(self):
+        from . import chromecast_runtime
+        return chromecast_runtime.ChromecastRuntime(
+            chromecast_runtime.RuntimeServices(
+                selected_key=lambda: self._selected_remote_key,
+                logger=self._logger,
+                create_voice_host=self._create_chromecast_voice_host,
+                set_input_state=lambda **kwargs: self._set_runtime_input_state(
+                    **kwargs
+                ),
+                publish_status=lambda state: self._publish_runtime_status(state),
+                start_input=self._start_input_channels,
+                stop_input=self._stop_input_channels,
+                disable_input=lambda: setattr(self, "_accept_input_events", False),
+                cancel_mappings=self._cancel_chromecast_mappings,
+                release_inputs=self._release_chromecast_inputs,
+                route_edge=self._route_chromecast_edge,
+            )
+        )
+
+    def _create_chromecast_voice_host(self):
+        from .chromecast_voice_host import VoiceHost, VoiceHostServices
+        return VoiceHost(
+            VoiceHostServices(
+                audio=self._voice_audio,
+                shortcut=self._voice_shortcut,
+                settings=lambda: self._config,
+                logger=self._logger,
+                reload_settings=self._reload_settings_if_changed,
+                apply_pending_settings=(
+                    self._apply_pending_voice_settings_if_idle_locked
+                ),
+                begin_diagnostic=lambda **kwargs: (
+                    self._ensure_voice_diagnostic_attempt(**kwargs)
+                ),
+                finish_diagnostic=lambda result, **kwargs: (
+                    self._finish_voice_diagnostic_attempt(result, **kwargs)
+                ),
+                set_active=self._set_runtime_voice_active,
+                set_result=self._set_runtime_voice_result,
+                disable_forwarding=lambda: setattr(
+                    self, "_voice_pcm_forwarding_enabled", False
+                ),
+            )
+        )
+
+    def _cancel_chromecast_mappings(self) -> None:
+        with self._input_arbitration_lock:
+            self._accept_input_events = False
+            self._button_combos.reset()
+            self._button_gestures.reset()
+
+    def _release_chromecast_inputs(self) -> bool:
+        with self._button_action_lock:
+            self._button_input_release_retry_stopping = True
+            self._cancel_button_input_release_retry_locked(reset_delay=False)
+            return self._release_pending_button_inputs()
+
+    def _route_chromecast_edge(self, edge) -> None:
+        if edge.action == "cancel":
+            self._cancel_input_gestures_for_buttons(
+                {edge.button},
+                reason="chromecast_cancel",
+                block_until_release=False,
+            )
+            return
+        self._on_button_event(
+            edge.button, edge.action == "down", event_source="chromecast"
+        )
+
     def _start_input_channels(self) -> None:
         """Start process-lifetime input resources before any BLE attempt."""
 
@@ -888,6 +976,11 @@ class RC003App:
 
         with self._voice_shortcut.lock:
             self._accept_input_events = True
+        if self._remote_profile == remote_selection.CHROMECAST_PROFILE:
+            # The Raw Input / HID tap / voice-key physicalizer owners below match
+            # the RC003 HID identity. A real Chromecast remote brings its own
+            # receiver process (see chromecast_runtime) and never uses these three.
+            return
         with self._voice_key_physicalizer_lifecycle_lock:
             self._voice_key_physicalizer_stopping = False
         with self._raw_input_lifecycle_lock:

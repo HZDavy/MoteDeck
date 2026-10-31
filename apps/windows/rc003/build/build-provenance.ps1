@@ -371,6 +371,7 @@ function Get-RC003BuildInputFiles {
         (Join-Path $RepoRoot ".github\workflows\windows-rc003-ci.yml"),
         (Join-Path $RepoRoot "README.md"),
         (Join-Path $RepoRoot "Resources\RC003-remote-photo.png"),
+        (Join-Path $RepoRoot "Resources\Chromecast-remote-photo.png"),
         (Join-Path $RepoRoot "ASSET_LICENSES.md"),
         (Join-Path $RepoRoot "COPYRIGHT.md"),
         (Join-Path $RepoRoot "LICENSE.md"),

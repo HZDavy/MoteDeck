@@ -112,6 +112,7 @@ _AUTOSTART_MARKERS = ("CurrentVersion\\Run", "userstartup")
 _REVIEWED_ELEVATION_MARKERS = {
     Path("src/ovb_rc003/pipe_windows.py"): {"runas", "ShellExecute"},
     Path("src/ovb_rc003/hid_source_injector.py"): {"runas", "ShellExecute"},
+    Path("src/ovb_rc003/chromecast_pipe_windows.py"): {"runas", "ShellExecute"},
     # Launches the bundled, SHA-256-pinned THIRD-PARTY Interception installer
     # with Windows' own "runas"/UAC verb, only from an explicit user click -
     # see test_interception_driver_install_py_is_exempt_only_for_the_vendor_

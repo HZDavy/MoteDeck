@@ -25,7 +25,14 @@ SCAN_FLAG = "--list-remote-devices"
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 _MAX_DEVICES = 128
 RC003_PROFILE = "xiaomi-rc003"
-KNOWN_PROFILES = frozenset({RC003_PROFILE})
+CHROMECAST_PROFILE = "chromecast-remote"
+KNOWN_PROFILES = frozenset({RC003_PROFILE, CHROMECAST_PROFILE})
+# 早期试装版为了让谷歌遥控器在没有真机时也能点按，写进过一个固定 digest 的
+# “模拟”条目。正式版只认真机，读到这条旧记录时直接丢弃，免得它被当成真机
+# 去配对/连 GATT。
+_LEGACY_SIMULATED_KEY = hashlib.sha256(
+    b"RemoteMic chromecast simulation v1"
+).hexdigest()
 
 
 class SelectionError(ValueError):
@@ -77,6 +84,8 @@ def normalize(value: object) -> dict:
                 or not valid_key(row.get("key")) or row["key"] in keys):
             raise SelectionError("设备记录不受支持或重复。")
         keys.add(row["key"])
+        if row["key"] == _LEGACY_SIMULATED_KEY:
+            continue
         if row["profile"] not in KNOWN_PROFILES:
             # A record for a device type this build no longer supports is
             # dropped instead of making the whole saved selection unusable.
@@ -124,7 +133,7 @@ def active_profile(settings: dict) -> str:
 
 def runtime_ready(profile: str) -> bool:
     # Capability only, not a claim that live source/permission checks passed.
-    return profile == RC003_PROFILE
+    return profile in KNOWN_PROFILES
 
 
 def label(key: str, profile: str = RC003_PROFILE, peers=()) -> str:
@@ -299,7 +308,12 @@ async def _scan_paired() -> list[dict]:
         except (SelectionError, OSError, TypeError, ValueError):
             continue
         name = getattr(info, "name", "") or ""
-        profile = RC003_PROFILE if identity.matches_rc003_name(name) else ""
+        if identity.matches_rc003_name(name):
+            profile = RC003_PROFILE
+        elif identity.matches_chromecast_name(name):
+            profile = CHROMECAST_PROFILE
+        else:
+            profile = ""
         # Unsupported names are display-only; saved selection still contains only digests/profiles.
         row = {"key": key, "profile": profile,
                "label": label(key, profile) if profile else _unsupported_label(name, key)}

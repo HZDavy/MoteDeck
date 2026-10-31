@@ -67,6 +67,7 @@ _ELEVATION_MARKER_EXEMPT_FILENAMES = frozenset(
     {
         "hid_elevation_windows.py",
         "hid_source_injector.py",
+        "chromecast_pipe_windows.py",
         "vb_cable_bundle.py",
         # Runs the bundled, SHA-256-pinned official Interception installer with
         # Windows' own "runas"/UAC verb, only from an explicit user click in
@@ -364,9 +365,15 @@ class UserControlledAutoStartTests(unittest.TestCase):
         self.assertEqual(offenders, [], f"autostart marker found: {offenders}")
 
     def test_only_startup_owner_writes_the_run_value(self):
+        # Scoped to the Run key itself: chromecast_etw_windows.py also calls
+        # winreg.SetValueEx, but only for fixed HKLM ETW capture parameters
+        # (never autostart), and test_run_key_is_scoped_to_the_two_reviewed_
+        # modules above already proves no other module names that key.
         writers = []
         for path in _PY_FILES:
             text = path.read_text(encoding="utf-8")
+            if "CurrentVersion\\Run" not in text:
+                continue
             if "winreg.SetValueEx" in text or "winreg.DeleteValue" in text:
                 writers.append(path.name)
         self.assertEqual(sorted(writers), ["startup_windows.py"])

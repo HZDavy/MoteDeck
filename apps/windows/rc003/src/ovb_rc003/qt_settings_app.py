@@ -889,6 +889,13 @@ def _load_qt_classes() -> dict:
             if role == self.DisplayNameRole:
                 return remote_layout.display_names(self._profile)[button_id]
             if role == self.HidUsageRole:
+                if self._profile == remote_selection.CHROMECAST_PROFILE:
+                    code = remote_layout.CHROMECAST_REPORT_CODES.get(button_id)
+                    return (
+                        f"普通报告 0x{code:02X}"
+                        if code is not None
+                        else "ATVV 语音控制（非普通报告）"
+                    )
                 return remote_layout.hid_usage_display(button_id)
             if role == self.ActionTextRole:
                 return settings_ui.format_action_text(self._action_text[button_id])
@@ -6267,7 +6274,10 @@ def _load_qt_classes() -> dict:
 
         def _get_selected_device_index(self) -> int:
             if self.activeRemoteKey:
-                return self._DEVICE_ORDER.index(self._selected_device_id())
+                profile = self._selected_device_id()
+                if profile in self._DEVICE_ORDER:
+                    return self._DEVICE_ORDER.index(profile)
+                return self._selected_device_index
             return self._selected_device_index
 
         def _set_selected_device_index(self, value: int) -> None:

@@ -109,6 +109,9 @@ $reviewedElevationMarkers = @{
     "src/ovb_rc003/pipe_windows.py" = @("runas", "ShellExecute")
     # Source-only one-shot HID worker; fixed launcher and authenticated pipe.
     "src/ovb_rc003/hid_source_injector.py" = @("runas", "ShellExecute")
+    # Same reviewed pattern as pipe_windows.py: launches this distribution's
+    # own fixed HID worker elevated; never accepts a caller-supplied path.
+    "src/ovb_rc003/chromecast_pipe_windows.py" = @("runas", "ShellExecute")
     # Runs the bundled, SHA-256-pinned THIRD-PARTY Interception installer with
     # Windows' own "runas"/UAC verb, only from an explicit user click in the
     # button editor (never on startup, never silently). The desktop process

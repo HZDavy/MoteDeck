@@ -198,12 +198,10 @@ Item {
             hotspot.width / 2,
             hotspot.height / 2
         )
-        // Connectors stop at the marker edge;
-        // so neither the photo silhouette nor the line obscures the key symbol.
-        const endX = center.x + (SettingsController.isRc003Device || hotspot.buttonId === "ok" ? 0
-            : (leftSide ? -1 : 1) * hotspot.width / 2)
-        const endY = center.y - (!SettingsController.isRc003Device && hotspot.buttonId === "ok"
-            ? hotspot.height / 2 : 0)
+        // Both profiles end the connector on the marker center, so the line
+        // and the dot always meet on the key itself.
+        const endX = center.x
+        const endY = center.y
         const direction = leftSide ? 1 : -1
         // Both profiles use one uninterrupted cubic over the full endpoint
         // span, with horizontal tangents. Do not squeeze its bend into a gutter.
@@ -279,8 +277,8 @@ Item {
             "mic": qsTr("语音"), "right": qsTr("右"), "ok": qsTr("确定"),
             "down": qsTr("下"), "volume_up": "+", "volume_down": "−", "tv": "TV"
         }
-        const chromeNames = { "volume_mute": qsTr("静音"), "youtube": "YouTube",
-            "netflix": "Netflix", "input_source": qsTr("输入源") }
+        const chromeNames = { "volume_mute": qsTr("静音"), "youtube": "YT",
+            "netflix": "NF", "input_source": qsTr("信源") }
         return names[buttonId] || chromeNames[buttonId] || buttonId
     }
 
@@ -1651,7 +1649,7 @@ Item {
                             required property bool isSelected
 
                             visible: root.isLeftButton(buttonId)
-                            enabled: SettingsController.isRc003Device || buttonId !== "mic"
+                            enabled: true
                             exposeObjectNames: visible
                             tokens: root.tokens
                             cardId: buttonId
@@ -1756,7 +1754,10 @@ Item {
                             smooth: true
                             mipmap: true
                             // drop-shadow(0 14px 18px rgba(0,0,0,.16))
+                            // 谷歌照片底部是整块圆弧，贴图内投影会被裁成一条硬边灰带，
+                            // 所以只在小米那套实物图上保留投影。
                             layer.enabled: SettingsController.photoAvailable
+                                && SettingsController.isRc003Device
                                 && GraphicsInfo.shaderType === GraphicsInfo.RhiShader
                             layer.effect: MultiEffect {
                                 shadowEnabled: true
@@ -1890,7 +1891,7 @@ Item {
                             required property bool isSelected
 
                             visible: !root.isLeftButton(buttonId)
-                            enabled: SettingsController.isRc003Device || buttonId !== "mic"
+                            enabled: true
                             exposeObjectNames: visible
                             tokens: root.tokens
                             cardId: buttonId

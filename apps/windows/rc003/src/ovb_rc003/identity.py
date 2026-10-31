@@ -60,6 +60,10 @@ def matches_rc003_name(name: str) -> bool:
     return normalize_name(name) in device_profile.BLUETOOTH_NAMES
 
 
+def matches_chromecast_name(name: str) -> bool:
+    return normalize_name(name) in device_profile.CHROMECAST_BLUETOOTH_NAMES
+
+
 def qualifying_candidates(
     candidates: Sequence[RC003Candidate],
 ) -> list[RC003Candidate]:

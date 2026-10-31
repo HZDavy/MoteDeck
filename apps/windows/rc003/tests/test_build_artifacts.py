@@ -2162,6 +2162,7 @@ class BuildProvenanceScriptTests(unittest.TestCase):
                 repo_root / ".github" / "workflows" / "windows-rc003-ci.yml": "fixture\n",
                 repo_root / "README.md": "fixture\n",
                 repo_root / "Resources" / "RC003-remote-photo.png": b"png",
+                repo_root / "Resources" / "Chromecast-remote-photo.png": b"png",
                 repo_root / "ASSET_LICENSES.md": "fixture\n",
                 repo_root / "COPYRIGHT.md": "fixture\n",
                 repo_root / "LICENSE.md": "fixture\n",

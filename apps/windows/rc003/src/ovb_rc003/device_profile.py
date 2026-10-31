@@ -26,6 +26,9 @@ BLUETOOTH_NAMES = frozenset(
     }
 )
 
+# Google Chromecast Voice Remote advertises this exact name.
+CHROMECAST_BLUETOOTH_NAMES = frozenset({"chromecast remote"})
+
 HID_VENDOR_ID = 0x2717
 HID_PRODUCT_ID = 0x32B8
 

@@ -50,6 +50,10 @@ ColumnLayout {
             spacing: 4
             visible: children.length > 0
             Layout.preferredHeight: 20
+            // 嵌套的 RowLayout 在父 RowLayout 里默认会平分剩余宽度：没有 .link 时
+            // 它虽然宽 0，却仍占掉一半，细线只能画到中间。显式关掉后它只按内容
+            // 取宽，细线就能一直画到右边缘；有 .link 时细线正好停在它左边 8px。
+            Layout.fillWidth: false
         }
     }
 

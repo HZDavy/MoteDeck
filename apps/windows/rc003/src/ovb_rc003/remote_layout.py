@@ -103,18 +103,78 @@ BUTTON_HOTSPOTS_BY_ID: Dict[str, ButtonHotspot] = {
 BUTTON_ORDER: Tuple[str, ...] = tuple(hotspot.button_id for hotspot in BUTTON_HOTSPOTS)
 
 
+CHROMECAST_HOTSPOTS = (
+    ButtonHotspot("up", .50, .060, .22, .045),
+    ButtonHotspot("left", .20, .152, .17, .065),
+    ButtonHotspot("ok", .50, .152, .28, .095),
+    ButtonHotspot("right", .81, .152, .17, .065),
+    ButtonHotspot("down", .50, .250, .22, .045),
+    # 2026-10: every circle below is measured from the bundled 453×1443 photo
+    # (ring centroids), not guessed; the previous .26 column sat off-centre and
+    # made the markers and their connector lines miss the printed keys.
+    ButtonHotspot("back", .249, .358, .30, .100),
+    ButtonHotspot("mic", .738, .359, .30, .100, is_voice=True),
+    ButtonHotspot("home", .248, .486, .30, .100),
+    ButtonHotspot("volume_mute", .728, .486, .30, .100),
+    ButtonHotspot("youtube", .248, .613, .30, .100),
+    ButtonHotspot("netflix", .725, .613, .30, .100),
+    ButtonHotspot("power", .249, .733, .18, .057),
+    ButtonHotspot("input_source", .729, .734, .18, .057),
+    # Side rocker: the supplied front photo shows only its right edge.
+    ButtonHotspot("volume_up", .98, .208, .04, .035),
+    ButtonHotspot("volume_down", .98, .252, .04, .035),
+)
+CHROMECAST_DISPLAY_NAMES = {
+    **{
+        key: value
+        for key, value in BUTTON_DISPLAY_NAMES.items()
+        if key not in {"menu", "tv"}
+    },
+    "mic": "语音 / Assistant",
+    "volume_mute": "静音键",
+    "youtube": "YT",
+    "netflix": "NF",
+    "input_source": "信源",
+}
+CHROMECAST_REPORT_CODES = {
+    "power": 0x01, "up": 0x03, "down": 0x04, "left": 0x05, "right": 0x06,
+    "ok": 0x07, "volume_mute": 0x08, "home": 0x0A, "back": 0x0B,
+    "volume_up": 0x0C, "volume_down": 0x0D, "youtube": 0x0E,
+    "netflix": 0x0F, "input_source": 0x11,
+}
+
+
 def button_order(profile: str = "xiaomi-rc003") -> Tuple[str, ...]:
+    if profile == "chromecast-remote":
+        return tuple(item.button_id for item in CHROMECAST_HOTSPOTS)
     return BUTTON_ORDER
 
 
 def display_names(profile: str = "xiaomi-rc003") -> Dict[str, str]:
-    return BUTTON_DISPLAY_NAMES
+    return CHROMECAST_DISPLAY_NAMES if profile == "chromecast-remote" else BUTTON_DISPLAY_NAMES
 
 
 def default_actions(profile: str = "xiaomi-rc003") -> dict:
     from . import key_mapping
-    return key_mapping.default_button_actions()
+    defaults = key_mapping.default_button_actions()
+    if profile != "chromecast-remote":
+        return defaults
+    result = {
+        button: defaults.get(
+            button, key_mapping.ButtonAction(key_mapping.ActionKind.DISABLED)
+        )
+        for button in button_order(profile)
+    }
+    result["volume_mute"] = key_mapping.ButtonAction(
+        key_mapping.ActionKind.SYSTEM_VOLUME_MUTE
+    )
+    return result
 
 
 def hotspot_for(button_id: str, profile: str = "xiaomi-rc003") -> Optional[ButtonHotspot]:
+    if profile == "chromecast-remote":
+        return next(
+            (item for item in CHROMECAST_HOTSPOTS if item.button_id == button_id),
+            None,
+        )
     return BUTTON_HOTSPOTS_BY_ID.get(button_id)

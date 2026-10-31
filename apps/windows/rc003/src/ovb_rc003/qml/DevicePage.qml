@@ -597,7 +597,9 @@ Item {
                         id: heroPhotoImage
                         objectName: "deviceHeroPhotoImage"
                         y: 14
-                        height: 280
+                        // 谷歌实物图是 453×1443 的细长机身，按 280 高放大会盖满卡槽；
+                        // 只把谷歌档案放小，小米仍按设计稿的 280。
+                        height: SettingsController.isRc003Device ? 280 : 230
                         width: sourceSize.height > 0
                             ? height * sourceSize.width / sourceSize.height : height * 2 / 3
                         x: (parent.width - width) / 2

@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "id": "chromecast-remote",
+  "displayName": "谷歌 Chromecast 遥控器",
+  "vendor": "Google",
+  "model": "Chromecast Voice Remote",
+  "support": {
+    "status": "research",
+    "notes": "仅连接真实谷歌遥控器：语音走蓝牙 GATT 私有服务，按键从提权后的上报链路接收。"
+  },
+  "identity": {
+    "bluetoothNames": [
+      "Chromecast Remote"
+    ],
+    "hid": {
+      "vendorId": 6353,
+      "productId": 37968
+    }
+  },
+  "transports": [
+    {
+      "kind": "ble-gatt",
+      "role": "voice-input",
+      "status": "research",
+      "notes": "语音控制与音频走蓝牙 GATT 私有服务。"
+    },
+    {
+      "kind": "bluetooth-hid",
+      "role": "button-input",
+      "status": "research",
+      "notes": "按键报告不在标准 HID 通道内，提权后由 HID 输入钩子接收。"
+    }
+  ],
+  "capabilities": [
+    "voice-capture",
+    "press-to-talk",
+    "button-input",
+    "host-key-mapping"
+  ],
+  "protocols": [
+    {
+      "id": "chromecast-voice-gatt",
+      "status": "research",
+      "notes": "按住说话的音频解码后复用小米同一条语音输出管线。"
+    }
+  ],
+  "platforms": [
+    {
+      "platform": "windows",
+      "status": "research",
+      "notes": "只提供真实设备连接，不包含模拟会话。"
+    }
+  ],
+  "sources": [
+    "https://github.com/ZSTDJan/windows-remote-mic-app"
+  ]
+}
