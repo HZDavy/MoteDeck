@@ -1,7 +1,7 @@
 /* MoteDeck 官网：A 桌面原样。软件画面见 assets/app-ui.css */
 *{box-sizing:border-box;margin:0;padding:0}
 :root{
-  --bg:#f5f5f5;--panel:#fff;--inset:#f0f0f0;--line:#e6e6e6;--line2:#d4d4d4;
+  --bg:#eeedea;--panel:#fff;--inset:#f0f0f0;--line:#e6e6e6;--line2:#d4d4d4;
   --text:#141414;--text2:#525252;--text3:#6b6b6b;--ok:#16a34a;
   --sans:"Segoe UI Variable Text","Segoe UI","Microsoft YaHei UI","PingFang SC",sans-serif;
   --display:"Segoe UI Variable Display","Segoe UI","Microsoft YaHei UI","PingFang SC",sans-serif;
@@ -22,7 +22,7 @@ img,svg{display:block}
 
 /* 顶栏 */
 .top{position:fixed;inset:0 0 auto;z-index:50;height:64px;transition:background .25s,box-shadow .25s}
-.top.solid{background:rgba(245,245,245,.86);backdrop-filter:blur(16px);box-shadow:0 1px 0 var(--line)}
+.top.solid{background:rgba(238,237,234,.86);backdrop-filter:blur(16px);box-shadow:0 1px 0 var(--line)}
 .top .wrap{height:100%;display:flex;align-items:center;gap:32px;max-width:none}
 .brand{display:flex;align-items:center;gap:10px}
 .brand .g{width:26px;height:26px}
@@ -69,7 +69,7 @@ h1{font-family:var(--display);font-size:60px;line-height:1.2;font-weight:700;let
 .kv.pin .kv-stage{position:absolute;left:50%;top:50%;width:880px;height:660px;margin:-330px 0 0 -440px;padding:0;max-width:none}
 .kv.pin .frame{height:660px}
 .kv.pin .frame>.win{left:0;transform:none}
-.kv.pin::after{content:"";position:absolute;left:0;right:0;bottom:0;height:200px;background:linear-gradient(rgba(245,245,245,0),var(--bg) 80%);pointer-events:none;z-index:2;opacity:var(--fade,1)}
+.kv.pin::after{content:"";position:absolute;left:0;right:0;bottom:0;height:200px;background:linear-gradient(rgba(238,237,234,0),var(--bg) 80%);pointer-events:none;z-index:2;opacity:var(--fade,1)}
 .kv.pin .press{position:absolute;left:var(--pad);top:50%;transform:translateY(-50%);flex-direction:column;gap:28px;margin:0;opacity:0;width:300px;z-index:3}
 .kv.pin .press::before{content:"一颗按键，三种按法";display:block;font-family:var(--display);font-size:32px;line-height:1.3;font-weight:700;color:var(--text);letter-spacing:-.02em;margin-bottom:4px}
 .kv.pin .press li{opacity:.4;transition:opacity .3s,color .3s}
@@ -78,7 +78,7 @@ h1{font-family:var(--display);font-size:60px;line-height:1.2;font-weight:700;let
 .kv.pin .skip:hover{color:var(--text)}
 
 .kv-veil{display:none}
-.kv.pin .kv-veil{display:block;position:absolute;left:0;top:0;bottom:0;width:52%;background:linear-gradient(90deg,var(--bg) 78%,rgba(245,245,245,0));opacity:0;z-index:2;pointer-events:none}
+.kv.pin .kv-veil{display:block;position:absolute;left:0;top:0;bottom:0;width:52%;background:linear-gradient(90deg,var(--bg) 78%,rgba(238,237,234,0));opacity:0;z-index:2;pointer-events:none}
 .win .kc .c span.ov{font-weight:600;color:var(--text)}
 .win .app{position:relative}
 .win .app.live::after{content:"";position:absolute;right:-3px;bottom:-3px;width:12px;height:12px;border-radius:50%;background:var(--ok) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M3.2 6.2l1.8 1.8 3.8-4' fill='none' stroke='%23fff' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center/12px;box-shadow:0 0 0 2px var(--bg)}
