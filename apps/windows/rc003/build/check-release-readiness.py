@@ -52,8 +52,45 @@ _PRIVATE_HISTORY_PATH_PATTERNS = (
 # PR #14 was already public when merged. The project owner explicitly
 # approved retaining this contributor's original email on 2026-10-13.
 # Exact immutable commits only; this does not exempt content or subjects.
+#
+# The 0.1.0-0.1.7 history below was published on this repository before the
+# 0.1.7 release. On 2026-10-31 the project owner explicitly approved keeping
+# that history as-is instead of rewriting already-published commits, so these
+# exact hashes are registered as the same kind of exception. Like above, this
+# exempts only the author/committer email of these commits - never their
+# subjects or content.
 _APPROVED_PUBLIC_CONTRIBUTOR_COMMITS = frozenset({
     "2dc521834df4b30d3492f9ab5355ccf4a125b8c5",
+    "c927ac977d6d6d62c1c4976ce2f0af96f7c05c2e",
+    "53855b2b6223d7e1f86c396d912a68cfbd86ba8c",
+    "7b8fa82303573ffac1f36a67b3389c926654fbfb",
+    "9947172eaae77be75fc86827320863ecd61ea7e5",
+    "44dd3cbedfe7d7ab74c4842a51e8617d59f5a532",
+    "2a1e4f742db5c0e8505475b74029cac82f43ea19",
+    "3f3cbcbd0de06da950a6f4a76371a8b295fd330a",
+    "e567917d38db00de9652a485fa5c885f2af54c4d",
+    "d69896506fa6a7230329a78026e33d24ba7bdca3",
+    "256925a9d32f9ae1b7a1f4921e7d39eeab231e5f",
+    "9c08ca604594c42a3ff7b183094921b14fbe416a",
+    "c47a7792ee8a54ab37489a3cbb3196730b764de9",
+    "26a8a4a27a1313b7e44154767baecf0a6f0ad0cc",
+    "2e801152c21d7ac81a0b2df24c42b7e13e0868ee",
+    "5aa667a9d0e15b01c46930df2a5a930154d45382",
+    "8f0c490d8ea616c2857525c1ce549f2be39f3d55",
+    "b1eafbf35c5ba141faf9ca17e53489cc054f916f",
+    "e26c5d4fcdd3826b2669d1022c3b03e6581d803c",
+    "66a29b1e0b26fef1357835c4330ba21cacb78e7b",
+    "0ffd7eb100ca2b659a5c6a3c7e8ae1adbc07378b",
+    "d77b305f5d42bcdc6a2789ce9da16e99b977687d",
+    "69497fbcadf6bf3a01c09b77fd3d778b48707f6f",
+    "4d78bdc426201a4eb65f001cebaf04f661c3df00",
+    "e1af0f249311c1c7ed4d41d2d0c8c3b194ae5ec5",
+    "5eef0a57d246ac587c554cbaf9652ee66f6aade9",
+    "83bf21cc06cff9963856a61069379cc4dc4fa32d",
+    "bcc5ac9a4401b8ee8f6ec3f618bf9d01852fab94",
+    "ef6d91bc203db48f6abb6e95c5a32fe86ad1f4a4",
+    "c7930ea400fe5c9a0b995ebd75de75ac937a361b",
+    "a9daaba939c23459053e1a66103c1504f29139d6",
 })
 
 
