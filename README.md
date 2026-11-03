@@ -186,6 +186,23 @@ MoteDeck 由 Mote（远程、轻巧）和 Deck（控制面板）组成。
 <!-- ALL-CONTRIBUTORS-LIST:START - Do not remove or modify this section -->
 <!-- prettier-ignore-start -->
 <!-- markdownlint-disable -->
+<table>
+  <tbody>
+    <tr>
+      <td align="center" valign="top" width="12.5%"><a href="https://github.com/Ultraw"><img src="https://avatars.githubusercontent.com/u/25666456?v=4?s=80" width="80px;" alt="Ultraw"/><br /><sub><b>Ultraw</b></sub></a><br /><a href="https://github.com/HZDavy/MoteDeck/issues?q=author%3AUltraw" title="Bug reports">🐛</a></td>
+    </tr>
+  </tbody>
+  <tfoot>
+    <tr>
+      <td align="center" size="13px" colspan="8">
+        <img src="https://raw.githubusercontent.com/all-contributors/all-contributors-cli/1b8533af435da9854653492b1327a23a4dbd0a10/assets/logo-small.svg">
+          <a href="https://all-contributors.js.org/docs/en/bot/usage">Add your contributions</a>
+        </img>
+      </td>
+    </tr>
+  </tfoot>
+</table>
+
 <!-- markdownlint-restore -->
 <!-- prettier-ignore-end -->
 
