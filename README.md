@@ -22,9 +22,9 @@ MoteDeck 是一个开源的 Windows 小工具：把**小米蓝牙语音遥控器
 
 ## 新增：支持谷歌 Chromecast 遥控器
 
-<img src="./assets/readme/chromecast-support.svg" width="100%" alt="新增支持谷歌 Chromecast 遥控器：0.1.11 起已适配正式谷歌遥控器 A 款">
+<img src="./assets/readme/chromecast-support.svg" width="100%" alt="新增支持谷歌 Chromecast 遥控器：0.1.11 起已适配正式谷歌遥控器 9450">
 
-0.1.11 起已适配正式谷歌遥控器 A 款（Chromecast）：设备页可以扫描、添加并选择它，按键页与设备页会切换成谷歌遥控器的实物图和键位；语音按住话筒键录音、松手发送，「按键检测」也不会再误触发语音动作。
+0.1.11 起已适配正式谷歌遥控器 9450（Chromecast）：设备页可以扫描、添加并选择它，按键页与设备页会切换成谷歌遥控器的实物图和键位；语音按住话筒键录音、松手发送，「按键检测」也不会再误触发语音动作。
 
 ---
 
