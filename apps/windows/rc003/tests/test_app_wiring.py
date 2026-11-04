@@ -5845,7 +5845,7 @@ class InputLifecycleTests(_AppWiringTestCase):
 
         self.assertEqual(calls, ["physicalizer", "raw_input", "hid_tap"])
 
-    def test_chromecast_starts_voice_hook_and_raw_input_without_private_tap(self):
+    def test_chromecast_uses_child_receiver_only(self):
         calls = []
         self.app._remote_profile = remote_selection.CHROMECAST_PROFILE
         with mock.patch.object(
@@ -5863,7 +5863,7 @@ class InputLifecycleTests(_AppWiringTestCase):
         ):
             self.app._start_input_channels()
 
-        self.assertEqual(calls, ["physicalizer", "raw_input"])
+        self.assertEqual(calls, [])
 
     def test_unavailable_voice_physicalizer_degrades_without_losing_owner_state(self):
         timers = []

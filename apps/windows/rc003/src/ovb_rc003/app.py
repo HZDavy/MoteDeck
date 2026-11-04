@@ -1021,20 +1021,15 @@ class RC003App:
 
         with self._voice_shortcut.lock:
             self._accept_input_events = True
-        # Every profile that can hold a recorded voice shortcut needs the
-        # process-wide modifier hook.  In particular, Chromecast owns its HID
-        # and ATVV input in a child receiver, but its RAlt shortcut is still
-        # emitted by this desktop process and must be tracked/physicalized
-        # here.
+        if self._remote_profile == remote_selection.CHROMECAST_PROFILE:
+            # 9450 的按键与语音都由 chromecast_runtime 子进程负责。主进程
+            # 再开 Raw Input、私有 tap 或语音键物理钩子都会抢占同一设备的
+            # HID/GATT 连接，导致子进程收不到任何按键通知。
+            return
         with self._voice_key_physicalizer_lifecycle_lock:
             self._voice_key_physicalizer_stopping = False
         self._start_voice_key_physicalizer()
         if self._remote_profile in remote_selection.GOOGLE_REMOTE_PROFILES:
-            if self._remote_profile == remote_selection.CHROMECAST_PROFILE:
-                # 9450 的按键与语音都由 chromecast_runtime 子进程负责。主进程
-                # 再开 Raw Input 或私有 tap 会抢占同一设备的 HID/GATT 连接，
-                # 导致子进程收不到任何按键通知。
-                return
             # 9451 是真实键盘集合，由主进程通过 Raw Input 接收。
             with self._raw_input_lifecycle_lock:
                 self._raw_input_stopping = False
@@ -1745,14 +1740,7 @@ class RC003App:
                 )
             )
         try:
-            listener.start(
-                device_path,
-                family_matcher=(
-                    hid_identity.device_path_matches_google
-                    if google_remote
-                    else None
-                ),
-            )
+            listener.start(device_path)
         except raw_input_windows.RawInputUnavailableError as exc:
             if listener.is_running:
                 self._set_raw_listener_state("failed_running")
