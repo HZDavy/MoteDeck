@@ -38,8 +38,12 @@ RC001_BLUETOOTH_NAMES = frozenset(
     }
 )
 
-# Google Chromecast Voice Remote advertises this exact name.
-CHROMECAST_BLUETOOTH_NAMES = frozenset({"chromecast remote"})
+# Google Chromecast / Google TV Voice Remote variants advertise these names.
+# Windows exposes both advertised names.
+CHROMECAST_BLUETOOTH_NAMES = frozenset({
+    "chromecast remote",
+    "google tv remote",
+})
 
 HID_VENDOR_ID = 0x2717
 HID_PRODUCT_ID = 0x32B8
@@ -69,6 +73,28 @@ BUTTON_USAGE_IDS = {
     0x007F: "volume_mute",
     0x0080: "volume_up",
     0x0081: "volume_down",
+}
+
+# Google TV Remote (VID 0x18D1 / PID 0x9451) exposes its ordinary buttons as
+# Consumer-page usages in report ID 2.  Windows exposes the report as three
+# bytes: ``02 <button-code> 00``; the decoder in hid_identity translates that
+# compact code into the usages below.  Keep this table separate from the
+# Xiaomi keyboard-page table so the UI's displayed Xiaomi usage values do not
+# change when the Chromecast profile is selected.
+CHROMECAST_CONSUMER_USAGE_IDS = {
+    0x0042: "up",            # Menu Up
+    0x0043: "down",          # Menu Down
+    0x0044: "left",          # Menu Left
+    0x0045: "right",         # Menu Right
+    0x0041: "ok",            # Menu Pick
+    0x0224: "back",          # AC Back
+    0x0223: "home",          # AC Home
+    0x0221: "mic",           # AC Search / Assistant
+    0x00E2: "volume_mute",   # Mute
+    0x0077: "youtube",
+    0x0078: "netflix",
+    0x0030: "power",
+    0x0186: "input_source",  # Google TV's programmable/Star key
 }
 
 # All logical buttons this client knows about.

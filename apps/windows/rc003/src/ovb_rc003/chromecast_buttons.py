@@ -12,7 +12,7 @@ import math
 import struct
 import uuid
 
-from . import remote_layout, remote_selection
+from . import device_profile, hid_identity, remote_layout, remote_selection
 
 _KEYS = {value: key for key, value in remote_layout.CHROMECAST_REPORT_CODES.items()}
 _PROOF_SECONDS = 15.0
@@ -176,9 +176,12 @@ class ButtonEdge:
 class HidButtonReceiver:
     """Selected-device HID reports are the sole ordinary-button source."""
 
-    def __init__(self, entity: str, generation: str):
+    def __init__(self, entity: str, generation: str, product_id: str):
         self.entity, self.generation = entity, generation
-        self.button = None
+        if product_id not in {"9450", "9451"}:
+            raise ReceiveError("hid_source_unconfirmed")
+        self.product_id = product_id
+        self.buttons = {"consumer": frozenset(), "keyboard": frozenset(), "legacy": frozenset()}
         self.ready = False
         self.stopped = False
         self.reason = "stopped"
@@ -197,30 +200,49 @@ class HidButtonReceiver:
         if now < self.last_time:
             return self.stop(self.last_time, "source_time_reversed")
         self.last_time = now
-        if not isinstance(value, bytes) or len(value) != 8 or any(value[1:]) or (value[0] and value[0] not in _KEYS):
+        try:
+            if self.product_id == "9451":
+                family, usages = hid_identity.decode_google_tv_9451_report(value)
+            elif isinstance(value, bytes) and len(value) == 8 and not any(value[1:]) and (value[0] == 0 or value[0] in _KEYS):
+                family = "legacy"
+                usages = frozenset({value[0]}) if value[0] else frozenset()
+            else:
+                family = "consumer"
+                usages = hid_identity.decode_google_tv_9450_report(value)
+        except (TypeError, ValueError):
             self.stop_details.update(length=len(value) if isinstance(value, bytes) else 0,
                                      report_code=value[0] if value else -1,
                                      tail_nonzero=bool(any(value[1:])) if isinstance(value, bytes) else False)
             return self.stop(now, "unknown_key_report")
-        button = _KEYS.get(value[0])
-        if button == self.button:
-            return []
+
+        if family == "legacy":
+            current = frozenset({_KEYS[next(iter(usages))]}) if usages else frozenset()
+        else:
+            current = frozenset(
+                "volume_up" if usage == 0x0080 else
+                "volume_down" if usage == 0x0081 else
+                "volume_up" if usage == 0x00E9 else
+                "volume_down" if usage == 0x00EA else
+                device_profile.CHROMECAST_CONSUMER_USAGE_IDS[usage]
+                for usage in usages
+            )
+        previous = self.buttons[family]
         edges = []
-        if self.button:
-            edges.append(ButtonEdge(self.entity, self.generation, now, self.button,
-                                    "cancel" if button else "up"))
-        self.button = button
-        if button:
+        for button in sorted(previous - current):
+            action = "cancel" if current else "up"
+            edges.append(ButtonEdge(self.entity, self.generation, now, button, action))
+        for button in sorted(current - previous):
             edges.append(ButtonEdge(self.entity, self.generation, now, button, "down"))
+        self.buttons[family] = current
         return edges
 
     def stop(self, now: float, reason="stopped"):
         if self.stopped:
             return []
         now = max(self.last_time, _time(now))
-        edges = ([ButtonEdge(self.entity, self.generation, now, self.button, "cancel")]
-                 if self.button else [])
-        self.button = None
+        edges = [ButtonEdge(self.entity, self.generation, now, button, "cancel")
+                 for held in self.buttons.values() for button in held]
+        self.buttons = {family: frozenset() for family in self.buttons}
         self.ready = False
         self.stopped = True
         self.reason = reason

@@ -16,6 +16,7 @@ class DeviceCatalogTests(unittest.TestCase):
             [
                 "chromecast-remote",
                 device_catalog.DJI_MIC_2_ID,
+                "google-tv-remote",
                 device_catalog.RC001_ID,
                 device_catalog.RC003_ID,
             ],
@@ -134,6 +135,7 @@ class DeviceCatalogTests(unittest.TestCase):
                     [
                         "chromecast-remote",
                         device_catalog.DJI_MIC_2_ID,
+                        "google-tv-remote",
                         device_catalog.RC001_ID,
                         device_catalog.RC003_ID,
                     ],

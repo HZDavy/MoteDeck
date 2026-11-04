@@ -677,9 +677,13 @@ class RawInputButtonListener:
         self._stop_event = threading.Event()
         self._hwnd = None
         self._active_hid_usages: FrozenSet[int] = frozenset()
+        self._active_hid_usages_by_report: dict[tuple[int, int], FrozenSet[int]] = {}
         self._active_hid_buttons: FrozenSet[str] = frozenset()
         self._active_keyboard_buttons: FrozenSet[str] = frozenset()
         self._active_hid_usage_buttons: dict[int, Optional[str]] = {}
+        self._active_hid_usage_buttons_by_report: dict[
+            tuple[int, int], dict[int, Optional[str]]
+        ] = {}
         self._active_keyboard_signature_buttons: dict[str, Optional[str]] = {}
         self._logical_button_sources: dict[str, str] = {}
         self._logical_button_windows_buttons: dict[str, Optional[str]] = {}
@@ -693,6 +697,7 @@ class RawInputButtonListener:
         self._start_error: Optional[BaseException] = None
         self._device_path: Optional[str] = None
         self._normalized_device_path: Optional[str] = None
+        self._normalized_device_paths = frozenset()
         self._class_name: Optional[str] = None
         self._raw_input_header_healthy = True
 
@@ -802,9 +807,17 @@ class RawInputButtonListener:
         if _run_target is None:
             _require_windows()
         self._device_path = device_path
-        self._normalized_device_path = (
-            hid_identity.normalize_device_path(device_path) if device_path is not None else None
+        selected_paths = (
+            tuple(device_path)
+            if isinstance(device_path, (list, tuple, set, frozenset))
+            else (() if device_path is None else (device_path,))
         )
+        self._normalized_device_paths = frozenset(
+            hid_identity.normalize_device_path(path)
+            for path in selected_paths
+            if path
+        )
+        self._normalized_device_path = next(iter(self._normalized_device_paths), None)
         self._selected_device_handles.clear()
         self._raw_input_header_healthy = True
         self._class_name = f"RemoteMicRC003RawInputWindow-{uuid.uuid4().hex}"
@@ -962,9 +975,11 @@ class RawInputButtonListener:
             self._logical_button_windows_buttons
         )
         self._active_hid_usages = frozenset()
+        self._active_hid_usages_by_report.clear()
         self._active_hid_buttons = frozenset()
         self._active_keyboard_buttons = frozenset()
         self._active_hid_usage_buttons.clear()
+        self._active_hid_usage_buttons_by_report.clear()
         self._active_keyboard_signature_buttons.clear()
         self._logical_button_sources.clear()
         self._logical_button_windows_buttons.clear()
@@ -1469,8 +1484,14 @@ class RawInputButtonListener:
                 )
             return
         normalized_device_path = hid_identity.normalize_device_path(device_path)
-        selected_device = (self._normalized_device_path is not None
-                           and normalized_device_path == self._normalized_device_path)
+        selected_device = (
+            normalized_device_path in self._normalized_device_paths
+            or (
+                not self._normalized_device_paths
+                and self._normalized_device_path is not None
+                and normalized_device_path == self._normalized_device_path
+            )
+        )
         rc003_device = hid_identity.device_path_matches_rc003(device_path)
         physical_keyboard = (
             packet_type == RIM_TYPEKEYBOARD
@@ -1618,7 +1639,12 @@ class RawInputButtonListener:
             "<HHHHII", body, 0
         )
         default_button = KEYBOARD_VK_TO_BUTTON.get(vkey)
-        if default_button is None and vkey == 0xFF:
+        # Windows does not use one stable VKey for the RC003's keyboard-page
+        # media usages. Depending on the HID stack path it can report 0xFF,
+        # 0x00, or another untranslated value while MakeCode still contains
+        # the physical usage. Prefer a known VKey, but always fall back to the
+        # observed MakeCode when the VKey has no mapping.
+        if default_button is None:
             default_button = KEYBOARD_MAKECODE_TO_BUTTON.get(_make_code)
         WM_KEYUP = 0x0101
         WM_SYSKEYUP = 0x0105
@@ -1693,22 +1719,29 @@ class RawInputButtonListener:
                 )
                 self._notify_input_corruption("hid_report_invalid")
                 continue
-            pressed, released = hid_identity.diff_usages(
-                self._active_hid_usages, current
+            report_key = (len(report), report[0] if report else -1)
+            previous_report_usages = self._active_hid_usages_by_report.get(
+                report_key, frozenset()
             )
+            pressed, released = hid_identity.diff_usages(previous_report_usages, current)
             previous_hid_buttons = self._active_hid_buttons
-            previous_usage_buttons = dict(self._active_hid_usage_buttons)
+            report_usage_buttons = {
+                usage: self._active_hid_usage_buttons_by_report.get(report_key, {}).get(usage)
+                for usage in previous_report_usages
+            }
             current_usage_buttons = {
                 usage: (
-                    previous_usage_buttons[usage]
-                    if usage in previous_usage_buttons
+                    report_usage_buttons[usage]
+                    if usage in report_usage_buttons and report_usage_buttons[usage] is not None
                     else self._button_for_hid_usage(usage, report, device_path)
                 )
                 for usage in current
             }
+            self._active_hid_usage_buttons_by_report[report_key] = current_usage_buttons
             current_hid_buttons = frozenset(
                 button
-                for button in current_usage_buttons.values()
+                for family_buttons in self._active_hid_usage_buttons_by_report.values()
+                for button in family_buttons.values()
                 if button
             )
             previous_logical_buttons = (
@@ -1717,11 +1750,20 @@ class RawInputButtonListener:
             current_logical_buttons = (
                 self._active_keyboard_buttons | current_hid_buttons
             )
-            self._active_hid_usages = current
+            self._active_hid_usages_by_report[report_key] = current
+            self._active_hid_usages = frozenset(
+                usage
+                for family_usages in self._active_hid_usages_by_report.values()
+                for usage in family_usages
+            )
             self._active_hid_buttons = current_hid_buttons
-            self._active_hid_usage_buttons = current_usage_buttons
+            self._active_hid_usage_buttons = {
+                usage: button
+                for family_buttons in self._active_hid_usage_buttons_by_report.values()
+                for usage, button in family_buttons.items()
+            }
             for usage in sorted(released):
-                button = previous_usage_buttons.get(usage)
+                button = report_usage_buttons.get(usage)
                 self._emit_raw_event(self._hid_edge_event(
                     usage,
                     False,

@@ -3949,6 +3949,41 @@ class SettingsControllerTests(unittest.TestCase):
         request_exit.assert_not_called()
         self.assertIn("正在语音输入", controller.errorMessage)
 
+    def test_explicit_restart_clears_a_remembered_supplement_failure(self):
+        controller, _ = self._make_controller()
+        controller._set_bridge_running(True)
+        frida_compat.record_hid_tap_degraded_state(
+            controller._config_root,
+            frida_compat.HidTapState.AUTHORIZATION_FAILED.value,
+        )
+
+        with mock.patch.object(controller, "_start_background_task"):
+            controller.restartBridge()
+
+        self.assertEqual(
+            frida_compat.read_hid_tap_degraded_state(controller._config_root),
+            "",
+        )
+
+    def test_supplement_switch_off_is_persisted_and_on_clears_it(self):
+        controller, _ = self._make_controller()
+        controller._set_bridge_running(False)
+        self.assertTrue(controller.hidSupplementEnabled)
+
+        controller.setHidSupplementEnabled(False)
+        self.assertFalse(controller.hidSupplementEnabled)
+        self.assertEqual(
+            frida_compat.read_hid_tap_degraded_state(controller._config_root),
+            frida_compat.HID_TAP_USER_DISABLED_STATE,
+        )
+
+        controller.setHidSupplementEnabled(True)
+        self.assertTrue(controller.hidSupplementEnabled)
+        self.assertEqual(
+            frida_compat.read_hid_tap_degraded_state(controller._config_root),
+            "",
+        )
+
     def test_legacy_handoff_still_stops_when_stale_status_reports_active_voice(self):
         self._bridge_status_patch.stop()
         self._bridge_status_patch = mock.patch.object(
@@ -6271,8 +6306,26 @@ class SettingsControllerTests(unittest.TestCase):
         self.assertEqual(raw_instances[0].stop_calls, 1)
         self.assertEqual(tap_instances[0].stop_calls, 1)
 
+    def test_google_detection_without_bridge_does_not_start_rc003_channels(self):
+        controller, _ = self._make_controller(selected_remote=True)
+        for profile in ("chromecast-remote", "google-tv-remote"):
+            with self.subTest(profile=profile):
+                controller._config["remote_selection"]["devices"][0]["profile"] = profile
+                with mock.patch.object(qt_settings_app.raw_input_windows, "RawInputButtonListener") as listener, \
+                        mock.patch.object(qt_settings_app.frida_compat, "RC003HidReportTap") as tap:
+                    result = controller._start_key_detection_worker(
+                        threading.Event(), bridge_running=False, physical_bindings={}
+                    )
+                self.assertFalse(result.ok)
+                self.assertIn("先启动谷歌遥控器服务", result.message)
+                listener.assert_not_called()
+                tap.assert_not_called()
+
     def test_running_bridge_detection_returns_button_without_starting_local_hid(self):
         controller, model = self._make_controller(selected_remote=True)
+        controller._config["remote_selection"]["devices"][0]["profile"] = (
+            "google-tv-remote"
+        )
         self._bridge_status_patch.stop()
         self._bridge_status_patch = mock.patch.object(
             qt_settings_app.single_instance,

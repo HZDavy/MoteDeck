@@ -571,13 +571,24 @@ class KeyboardBodyTests(unittest.TestCase):
         self.assertEqual(rec.events, [("power", True)])
 
     def test_untranslated_remote_scan_codes_map_back_and_volume(self):
-        expected = ((0x6A, "back"), (0x30, "volume_up"), (0x2E, "volume_down"))
+        expected = (
+            (0x6A, "back"),
+            (0x30, "volume_up"),
+            (0x2E, "volume_down"),
+        )
         for make_code, button in expected:
             rec = RecordingListener()
             rec.listener._handle_keyboard_body(
                 struct.pack("<HHHHII", make_code, 0x0002, 0, 0xFF, WM_KEYDOWN, 0)
             )
             self.assertEqual(rec.events, [(button, True)], msg=hex(make_code))
+
+    def test_hid_usage_is_not_guessed_as_a_windows_make_code(self):
+        rec = RecordingListener()
+        rec.listener._handle_keyboard_body(
+            struct.pack("<HHHHII", 0x80, 0x0002, 0, 0x00, WM_KEYDOWN, 0)
+        )
+        self.assertEqual(rec.events, [])
 
     def test_too_short_body_is_ignored_without_raising(self):
         rec = RecordingListener()
@@ -609,6 +620,20 @@ class KeyboardBodyTests(unittest.TestCase):
 
 
 class HidBodyTests(unittest.TestCase):
+    def test_google_keyboard_and_consumer_reports_keep_independent_held_state(self):
+        rec = RecordingListener()
+        consumer_ok = bytes.fromhex("02 05 00")
+        volume_collection_snapshot = bytes.fromhex("01 01 00 00 00 00 00")
+        consumer_idle = bytes.fromhex("02 00 00")
+
+        rec.listener._handle_hid_body(_rawhid_body([consumer_ok]))
+        self.assertEqual(rec.events, [("ok", True)])
+        rec.listener._handle_hid_body(_rawhid_body([volume_collection_snapshot]))
+        rec.listener._handle_hid_body(_rawhid_body([consumer_idle]))
+
+        self.assertEqual(rec.events, [("ok", True), ("ok", False)])
+        self.assertEqual(rec.listener._active_hid_usages, frozenset({1}))
+
     def test_single_report_press_emits_event(self):
         rec = RecordingListener()
         rec.listener._handle_hid_body(_rawhid_body([_hid_report([0x0028])]))

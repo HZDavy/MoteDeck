@@ -891,7 +891,13 @@ def _load_qt_classes() -> dict:
             if role == self.DisplayNameRole:
                 return remote_layout.display_names(self._profile)[button_id]
             if role == self.HidUsageRole:
-                if self._profile == remote_selection.CHROMECAST_PROFILE:
+                if self._profile == remote_selection.GOOGLE_TV_PROFILE:
+                    if button_id in {"volume_up", "volume_down"}:
+                        return "Google TV Remote · 侧边音量键"
+                    if button_id == "mic":
+                        return "Google TV Remote · 语音控制"
+                    return "Google TV Remote · 前面板按键"
+                if self._profile in remote_selection.GOOGLE_REMOTE_PROFILES:
                     code = remote_layout.CHROMECAST_REPORT_CODES.get(button_id)
                     return (
                         f"普通报告 0x{code:02X}"
@@ -2260,13 +2266,13 @@ def _load_qt_classes() -> dict:
             choices = []
             for row in rows:
                 key, profile = row["key"], row["profile"]
-                conflict = key in saved and saved[key] != profile
+                conflict = key in saved and not remote_selection.profiles_compatible(saved[key], profile)
                 ready = self._remote_scan_valid and key in present and not conflict
                 note = ("（设备信息不一致）" if conflict else
                         "（待重新读取）" if not self._remote_scan_valid else
                         "（本次未找到）" if key not in present else "")
                 choices.append(dict(key=key, profile=profile,
-                    label=remote_selection.label(key, saved.get(key, profile), peers) + note,
+                    label=remote_selection.label(key, profile if not conflict else saved[key], peers) + note,
                     canUse=ready, isActive=key == active))
             return choices
 
@@ -2323,6 +2329,7 @@ def _load_qt_classes() -> dict:
                 path = config.config_path(self._config_root)
                 updated = config.load_config(path)
                 changed = remote_selection.active_key(updated) != selection["active"]
+                profile_changed = remote_selection.active_profile(updated) != remote_selection.profile_for_key(selection, selection["active"])
                 if changed:
                     saved, saved_bindings = config.switch_remote_settings(
                         path, config.key_bindings_path(self._config_root), selection,
@@ -2338,6 +2345,10 @@ def _load_qt_classes() -> dict:
                 self._remote_feedback("设备选择保存失败，原选择已保留，请重试。")
                 return False
             self._config = saved
+            if profile_changed and not changed:
+                self._load_bindings_into_model()
+                self.selectedDeviceIndexChanged.emit()
+                self.selectedDeviceChanged.emit()
             if changed:
                 self._bindings = saved_bindings
                 self._removed_voice_bindings = config.normalize_voice_product_boundary(saved, saved_bindings)
@@ -2377,7 +2388,7 @@ def _load_qt_classes() -> dict:
             except remote_selection.SelectionError as exc:
                 self._remote_feedback(str(exc))
                 return
-            if key == self.activeRemoteKey and not self._remote_save_uncertain:
+            if updated == self._remote_selection() and not self._remote_save_uncertain:
                 self._remote_feedback("当前已在使用这台设备。")
                 return
             self._change_active_remote(updated, allow_legacy_binding=legacy_binding)
@@ -3533,9 +3544,19 @@ def _load_qt_classes() -> dict:
         ) -> _InputStartResult:
             from . import remote_selection
             selected_key = remote_selection.active_key(self._config)
+            bridge_profile = remote_selection.active_profile(self._config)
             if not selected_key:
                 return _InputStartResult("key_detection", False, "请先在设备页选择要使用的遥控器。")
-            if bridge_running:
+            if bridge_profile in remote_selection.GOOGLE_REMOTE_PROFILES and not bridge_running:
+                # The Google receiver owns its private report and volume paths.
+                # A local RC003 tap cannot stand in for that receiver.
+                return _InputStartResult("key_detection", False, "请先启动谷歌遥控器服务，再检测按键。")
+            # When the bridge is already running, request detection from its
+            # existing input owner for every profile. Registering another
+            # Raw Input window in this process can replace the bridge window
+            # for a device class and leave the service without input afterward.
+            use_bridge_detection = bridge_running
+            if use_bridge_detection:
                 try:
                     request = key_detection_bridge.request_detection(
                         self._config_root
@@ -3565,9 +3586,7 @@ def _load_qt_classes() -> dict:
             failures: List[str] = []
             try:
                 paths = raw_input_windows.enumerate_matching_device_paths()
-                device_path = (
-                    remote_selection.selected_raw_path(paths, selected_key)
-                )
+                device_path = remote_selection.selected_raw_path(paths, selected_key)
                 listener = raw_input_windows.RawInputButtonListener(
                     lambda *_: None,
                     self._on_raw_input_event,
@@ -7679,7 +7698,88 @@ def _load_qt_classes() -> dict:
 
         @Slot()
         def restartBridge(self) -> None:
-            self._begin_bridge_restart(automatic=False)
+            self._begin_bridge_restart(
+                automatic=False, retry_hid_tap=True
+            )
+
+        @Slot(bool)
+        def setHidSupplementEnabled(self, enabled: bool) -> None:
+            """开关就是用户自己的选择：关闭时持久化，打开时清掉并重试。"""
+
+            if self.configurationReadOnly:
+                return
+            try:
+                if enabled:
+                    frida_compat.clear_hid_tap_degraded_state(
+                        self._config_root
+                    )
+                else:
+                    frida_compat.record_hid_tap_degraded_state(
+                        self._config_root,
+                        frida_compat.HID_TAP_USER_DISABLED_STATE,
+                    )
+            except OSError:
+                self._set_error_message(
+                    "按键组件状态未能保存，请重试。",
+                    self._DEVICE_PAGE_INDEX,
+                )
+                return
+            self.bridgeInputStateChanged.emit()
+            if self._bridge_running:
+                self._begin_bridge_restart(automatic=False)
+
+        hidSupplementEnabled = Property(
+            bool,
+            lambda self: not frida_compat.read_hid_tap_degraded_state(
+                self._config_root
+            ),
+            notify=bridgeInputStateChanged,
+        )
+
+        def _get_is_google_tv_remote(self) -> bool:
+            from . import remote_selection
+
+            return self.activeRemoteProfile == remote_selection.GOOGLE_TV_PROFILE
+
+        isGoogleTvRemote = Property(
+            bool,
+            _get_is_google_tv_remote,
+            notify=remoteSelectionChanged,
+        )
+
+        @Slot(bool)
+        def setGoogleTvVolumeEnabled(self, enabled: bool) -> None:
+            """Google TV 遥控器只有侧边音量键走 Frida；关闭时只影响这一项。"""
+
+            if self.configurationReadOnly:
+                return
+            try:
+                if enabled:
+                    frida_compat.clear_google_tv_volume_degraded_state(
+                        self._config_root
+                    )
+                else:
+                    frida_compat.record_google_tv_volume_degraded_state(
+                        self._config_root,
+                        frida_compat.HID_TAP_USER_DISABLED_STATE,
+                    )
+            except OSError:
+                self._set_error_message(
+                    "侧面音量键状态未能保存，请重试。",
+                    self._DEVICE_PAGE_INDEX,
+                )
+                return
+            self.bridgeInputStateChanged.emit()
+            if self._bridge_running:
+                self._begin_bridge_restart(automatic=False)
+
+        googleTvVolumeEnabled = Property(
+            bool,
+            lambda self: not frida_compat.read_google_tv_volume_degraded_state(
+                self._config_root
+            ),
+            notify=bridgeInputStateChanged,
+        )
 
         @Slot()
         def reconnectBridgeNow(self) -> None:
@@ -7744,6 +7844,7 @@ def _load_qt_classes() -> dict:
             *,
             automatic: bool,
             allow_active_voice: bool = False,
+            retry_hid_tap: bool = False,
         ) -> None:
             if self.configurationReadOnly:
                 return
@@ -7778,6 +7879,18 @@ def _load_qt_classes() -> dict:
             self._set_bridge_input_states(None)
             self._bridge_status_missing_since = None
             self._set_error_message("")
+            if retry_hid_tap:
+                # An explicit retry (重新授权/重启服务, or after enabling the
+                # privileged key component): drop the remembered supplement
+                # failure so the tap runs again.
+                try:
+                    frida_compat.clear_hid_tap_degraded_state(
+                        self._config_root
+                    )
+                except OSError:
+                    logger.warning(
+                        "could not clear the HID tap degradation", exc_info=True
+                    )
             self._set_launch_status(
                 "检测到旧版或按键通道异常；正在正常停止服务并启动当前版本…"
                 if automatic
