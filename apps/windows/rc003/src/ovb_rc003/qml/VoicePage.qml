@@ -909,7 +909,7 @@ Item {
                 kind: noteKind
                 Layout.fillWidth: true
                 wrapMode: Text.WordWrap
-                text: qsTr("遥控器麦克风：开始说话时按下所录快捷键，结束时松开。使用 VB-CABLE 时，输出端点选 CABLE Input，输入法麦克风选 CABLE Output。同时使用多个输入法时，快捷键不要重复。")
+                text: qsTr("同时使用多个输入法时，快捷键不要有任何重复。")
             }
 
             RowLayout {

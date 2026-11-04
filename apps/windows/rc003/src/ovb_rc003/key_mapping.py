@@ -107,7 +107,6 @@ class ActionKind(str, Enum):
     VOICE_MODE_CYCLE = "voice_mode_cycle"
     OPEN_REMOTE_MIC = "open_remote_mic"
     OPEN_CODEX = "open_codex"
-    OPEN_WORKBUDDY = "open_workbuddy"
     OPEN_CLAUDE = "open_claude"
     OPEN_CMUX = "open_cmux"
     OPEN_WECHAT = "open_wechat"
@@ -306,7 +305,6 @@ APPLICATION_ACTIONS = frozenset(
     {
         ActionKind.OPEN_REMOTE_MIC,
         ActionKind.OPEN_CODEX,
-        ActionKind.OPEN_WORKBUDDY,
         ActionKind.OPEN_CLAUDE,
         ActionKind.OPEN_CMUX,
         ActionKind.OPEN_WECHAT,

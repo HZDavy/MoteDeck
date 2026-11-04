@@ -689,8 +689,6 @@ class SettingsControllerTests(unittest.TestCase):
             self.assertTrue(option["label"])
             self.assertIsInstance(option["reason"], str)
         self.assertIsInstance(controller.interceptionAvailable, bool)
-        self.assertIsInstance(controller.interceptionInstalled, bool)
-        self.assertIsInstance(controller.interceptionPendingReboot, bool)
         self.assertIsInstance(controller.interceptionUnavailableHint, str)
 
         controller.setButtonInjectMode("power", "interception")
@@ -2488,18 +2486,12 @@ class SettingsControllerTests(unittest.TestCase):
             qt_settings_app.action_executor,
             "resolve_application_command",
             side_effect=lambda action: ("C:/Apps/Claude.exe",)
-            if action.kind in (key_mapping.ActionKind.OPEN_CLAUDE,
-                               key_mapping.ActionKind.OPEN_CODEX,
-                               key_mapping.ActionKind.OPEN_WORKBUDDY) else None,
+            if action.kind == key_mapping.ActionKind.OPEN_CLAUDE else None,
         ):
             primary = controller.primaryActionOptionsFor("up")
             secondary = controller.secondaryActionOptionsFor("up")
         self.assertIn("打开 Claude", primary)
         self.assertIn("打开 Claude", secondary)
-        self.assertIn("打开 Codex", primary)
-        self.assertIn("打开 WorkBuddy", primary)
-        self.assertIn("打开 Codex", secondary)
-        self.assertIn("打开 WorkBuddy", secondary)
         self.assertNotIn("打开 cmux 终端", primary)
         self.assertNotIn("打开微信", secondary)
         self.assertNotIn("滚轮向上", primary)
@@ -3956,41 +3948,6 @@ class SettingsControllerTests(unittest.TestCase):
 
         request_exit.assert_not_called()
         self.assertIn("正在语音输入", controller.errorMessage)
-
-    def test_explicit_restart_clears_a_remembered_supplement_failure(self):
-        controller, _ = self._make_controller()
-        controller._set_bridge_running(True)
-        frida_compat.record_hid_tap_degraded_state(
-            controller._config_root,
-            frida_compat.HidTapState.AUTHORIZATION_FAILED.value,
-        )
-
-        with mock.patch.object(controller, "_start_background_task"):
-            controller.restartBridge()
-
-        self.assertEqual(
-            frida_compat.read_hid_tap_degraded_state(controller._config_root),
-            "",
-        )
-
-    def test_supplement_switch_off_is_persisted_and_on_clears_it(self):
-        controller, _ = self._make_controller()
-        controller._set_bridge_running(False)
-        self.assertTrue(controller.hidSupplementEnabled)
-
-        controller.setHidSupplementEnabled(False)
-        self.assertFalse(controller.hidSupplementEnabled)
-        self.assertEqual(
-            frida_compat.read_hid_tap_degraded_state(controller._config_root),
-            frida_compat.HID_TAP_USER_DISABLED_STATE,
-        )
-
-        controller.setHidSupplementEnabled(True)
-        self.assertTrue(controller.hidSupplementEnabled)
-        self.assertEqual(
-            frida_compat.read_hid_tap_degraded_state(controller._config_root),
-            "",
-        )
 
     def test_legacy_handoff_still_stops_when_stale_status_reports_active_voice(self):
         self._bridge_status_patch.stop()
@@ -6316,9 +6273,6 @@ class SettingsControllerTests(unittest.TestCase):
 
     def test_running_bridge_detection_returns_button_without_starting_local_hid(self):
         controller, model = self._make_controller(selected_remote=True)
-        controller._config["remote_selection"]["devices"][0]["profile"] = (
-            "chromecast-remote"
-        )
         self._bridge_status_patch.stop()
         self._bridge_status_patch = mock.patch.object(
             qt_settings_app.single_instance,
@@ -11511,9 +11465,6 @@ class SettingsShellSourceContractTests(unittest.TestCase):
         )
         self.assertIn('qsTr("安装驱动")', self.buttons_qml)
         self.assertIn('qsTr("卸载驱动")', self.buttons_qml)
-        self.assertIn("SettingsController.interceptionInstalled", self.buttons_qml)
-        self.assertIn("SettingsController.interceptionPendingReboot", self.buttons_qml)
-        self.assertIn('qsTr("待重启")', self.buttons_qml)
         # Launching the vendor installer is never reported as a silent success.
         self.assertIn("root.interceptionDriverMessage = result.message", self.buttons_qml)
 
@@ -11979,7 +11930,7 @@ class ThreePageSettingsSourceContractTests(unittest.TestCase):
         self.assertIn('return qsTr("启动服务")', self.device_qml)
 
     def test_device_toggles_share_the_compact_accent_switch(self):
-        self.assertEqual(self.device_qml.count("CompactSwitch {"), 4)
+        self.assertEqual(self.device_qml.count("CompactSwitch {"), 5)
         self.assertNotIn("                    Switch {", self.device_qml)
         self.assertIn("implicitWidth: 38", self.compact_switch_qml)
         self.assertIn("implicitHeight: 22", self.compact_switch_qml)

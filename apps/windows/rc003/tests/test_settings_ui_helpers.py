@@ -100,8 +100,7 @@ class DisplayRoundTripTests(unittest.TestCase):
         self.assertNotIn("lctrl+win", flattened)
         self.assertNotIn("ralt", flattened)
         self.assertNotIn("ralt+space", flattened)
-        self.assertIn("打开 Codex", flattened)
-        self.assertIn("打开 WorkBuddy", flattened)
+        self.assertNotIn("打开 Codex", flattened)
         self.assertIn("打开 Claude", flattened)
         mouse_group = dict(settings_ui.ACTION_OPTION_GROUPS)["鼠标操作"]
         self.assertEqual(
@@ -137,7 +136,6 @@ class DisplayRoundTripTests(unittest.TestCase):
         expected = {
             "打开MoteDeck": key_mapping.ActionKind.OPEN_REMOTE_MIC,
             "打开 Codex": key_mapping.ActionKind.OPEN_CODEX,
-            "打开 WorkBuddy": key_mapping.ActionKind.OPEN_WORKBUDDY,
             "打开 Claude": key_mapping.ActionKind.OPEN_CLAUDE,
             "打开 cmux 终端": key_mapping.ActionKind.OPEN_CMUX,
             "打开 Chrome": key_mapping.ActionKind.OPEN_CHROME,
@@ -464,25 +462,6 @@ class BuildSaveModelTests(unittest.TestCase):
         )
         self.assertTrue(saved["bindings"]["power"]["kind"].startswith("voice"))
         self.assertEqual(saved["bindings"]["power"]["inject_mode"], "interception")
-
-    def test_recorded_hotkey_display_preserves_voice_action_and_backend(self):
-        action = key_mapping.ButtonAction(
-            key_mapping.ActionKind.VOICE_HOLD, inject_mode="interception"
-        )
-        base = {"schema_version": 1, "bindings": {"mic": action.to_dict()}}
-        for modes, expected in ((None, "interception"), ({"mic": "sendinput"}, "sendinput")):
-            with self.subTest(modes=modes):
-                _, saved = build_save_model(
-                    button_display_map={"mic": "ralt", "power": "ralt"},
-                    hotkey_text="ralt", endpoint_display_text="",
-                    voice_slot_hotkeys={"1": "ralt"},
-                    base_config=self.base_config, base_bindings=base,
-                    button_inject_modes=modes,
-                )
-                restored = key_mapping.ButtonAction.from_dict(saved["bindings"]["mic"])
-                self.assertEqual(restored.kind, key_mapping.ActionKind.VOICE_HOLD)
-                self.assertEqual(restored.inject_mode, expected)
-                self.assertEqual(saved["bindings"]["power"]["kind"], "key_combo")
 
     def test_default_inject_mode_keeps_the_legacy_payload_unchanged(self):
         _config, saved = build_save_model(

@@ -38,9 +38,11 @@ class VoiceHostServices:
     set_active: Callable
     set_result: Callable
     disable_forwarding: Callable
-    # 谷歌遥控器的语音键常配成普通组合键，没有语音槽归属；这里回传话筒键
-    # 自己选中的注入后端，避免 Chromecast 路径静默回退到 SendInput。
-    voice_inject_mode: Callable = lambda: None
+    prepare_shortcut: Callable[[], None] | None = None
+    claim_detection: Callable[[], bool] | None = None
+    press_delay_seconds: Callable[[], float] | None = None
+    on_short_tap: Callable[[], None] | None = None
+    inject_mode: Callable[[], str | None] | None = None
 
 
 class VoiceHost:
@@ -61,6 +63,10 @@ class VoiceHost:
         self._output_pcm = []
         self._playback_cleanup_pending = False
         self._last_stop_snapshot = None
+        self._press_timer = None
+        self._press_token = None
+        self._press_delivered = False
+        self._detection_press = False
 
     # -- receiver-facing API -------------------------------------------------
 
@@ -118,7 +124,7 @@ class VoiceHost:
             return
         # Refresh before claiming the shortcut so one attempt never mixes two
         # hotkey configurations.
-        settings_ready = services.reload_settings()
+        services.reload_settings()
         with services.shortcut.lock:
             if self.state != "idle" or not self.closed or attempt <= self.attempt:
                 return
@@ -128,9 +134,15 @@ class VoiceHost:
             self.failure_result = None
             self._output_pcm = []
             self._playback_cleanup_pending = False
-            if settings_ready is False:
-                self._fail_voice("语音配置尚未就绪，请松开后重试")
+            if services.claim_detection is not None and services.claim_detection():
+                # 按键检测进行中：这次麦克风按下只当作检测结果，既不录音，
+                # 也不发送语音快捷键、不切换语音模式。
+                self._detection_press = True
+                self.state = "detecting"
+                self.reply("ready")
                 return
+            if services.prepare_shortcut is not None:
+                services.prepare_shortcut()
             tokens = services.shortcut.recorded_tokens()
             if not tokens:
                 self._fail_voice("尚未设置语音快捷键，无法开始语音输入")
@@ -151,17 +163,95 @@ class VoiceHost:
             services.begin_diagnostic(effective_hotkey_tokens=tokens)
             self.diagnostic_started = True
             action = services.shortcut.controller.on_mic_button_pressed()
-            inject_mode = services.voice_inject_mode()
-            services.logger.info("Chromecast voice shortcut backend=%s attempt=%s", inject_mode, attempt)
-            if not services.shortcut.apply(action, inject_mode=inject_mode):
+            inject_mode = self._inject_mode()
+            self._press_delivered = False
+            delay = self._press_delay_seconds()
+            if delay > 0:
+                # Same tap window as the Xiaomi mic button: releasing before it
+                # injects nothing and only switches the voice mode.
+                self._arm_press_delay(action, delay, inject_mode)
+            elif not services.shortcut.apply(
+                action, inject_mode=inject_mode, require_tracked_hold=False
+            ):
+                # This remote never brings Raw Input or the voice-key
+                # physicalizer, so a tracked hold can never be established; the
+                # Chromecast voice key injects the recorded shortcut untracked.
                 services.shortcut.controller.cancel_pending()
                 self._fail_voice("语音快捷键未能送达")
                 return
+            else:
+                self._press_delivered = True
             self.engaged = True
             self.state = "recording"
             services.set_active(True)
             services.set_result(status.VOICE_RUNTIME_ACTIVE)
             self.reply("ready")
+
+    def _press_delay_seconds(self) -> float:
+        callback = self.services.press_delay_seconds
+        if callback is None:
+            return 0.0
+        try:
+            return max(0.0, float(callback()))
+        except Exception:  # noqa: BLE001 - a bad config must not kill the press
+            self.services.logger.exception(
+                "Chromecast voice press delay unavailable"
+            )
+            return 0.0
+
+    def _inject_mode(self) -> str | None:
+        callback = self.services.inject_mode
+        if callback is None:
+            return None
+        try:
+            return callback()
+        except Exception:  # noqa: BLE001 - a bad config must not kill the press
+            self.services.logger.exception(
+                "Chromecast voice inject mode unavailable"
+            )
+            return None
+
+    def _arm_press_delay(self, action, delay, inject_mode):
+        token = object()
+        self._cancel_press_delay()
+        timer = threading.Timer(
+            delay, self._deliver_delayed_press, args=(token, action, inject_mode)
+        )
+        timer.daemon = True
+        self._press_token = token
+        self._press_timer = timer
+        timer.start()
+
+    def _cancel_press_delay(self):
+        timer, self._press_timer = self._press_timer, None
+        self._press_token = None
+        if timer is not None:
+            try:
+                timer.cancel()
+            except Exception:  # noqa: BLE001 - cancellation is best effort
+                pass
+
+    def _deliver_delayed_press(self, token, action, inject_mode):
+        """Send the held shortcut once the tap window has passed."""
+
+        services = self.services
+        with services.shortcut.lock:
+            if token is not self._press_token:
+                return
+            self._press_token = None
+            self._press_timer = None
+            if self.state != "recording" or self.stopping.is_set():
+                return
+            if not services.shortcut.apply(
+                action, inject_mode=inject_mode, require_tracked_hold=False
+            ):
+                services.shortcut.controller.cancel_pending()
+                self._fail_voice("语音快捷键未能送达")
+                return
+            self._press_delivered = True
+            services.logger.info(
+                "Chromecast voice shortcut held: attempt=%s", self.attempt
+            )
 
     def _fail_voice(self, reason, result=status.VOICE_RUNTIME_HOST_START_FAILED):
         # Callers may hold the shortcut lock, so only record the failure here;
@@ -184,12 +274,10 @@ class VoiceHost:
         if kind == "host_start":
             self._start_host(attempt)
             return
-        if kind == "mic":
-            return  # Detection metadata never starts a shortcut without audio.
         if attempt != self.attempt:
             return
         if kind == "host_stop":
-            self._stop_host(event.get("data", ""))
+            self._stop_host(event.get("data", ""), from_remote_release=True)
         elif kind == "state":
             if event["data"] == "idle" and self.closed:
                 self.state = "idle"
@@ -273,22 +361,46 @@ class VoiceHost:
                 return False
         return True
 
-    def _stop_host(self, reason=""):
+    def _notify_short_tap(self):
+        callback = self.services.on_short_tap
+        if callback is None:
+            return
+        try:
+            callback()
+        except Exception:  # noqa: BLE001 - a UI toast must not break cleanup
+            self.services.logger.exception("Chromecast voice mode switch failed")
+
+    def _stop_host(self, reason="", *, from_remote_release=False):
         services = self.services
         if self.closed:
             self.reply("released")
             return True
         self.state = "stopping"
         released = False
+        tapped = False
         with services.shortcut.lock:
             services.disable_forwarding()
+            delivered = self._press_delivered
+            detection = self._detection_press
+            self._detection_press = False
+            self._cancel_press_delay()
+            if (
+                from_remote_release
+                and not delivered
+                and not detection
+                and self.failure_result is None
+            ):
+                # Released inside the tap window: no key was injected, so this
+                # press only switches the voice mode, like the Xiaomi mic.
+                services.shortcut.controller.cancel_pending()
+                tapped = True
             tail, self._output_pcm = self._output_pcm, []
             if tail and self.failure_result is None and not self.stopping.is_set():
                 # A normal remote release drains the last partial block before
                 # releasing its shortcut.
                 self._submit_output(tail)
             audio_released = self._finish_playback("Chromecast voice end")
-            released = self._release_shortcut() and audio_released
+            released = audio_released and (detection or self._release_shortcut())
             services.set_active(False)
             if released:
                 services.apply_pending_settings()
@@ -304,6 +416,9 @@ class VoiceHost:
         if released:
             self.engaged = False
             self.decoder = None
+        self._press_delivered = False
+        if tapped:
+            self._notify_short_tap()
         services.logger.info(
             "Chromecast voice attempt=%s reason=%s released=%s",
             self.attempt, reason or "cleanup", released,

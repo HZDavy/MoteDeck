@@ -1,8 +1,8 @@
-"""Read selected Google HID reports when BTHPORT omits report bytes.
+"""Read selected Chromecast HID notifications when BTHPORT omits report bytes.
 
-9450 retains the private callback with module hash/PDB and adapter address
-checks. 9451 observes DeviceIoControl copies after verifying the UMDF callsite,
-device interface and selected ContainerID hash. Neither path modifies reports.
+The callback is private Windows code. A matching module hash or matching public
+PDB is required before attaching. An adapter address match is required before
+any report is delivered; this module never modifies the Windows report.
 """
 from __future__ import annotations
 
@@ -26,11 +26,7 @@ MODULE = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "drive
 _TESTED_SHA256 = "8a18571ddfa447bd590354ccdf7800b815a098806359ab195d395158f9d07cc5"
 _TESTED_RVA = 0x12FCC
 _HID_SERVICE = "{00001812-0000-1000-8000-00805f9b34fb}"
-_GOOGLE_HARDWARE_VARIANTS = (
-    "dev_vid&0118d1_pid&9450_rev&0110",
-    # Google TV Remote variant observed on this Windows installation.
-    "dev_vid&0218d1_pid&9451_rev&0105",
-)
+_GOOGLE_HARDWARE = "dev_vid&0118d1_pid&9450_rev&0110"
 _ADDRESS_SUFFIX = re.compile(r"_([0-9a-f]{12})$", re.I)
 _SYMBOL = "Microsoft::Bluetooth::Profiles::HidOverGatt::HogpGattAdapter::OnReportValueChanged"
 
@@ -39,24 +35,7 @@ class TapError(RuntimeError):
     pass
 
 
-def normalize_callback_report(product_id: str, report: bytes):
-    """Filter selected-adapter callback bytes using the device descriptor."""
-    if product_id == "9450":
-        if (isinstance(report, bytes) and len(report) == 8 and not any(report[1:])
-                and report[0] in {0, 1, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 15, 17}):
-            return report
-        return None
-    if product_id != "9451" or not isinstance(report, bytes):
-        return None
-    if len(report) == 6 and all(value in (0, 1, 2) for value in report):
-        return b"\x01" + report
-    if len(report) == 7 and report[0] == 1 and all(value in (0, 1, 2) for value in report[1:]):
-        return report
-    # Report ID 2 is intentionally left to the ordinary front-button path.
-    return None
-
-
-def selected_host_and_address(entity: str) -> tuple[int, str, str]:
+def selected_host_and_address(entity: str) -> tuple[int, str]:
     """Resolve exactly one selected Google HID service from Windows PnP."""
     import winreg
 
@@ -69,10 +48,7 @@ def selected_host_and_address(entity: str) -> tuple[int, str, str]:
             for index in range(count):
                 name = winreg.EnumKey(root, index)
                 folded = name.casefold()
-                if (
-                    not folded.startswith(_HID_SERVICE)
-                    or not any(variant in folded for variant in _GOOGLE_HARDWARE_VARIANTS)
-                ):
+                if not folded.startswith(_HID_SERVICE) or _GOOGLE_HARDWARE not in folded:
                     continue
                 address = _ADDRESS_SUFFIX.search(name)
                 if address is None:
@@ -90,8 +66,7 @@ def selected_host_and_address(entity: str) -> tuple[int, str, str]:
                             with winreg.OpenKey(key, r"Device Parameters\WUDFDiagnosticInfo") as info:
                                 pid, _ = winreg.QueryValueEx(info, "HostPid")
                             if type(pid) is int and pid > 0:
-                                product_id = "9451" if "pid&9451" in folded else "9450"
-                                found.add((pid, address.group(1).lower(), product_id))
+                                found.add((pid, address.group(1).lower()))
     except (OSError, ValueError) as exc:
         raise TapError("hid_source_unconfirmed") from exc
     if len(found) != 1:
@@ -237,9 +212,21 @@ function method(object, slot, result, args) {
   return new NativeFunction(object.readPointer().add(slot * Process.pointerSize).readPointer(), result, args);
 }
 function addressMatches(adapter) {
-  const bytes = new Uint8Array(adapter.add(24).readByteArray(6));
-  for (let i = 0; i < 6; i++) if (bytes[i] !== expectedAddress[i]) return false;
-  return true;
+  // The adapter address sits at a driver-specific offset: some builds keep it
+  // at +24, others at +8 (where +24 is a per-report interface pointer). Scan
+  // the leading bytes for the MAC in either byte order instead of trusting one
+  // fixed offset.
+  const bytes = new Uint8Array(adapter.readByteArray(64));
+  const reversed = expectedAddress.slice().reverse();
+  for (let offset = 0; offset + 6 <= bytes.length; offset++) {
+    let forward = true, backward = true;
+    for (let i = 0; i < 6; i++) {
+      if (bytes[offset + i] !== expectedAddress[i]) forward = false;
+      if (bytes[offset + i] !== reversed[i]) backward = false;
+    }
+    if (forward || backward) return true;
+  }
+  return false;
 }
 function report(buffer) {
   let access = ptr(0);
@@ -284,8 +271,7 @@ class HidTap:
         self.events = queue.Queue(maxsize=256)
         self.overflow = threading.Event()
         self.session = self.script = None
-        self.pid = self.address = self.product_id = None
-        self.copy_counts = {}
+        self.pid = self.address = None
 
     def _put(self, event):
         try:
@@ -296,18 +282,12 @@ class HidTap:
 
     def start(self):
         import frida
-        pid, address, product_id = selected_host_and_address(self.entity)
-        if product_id == "9451":
-            from .google_tv_copy_capture import build_script
-            source = build_script(self.entity)
-        elif product_id == "9450":
-            rva = callback_rva()
-            source = (_SCRIPT.replace("__PATH__", json.dumps(str(MODULE).lower().replace("\\", "/")))
-                     .replace("__ADDRESS__", json.dumps(list(bytes.fromhex(address)[::-1])))
-                     .replace("__RVA__", str(rva)))
-        else:
-            raise TapError("hid_source_unconfirmed")
-        self.pid, self.address, self.product_id = pid, address, product_id
+        pid, address = selected_host_and_address(self.entity)
+        rva = callback_rva()
+        source = (_SCRIPT.replace("__PATH__", json.dumps(str(MODULE).lower().replace("\\", "/")))
+                 .replace("__ADDRESS__", json.dumps(list(bytes.fromhex(address)[::-1])))
+                 .replace("__RVA__", str(rva)))
+        self.pid, self.address = pid, address
         try:
             self.session = frida.attach(pid)
             self.session.on("detached", lambda *_: self._put(("error", "hid_host_detached", 0.0)))
@@ -320,34 +300,15 @@ class HidTap:
                     return
                 item = message.get("payload", {})
                 if item.get("kind") == "report":
-                    try:
-                        raw = bytes.fromhex(item.get("value", ""))
-                    except (TypeError, ValueError):
-                        self._put(("error", "hid_callback_failed", 0.0))
-                        return
-                    # The 9451 copy transport preserves its ID; do not infer it.
-                    normalized = (None if product_id == "9451" and len(raw) != 7
-                                  else normalize_callback_report(product_id, raw))
-                    if normalized is not None:
-                        self._put(("report", normalized.hex(" "), time.monotonic()))
+                    self._put(("report", item.get("value"), time.monotonic()))
                 elif item.get("kind") == "hook_ready":
                     self._put(("hook_ready", "", time.monotonic()))
-                elif item.get("kind") == "copy_counts":
-                    counts = item.get("counts", {})
-                    if isinstance(counts, dict):
-                        self.copy_counts = {
-                            key: max(0, min(value, 2**31 - 1))
-                            for key, value in counts.items()
-                            if key in {"ioctl", "volume_shape", "candidate", "source_rejected", "selected", "failed",
-                                       "short_output", "invalid_report", "report", "error"}
-                            and type(value) is int
-                        }
                 elif item.get("kind") == "error":
                     self._put(("error", item.get("reason", "hid_callback_failed"), 0.0))
 
             self.script.on("message", on_message)
             self.script.load()
-            if selected_host_and_address(self.entity) != (pid, address, product_id):
+            if selected_host_and_address(self.entity) != (pid, address):
                 raise TapError("hid_source_unconfirmed")
         except Exception:
             self.close()
@@ -365,7 +326,7 @@ class HidTap:
         return result
 
     def source_alive(self):
-        return selected_host_and_address(self.entity) == (self.pid, self.address, self.product_id)
+        return selected_host_and_address(self.entity) == (self.pid, self.address)
 
     def close(self):
         if self.script is not None:

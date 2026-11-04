@@ -193,129 +193,17 @@ class HidTapState(str, Enum):
     STOPPED = "stopped"
 
 
-# The supplement channel needs an unsigned native component (Frida Gadget
-# reloaded into WUDFHost).  On machines where Smart App Control or an
-# authorization policy refuses it, every start would ask the user again for
-# nothing.  These states are terminal for the supplement channel only: record
-# them in a small side file so later starts skip the tap instead of repeating
-# the prompt.  The same file carries a user's own "off" choice so the switch
-# in settings survives a restart.  Ordinary buttons and voice stay untouched.
-HID_TAP_DEGRADED_FILENAME = "hid-tap-degraded.json"
-HID_TAP_USER_DISABLED_STATE = "disabled_by_user"
-HID_TAP_DEGRADED_STATES = frozenset(
+# 返回键/音量键补充通道不可恢复的失败：遇到任一项就把原因写进
+# hid-tap-degraded.json，下次启动跳过 tap，不再反复弹授权。
+HID_TAP_DEGRADED_STATUSES = frozenset(
     {
-        HidTapState.UNAVAILABLE.value,
         HidTapState.AUTHORIZATION_CANCELLED.value,
         HidTapState.AUTHORIZATION_FAILED.value,
-        HID_TAP_USER_DISABLED_STATE,
+        HidTapState.UNAVAILABLE.value,
     }
 )
-
-
-def hid_tap_degraded_path(root: Path) -> Path:
-    return Path(root) / HID_TAP_DEGRADED_FILENAME
-
-
-def read_hid_tap_degraded_state(root: Path) -> str:
-    """Return the persisted degrade reason, or "" when the tap may start."""
-
-    try:
-        payload = json.loads(
-            hid_tap_degraded_path(root).read_text(encoding="utf-8")
-        )
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        return ""
-    state = payload.get("state") if isinstance(payload, dict) else None
-    return state if state in HID_TAP_DEGRADED_STATES else ""
-
-
-def record_hid_tap_degraded_state(root: Path, state: str) -> None:
-    """Persist one terminal failure so the next start does not prompt again."""
-
-    if state not in HID_TAP_DEGRADED_STATES:
-        raise ValueError(state)
-    path = hid_tap_degraded_path(root)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        temporary.write_text(
-            json.dumps({"state": state}, ensure_ascii=True, sort_keys=True),
-            encoding="utf-8",
-        )
-        os.replace(temporary, path)
-    finally:
-        try:
-            temporary.unlink()
-        except FileNotFoundError:
-            pass
-
-
-def clear_hid_tap_degraded_state(root: Path) -> None:
-    """Allow one explicit retry (user picked 重新授权/重启服务)."""
-
-    try:
-        hid_tap_degraded_path(root).unlink()
-    except FileNotFoundError:
-        pass
-
-
-# Google TV Remote (9451) 只有侧边音量键走 Frida 的 UMDF COPY 通道；前面板按键
-# 来自 Raw Input。这条通道和小米的 HID 补充通道一样会被智能应用控制拦截，但
-# 失败时只能关掉侧边音量，不能连带停掉整台遥控器的接收。用独立状态文件，
-# 小米的记录不受影响，9451 也不会污染小米的开关状态。
-GOOGLE_TV_VOLUME_DEGRADED_FILENAME = "google-tv-volume-degraded.json"
-
-
-def google_tv_volume_degraded_path(root: Path) -> Path:
-    return Path(root) / GOOGLE_TV_VOLUME_DEGRADED_FILENAME
-
-
-def _read_degraded_state(path: Path) -> str:
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        return ""
-    state = payload.get("state") if isinstance(payload, dict) else None
-    return state if state in HID_TAP_DEGRADED_STATES else ""
-
-
-def _record_degraded_state(path: Path, state: str) -> None:
-    if state not in HID_TAP_DEGRADED_STATES:
-        raise ValueError(state)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        temporary.write_text(
-            json.dumps({"state": state}, ensure_ascii=True, sort_keys=True),
-            encoding="utf-8",
-        )
-        os.replace(temporary, path)
-    finally:
-        try:
-            temporary.unlink()
-        except FileNotFoundError:
-            pass
-
-
-def read_google_tv_volume_degraded_state(root: Path) -> str:
-    """返回侧边音量通道上次的关闭原因，空字符串表示可以启动。"""
-
-    return _read_degraded_state(google_tv_volume_degraded_path(root))
-
-
-def record_google_tv_volume_degraded_state(root: Path, state: str) -> None:
-    """记录一次不需重试的失败，避免每次启动都再弹授权。"""
-
-    _record_degraded_state(google_tv_volume_degraded_path(root), state)
-
-
-def clear_google_tv_volume_degraded_state(root: Path) -> None:
-    """用户主动重新打开，或显式重启服务时清掉记录并允许重试。"""
-
-    try:
-        google_tv_volume_degraded_path(root).unlink()
-    except FileNotFoundError:
-        pass
+# 用户手动关掉补充通道时上报给界面的状态（开关显示为关）。
+HID_TAP_DISABLED_STATUS = "disabled_by_user"
 
 
 @dataclass(frozen=True)

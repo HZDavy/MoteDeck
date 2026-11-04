@@ -166,17 +166,6 @@ def interception_unavailable_hint() -> str:
     return _DEFAULT_UNAVAILABLE_HINT
 
 
-def interception_driver_installed() -> bool:
-    """Whether the driver is registered on this machine, usable or not.
-
-    Installing and loading are two different moments: a freshly installed
-    driver is registered but only takes effect after a reboot.  Settings uses
-    this to tell "已安装/待重启" apart from "已启用".
-    """
-
-    return interception_runtime_windows.driver_installed()
-
-
 def mode_available(mode: object) -> bool:
     """Whether ``mode`` can currently deliver input on this machine."""
 
@@ -251,7 +240,9 @@ class InjectionBackend(Protocol):
 
     name: str
 
-    def key_down(self, tokens: Tuple[str, ...]) -> None: ...
+    def key_down(
+        self, tokens: Tuple[str, ...], *, require_tracked_hold: bool = True
+    ) -> None: ...
 
     def key_up(self, tokens: Tuple[str, ...]) -> None: ...
 
@@ -267,8 +258,15 @@ class SendInputBackend:
 
     name = INJECT_MODE_SENDINPUT
 
-    def key_down(self, tokens: Tuple[str, ...]) -> None:
-        win32_input.send_voice_key_combo_down(tokens)
+    def key_down(
+        self, tokens: Tuple[str, ...], *, require_tracked_hold: bool = True
+    ) -> None:
+        if require_tracked_hold:
+            win32_input.send_voice_key_combo_down(tokens)
+            return
+        win32_input.send_voice_key_combo_down(
+            tokens, require_tracked_hold=False
+        )
 
     def key_up(self, tokens: Tuple[str, ...]) -> None:
         win32_input.send_voice_key_combo_up(tokens)
@@ -288,7 +286,9 @@ class InterceptionBackend:
 
     name = INJECT_MODE_INTERCEPTION
 
-    def key_down(self, tokens: Tuple[str, ...]) -> None:
+    def key_down(
+        self, tokens: Tuple[str, ...], *, require_tracked_hold: bool = True
+    ) -> None:
         send_hold_tokens_down(tokens)
 
     def key_up(self, tokens: Tuple[str, ...]) -> None:

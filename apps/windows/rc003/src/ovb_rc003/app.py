@@ -207,6 +207,11 @@ _VOICE_TAP_MAX_SECONDS = 0.18
 # 变成一次语音输入。只有一直按住、越过这个阈值才是长按，这时才下发那一记
 # KEY_DOWN，松手再 KEY_UP。窗口与短按判定共用同一个阈值，两边不会打架。
 _VOICE_SHORTCUT_PRESS_DELAY_SECONDS = _VOICE_TAP_MAX_SECONDS
+# 谷歌遥控器的语音键要经 BLE 和接收端转发，主机看到的按下→松开比小米实体键
+# 长一截：实测正常轻点就有 0.18~0.25 秒，沿用 0.18 的窗口会把一半短按判成
+# 长按（于是短按变成一次没反应的语音触发）。这里单独放宽到 0.35 秒，长按
+# 实测在 1.2 秒以上，仍然分得干净。
+_CHROMECAST_VOICE_TAP_MAX_SECONDS = 0.35
 # 插件语音只按"按住多久"分岔，不看音量：按下就开遥控器话筒并把 PCM 缓进
 # 一个约 0.8s 的环形缓冲，按满 ``_PLUGIN_VOICE_HOLD_SECONDS`` 才开插件会话
 # 并把缓冲一起补发（插件在 session_accepted 之前会自己暂存），所以开口的
@@ -262,7 +267,7 @@ class RC003App:
         self._remote_profile = selected_profile
         # 谷歌遥控器只走真实接收链路（chromecast_runtime）。
         self._chromecast_real = bool(
-            selected_profile in remote_selection.GOOGLE_REMOTE_PROFILES
+            selected_profile == remote_selection.CHROMECAST_PROFILE
             and self._selected_remote_key
         )
         self._chromecast_runtime = None
@@ -286,7 +291,14 @@ class RC003App:
         # Process scope never rewrites key_bindings.json: the resolved overlay
         # only lives in memory, while the active profile is recorded in
         # app_profiles.json so the settings window can highlight it.
-        self._preset_store = app_profiles.AppProfileStore(self._config_root)
+        self._preset_store = app_profiles.AppProfileStore(
+            self._config_root, self._remote_profile)
+        # 软件方案按型号分库，但列表共用：启动时先把另一台遥控器上的方案
+        # 补过来，避免服务先跑起来时这台看不到那些应用。
+        try:
+            self._preset_store.adopt_apps_from_siblings()
+        except Exception:  # noqa: BLE001 - 同步失败不影响启动
+            pass
         self._presets_mtime_ns = self._settings_file_mtime_ns(self._preset_store.path)
         # Tracked separately from the hotkey table: editing one app's mapping
         # must re-resolve the overlay that is live right now.
@@ -948,7 +960,7 @@ class RC003App:
                 shortcut=self._voice_shortcut,
                 settings=lambda: self._config,
                 logger=self._logger,
-                reload_settings=self._refresh_chromecast_voice_settings,
+                reload_settings=self._reload_settings_if_changed,
                 apply_pending_settings=(
                     self._apply_pending_voice_settings_if_idle_locked
                 ),
@@ -963,30 +975,86 @@ class RC003App:
                 disable_forwarding=lambda: setattr(
                     self, "_voice_pcm_forwarding_enabled", False
                 ),
-                voice_inject_mode=self._chromecast_voice_inject_mode,
+                prepare_shortcut=self._prepare_chromecast_voice_shortcut,
+                claim_detection=self._claim_chromecast_mic_detection,
+                press_delay_seconds=self._chromecast_voice_press_delay,
+                on_short_tap=self._chromecast_voice_short_tap,
+                inject_mode=self._chromecast_voice_inject_mode,
             )
         )
 
-    def _refresh_chromecast_voice_settings(self) -> bool:
-        # A voice attempt must not depend on an indefinitely cached backend.
-        # Force a validated snapshot for Google TV, even if mtimes match.
-        from . import remote_selection
-        return self._reload_settings_if_changed(
-            force=self._remote_profile == remote_selection.GOOGLE_TV_PROFILE
-        )
+    def _prepare_chromecast_voice_shortcut(self) -> None:
+        """Apply the active voice key's recorded shortcut before the mic opens.
+
+        The Chromecast remote carries no voice button in the button map, so it
+        resolves its shortcut the same way the Xiaomi mic button does.
+        """
+
+        slot = self._active_voice_slot()
+        hotkey_text = self._voice_hotkey_text_for_slot(slot)
+        if not hotkey_text:
+            self._clear_voice_hotkey_locked()
+            return
+        try:
+            voice_hotkey = hotkey.HotkeySpec.parse(hotkey_text)
+        except (hotkey.HotkeyParseError, win32_keys.UnknownKeyTokenError) as exc:
+            self._logger.warning(
+                "chromecast voice shortcut ignored: invalid shortcut: %s", exc
+            )
+            self._clear_voice_hotkey_locked()
+            return
+        self._apply_voice_settings_locked(voice_hotkey, update_config=slot == 1)
+
+    def _claim_chromecast_mic_detection(self) -> bool:
+        """Claim one pending 按键检测 request for the Chromecast voice key.
+
+        The Chromecast remote has no HID mic button, so its press only shows up
+        as the voice stream opening. Claiming the request here keeps the
+        shortcut, the recording and the voice-mode switch from firing while the
+        user is only detecting buttons.
+        """
+
+        try:
+            captured = key_detection_bridge.publish_next_button(
+                self._config_root,
+                "mic",
+            )
+        except OSError as exc:
+            self._logger.warning("key detection IPC unavailable: %s", exc)
+            return False
+        if captured:
+            self._logger.info(
+                "key detection captured button=mic source=chromecast_voice; "
+                "voice action suppressed",
+            )
+        return captured
+
+    def _chromecast_voice_press_delay(self) -> float:
+        """Tap window for the Chromecast voice key, or 0 when taps resend.
+
+        Reads the same "延迟发送" switch the Xiaomi mic button uses: when it is
+        on, the shortcut waits out the tap window so a short press only cycles
+        the voice mode and never leaks a key press.
+        """
+
+        if not self._voice_shortcut_press_delay_enabled(self._active_voice_slot()):
+            return 0.0
+        return _CHROMECAST_VOICE_TAP_MAX_SECONDS
 
     def _chromecast_voice_inject_mode(self) -> Optional[str]:
-        from . import remote_selection
-        mic = self._primary_button_action("mic")
-        if (
-            self._remote_profile == remote_selection.GOOGLE_TV_PROFILE
-            and mic is not None
-            and mic.kind == key_mapping.ActionKind.KEY_COMBO
-        ):
-            # This GATT edge belongs to the physical mic, not a different
-            # button that happens to use voice slot 1.
-            return mic.inject_mode
-        return self._voice_slot_inject_mode(1)
+        """Inject the remote shortcut the way the mic button's slot asks for.
+
+        The Chromecast remote has no button-map entry of its own, so its voice
+        key must inherit the injection backend of the slot it drives. Falling
+        back to SendInput leaves LLKHF_INJECTED on the stroke, and voice-input
+        hosts ignore an injected 语音键.
+        """
+
+        return self._voice_slot_inject_mode(self._active_voice_slot())
+
+    def _chromecast_voice_short_tap(self) -> None:
+        with self._voice_shortcut.lock:
+            self._handle_voice_short_tap_locked("chromecast short press")
 
     def _cancel_chromecast_mappings(self) -> None:
         with self._input_arbitration_lock:
@@ -1022,21 +1090,15 @@ class RC003App:
         with self._voice_shortcut.lock:
             self._accept_input_events = True
         if self._remote_profile == remote_selection.CHROMECAST_PROFILE:
-            # 9450 的按键与语音都由 chromecast_runtime 子进程负责。主进程
-            # 再开 Raw Input、私有 tap 或语音键物理钩子都会抢占同一设备的
-            # HID/GATT 连接，导致子进程收不到任何按键通知。
+            # The Raw Input / HID tap / voice-key physicalizer owners below match
+            # the RC003 HID identity. A real Chromecast remote brings its own
+            # receiver process (see chromecast_runtime) and never uses these three.
             return
         with self._voice_key_physicalizer_lifecycle_lock:
             self._voice_key_physicalizer_stopping = False
-        self._start_voice_key_physicalizer()
-        if self._remote_profile in remote_selection.GOOGLE_REMOTE_PROFILES:
-            # 9451 是真实键盘集合，由主进程通过 Raw Input 接收。
-            with self._raw_input_lifecycle_lock:
-                self._raw_input_stopping = False
-            self._start_hid_listener()
-            return
         with self._raw_input_lifecycle_lock:
             self._raw_input_stopping = False
+        self._start_voice_key_physicalizer()
         self._start_hid_listener()
         self._start_hid_report_tap()
 
@@ -1605,23 +1667,9 @@ class RC003App:
         lookup_outcome = "lookup_interrupted"
         try:
             device_path = None
-            google_remote = (
-                self._remote_profile in remote_selection.GOOGLE_REMOTE_PROFILES
-            )
-            paths = raw_input_windows.enumerate_matching_device_paths(
-                matches=(
-                    hid_identity.device_path_matches_google
-                    if google_remote
-                    else None
-                ),
-                diagnostic=enumeration,
-            )
-            if google_remote:
-                device_path = remote_selection.selected_raw_paths(
-                    paths, self._selected_remote_key)
-            else:
-                device_path = remote_selection.selected_raw_path(
-                    paths, self._selected_remote_key, diagnostic=selection)
+            paths = raw_input_windows.enumerate_matching_device_paths(diagnostic=enumeration)
+            device_path = remote_selection.selected_raw_path(
+                paths, self._selected_remote_key, diagnostic=selection)
             lookup_outcome = "path_selected"
         except raw_input_windows.RawInputUnavailableError as exc:
             lookup_outcome = "unavailable"
@@ -1808,25 +1856,54 @@ class RC003App:
                     type(exc).__name__,
                 )
 
+    def _hid_tap_saved_state(self) -> Optional[str]:
+        """Return the state to report instead of starting the tap, if saved."""
+
+        record = config.read_hid_tap_degraded(self._config_root)
+        if record is None:
+            return None
+        if record["state"] == config.HID_TAP_STATE_DISABLED:
+            return frida_compat.HID_TAP_DISABLED_STATUS
+        return record["reason"] or frida_compat.HidTapState.FAILED.value
+
+    def _save_hid_tap_degraded(self, reason: str) -> None:
+        """Remember the first unrecoverable tap failure so later starts skip it."""
+
+        existing = config.read_hid_tap_degraded(self._config_root)
+        if existing is not None:
+            if existing["state"] == config.HID_TAP_STATE_DISABLED:
+                # 用户手动关掉时，自动降级不能把记录改回 degraded。
+                return
+            if existing["reason"] == reason:
+                return
+        if config.save_hid_tap_degraded(
+            self._config_root,
+            state=config.HID_TAP_STATE_DEGRADED,
+            reason=reason,
+        ):
+            self._logger.warning(
+                "RC003 HID report tap degraded; next start skips it: %s", reason
+            )
+
     def _start_hid_report_tap(self) -> None:
         """Start the upstream-derived tap for usages Windows drops.
 
         This is independent of the normal Raw Input listener.  A missing or
         unverified Gadget is a button-only degradation and must not prevent
-        BLE voice from starting.  Once a start failed for a reason that will
-        not change by itself (Smart App Control / authorization), the failure
-        is remembered and the tap is skipped instead of prompting again.
+        BLE voice from starting.
+
+        A saved ``hid-tap-degraded.json`` record (written after an
+        unrecoverable failure, or when the user turned the key channel off)
+        skips the tap entirely, so Windows is never asked to authorize again
+        on every launch.  Only an explicit restart clears that record.
         """
 
-        degraded_state = frida_compat.read_hid_tap_degraded_state(
-            self._config_root
-        )
-        if degraded_state:
-            self._set_runtime_input_state(hid_tap_state=degraded_state)
+        skip_state = self._hid_tap_saved_state()
+        if skip_state is not None:
+            self._set_runtime_input_state(hid_tap_state=skip_state)
             self._logger.info(
-                "startup: RC003 HID report tap stays off after an earlier "
-                "terminal failure; state=%s",
-                degraded_state,
+                "startup: RC003 HID report tap skipped by saved record; state=%s",
+                skip_state,
             )
             return
         self._set_runtime_input_state(hid_tap_state="starting")
@@ -2651,17 +2728,9 @@ class RC003App:
             status=str(status),
             detail=str(detail or ""),
         )
+        if status in frida_compat.HID_TAP_DEGRADED_STATUSES:
+            self._save_hid_tap_degraded(str(status))
         self._set_runtime_input_state(hid_tap_state=status)
-        if status in frida_compat.HID_TAP_DEGRADED_STATES:
-            try:
-                frida_compat.record_hid_tap_degraded_state(
-                    self._config_root, status
-                )
-            except OSError:
-                self._logger.warning(
-                    "could not persist the HID tap degradation; state=%s",
-                    status,
-                )
         interception_ready = status == frida_compat.HidTapState.READY.value
         interception_armed = status in {
             frida_compat.HidTapState.ATTACHED_WAITING_IO.value,
@@ -3308,15 +3377,6 @@ class RC003App:
         # 一个话筒键轮换多个语音槽时（短按切换），只有语音一真正绑在话筒键
         # 上，语音二/三没有自己的按钮。此时必须沿用触发按钮的注入方式，
         # 否则会退回 SendInput，右 Alt 这类需要驱动级注入的宿主就收不到。
-        if fallback is None:
-            # 谷歌 TV 等遥控器的语音键常配成普通组合键（key_combo）而不是
-            # VOICE_HOLD，此时没有任何按钮归属该语音槽；沿用话筒键(mic)的注入
-            # 方式，否则这里返回 None 会静默回退 SendInput，同样收不到按键。
-            mic_action = self._primary_button_action("mic")
-            if mic_action is not None:
-                fallback = injection_backend.normalize_inject_mode(
-                    mic_action.inject_mode
-                )
         return fallback
 
     def _voice_slot_uses_interception(self, slot: Optional[int]) -> bool:
@@ -5217,15 +5277,6 @@ class RC003App:
         _listener: Optional[raw_input_windows.RawInputButtonListener] = None,
         _generation: Optional[int] = None,
     ) -> None:
-        # ATVV owns the Chromecast microphone button. Windows may mirror that
-        # physical press as a translated keyboard edge; forwarding both edges
-        # would start a second, ordinary mapped voice gesture beside the
-        # proven remote-mic session.
-        if (
-            self._remote_profile in remote_selection.GOOGLE_REMOTE_PROFILES
-            and button_id == "mic"
-        ):
-            return
         event_source = {
             "keyboard": "raw_keyboard",
             "hid": "raw_hid",
@@ -5344,34 +5395,22 @@ class RC003App:
         with self._voice_shortcut.lock:
             self._apply_pending_voice_settings_if_idle_locked()
 
-    def _reload_settings_if_changed(self, *, force: bool = False) -> bool:
+    def _reload_settings_if_changed(self) -> None:
         """Apply mapping and voice-setting edits without a bridge restart."""
 
         current_config_mtime_ns = self._settings_file_mtime_ns(self._config_path)
         current_bindings_mtime_ns = self._settings_file_mtime_ns(self._bindings_path)
         if (
-            not force
-            and current_config_mtime_ns == self._config_mtime_ns
+            current_config_mtime_ns == self._config_mtime_ns
             and current_bindings_mtime_ns == self._bindings_mtime_ns
         ):
-            return True
+            return
         try:
-            # Require files once they have existed (or for a new Google TV
-            # voice attempt). A transient missing file is not a reset request.
-            snapshot = (self._settings_file_mtime_ns(self._config_path),
-                        self._settings_file_mtime_ns(self._bindings_path))
-            refreshed_config = config.load_config(
-                self._config_path, required=force or self._config_mtime_ns >= 0
-            )
+            refreshed_config = config.load_config(self._config_path)
             from . import remote_selection
             if remote_selection.active_key(refreshed_config) != remote_selection.active_key(self._config):
                 raise remote_selection.SelectionError("设备选择已变化，须先停止旧服务再切换。")
-            if remote_selection.active_profile(refreshed_config) != remote_selection.active_profile(self._config):
-                raise remote_selection.SelectionError("遥控器型号已变化，须先停止旧服务再切换。")
-            refreshed_bindings = config.load_key_bindings(
-                self._bindings_path, selected=refreshed_config,
-                required=force or self._bindings_mtime_ns >= 0,
-            )
+            refreshed_bindings = config.load_key_bindings(self._bindings_path)
             removed_voice_bindings = config.normalize_voice_product_boundary(
                 refreshed_config,
                 refreshed_bindings,
@@ -5389,8 +5428,10 @@ class RC003App:
             )
         except Exception as exc:  # noqa: BLE001 - keep the last valid settings
             self._logger.warning("settings reload skipped: %s", exc)
-            # Do not acknowledge a failed read: retry the same saved revision.
-            return False
+            with self._voice_shortcut.lock:
+                self._config_mtime_ns = current_config_mtime_ns
+                self._bindings_mtime_ns = current_bindings_mtime_ns
+            return
 
         self._diagnostic_trace.set_enabled(
             bool(refreshed_config.get("diagnostic_trace_enabled", False))
@@ -5398,28 +5439,6 @@ class RC003App:
         self._record_device_diagnostic_context()
         with self._voice_shortcut.lock:
             with self._button_mapping_lock:
-                if snapshot != (
-                    self._settings_file_mtime_ns(self._config_path),
-                    self._settings_file_mtime_ns(self._bindings_path),
-                ):
-                    self._logger.warning("settings changed while reading; retry pending")
-                    return False
-                overlay_id = self._preset_override_id if force else None
-                base_bindings = refreshed_bindings
-                if force:
-                    if not (self._voice_settings_idle_locked() and self._ordinary_button_mappings_idle()):
-                        return False  # never change a held shortcut's owner
-                    if overlay_id is not None:
-                        try:
-                            refreshed_bindings = app_profiles.apply_to(
-                                base_bindings, self._preset_store.get(overlay_id), self._remote_profile
-                            )
-                        except Exception:
-                            self._logger.warning("voice settings refresh skipped: application preset unavailable")
-                            return False
-                        removed_voice_bindings = dict(refreshed_bindings.get(
-                            config.RUNTIME_REMOVED_VOICE_BINDINGS_KEY, {}
-                        ))
                 refreshed_settings = refreshed_hotkey_serialized
                 current_settings = (
                     self._voice_shortcut.hotkey.serialize()
@@ -5435,13 +5454,11 @@ class RC003App:
                         and refreshed_settings != current_settings
                     ):
                         self._apply_voice_settings_locked(voice_hotkey)
-                    elif voice_hotkey is None and current_settings:
-                        self._clear_voice_hotkey_locked()
                     if self._ordinary_button_mappings_idle():
                         self._button_combos.reset()
                         self._bindings = refreshed_bindings
-                        self._preset_override_id = overlay_id
-                        self._preset_base_bindings = base_bindings if overlay_id is not None else None
+                        self._preset_override_id = None
+                        self._preset_base_bindings = None
                         self._sync_physical_bindings_to_listener()
                         self._removed_voice_bindings = removed_voice_bindings
                         self._pending_bindings = None
@@ -5462,7 +5479,8 @@ class RC003App:
                     self._diagnostic_trace.emit("voice_configuration_deferred",
                         release_pending=self._voice_shortcut.pending_tokens is not None,
                         reason="active_voice_not_idle", **self._diagnostic_trace.current_context())
-                self._config_mtime_ns, self._bindings_mtime_ns = snapshot
+                self._config_mtime_ns = current_config_mtime_ns
+                self._bindings_mtime_ns = current_bindings_mtime_ns
         if removed_voice_bindings:
             self._logger.warning(
                 "legacy voice mappings disabled until user reselects actions: %s",
@@ -5470,7 +5488,6 @@ class RC003App:
             )
         if self._pending_bindings is None:
             self._logger.info("settings reloaded from disk")
-        return True
 
     def request_settings_reload_now(self) -> None:
         """Apply saved settings promptly from the bridge event-loop thread."""
@@ -5946,20 +5963,12 @@ class RC003App:
                 ):
                     return
 
-                # Raw Input cannot suppress Windows' original key event.
-                # Preserve native behavior for keys Windows already handles,
-                # while allowing Chromecast-only buttons with no native key
-                # equivalent to reach the configured mapping pipeline.
-                # Xiaomi profiles remain fail-closed until their HID tap owns
-                # the report.
-                raw_mapping_bypassed = (
-                    self._remote_profile not in remote_selection.GOOGLE_REMOTE_PROFILES
-                )
+                # Raw Input can observe Windows' original key event, but it
+                # cannot suppress that event. Until the HID tap owns the
+                # report, every custom mapping must therefore fail closed.
+                raw_mapping_bypassed = True
 
                 if button_id in self._raw_fallback_buttons_down:
-                    # The matching release belongs to the native Windows
-                    # key that was deliberately left untouched on key-down.
-                    raw_mapping_bypassed = True
                     if not is_pressed:
                         self._cancel_raw_fallback_hold_guard_locked(button_id)
                         self._raw_fallback_buttons_down.discard(button_id)
@@ -5971,25 +5980,10 @@ class RC003App:
                         and not self._raw_fallback_tracking_active
                     ):
                         effective_windows_button = button_id
-                    if (
-                        self._remote_profile in remote_selection.GOOGLE_REMOTE_PROFILES
-                        and event_source == "raw_hid"
-                    ):
-                        # Raw HID's logical button name is not proof that
-                        # Windows generated the same native keyboard action.
-                        # On Google TV reports only Home and Mute are known
-                        # to have native Consumer Control behavior; directions,
-                        # OK, Back and app buttons must reach the mapper.
-                        preserve_windows_original = effective_windows_button in {
-                            "home",
-                            "volume_mute",
-                        }
-                    else:
-                        preserve_windows_original = (
-                            effective_windows_button in _RAW_FALLBACK_KEY_TOKENS
-                        )
+                    preserve_windows_original = (
+                        effective_windows_button in _RAW_FALLBACK_KEY_TOKENS
+                    )
                     if preserve_windows_original:
-                        raw_mapping_bypassed = True
                         if is_pressed:
                             self._raw_fallback_buttons_down.add(button_id)
                             if not self._arm_raw_fallback_hold_guard_locked(button_id):

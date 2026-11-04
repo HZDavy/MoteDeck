@@ -39,7 +39,6 @@ _application_command_cache_lock = threading.Lock()
 # different install location does not break the mapping.
 _APPLICATION_EXECUTABLES: Dict[key_mapping.ActionKind, Tuple[str, ...]] = {
     key_mapping.ActionKind.OPEN_CODEX: ("Codex.exe", "codex.exe"),
-    key_mapping.ActionKind.OPEN_WORKBUDDY: ("WorkBuddy.exe",),
     key_mapping.ActionKind.OPEN_CLAUDE: ("Claude.exe", "claude.exe"),
     key_mapping.ActionKind.OPEN_CMUX: ("cmux.exe", "cmux"),
     key_mapping.ActionKind.OPEN_WECHAT: ("WeChat.exe", "Weixin.exe"),
@@ -57,7 +56,6 @@ _APPLICATION_EXECUTABLES: Dict[key_mapping.ActionKind, Tuple[str, ...]] = {
 
 _APPLICATION_SHORTCUT_NAMES: Dict[key_mapping.ActionKind, Tuple[str, ...]] = {
     key_mapping.ActionKind.OPEN_CODEX: ("Codex",),
-    key_mapping.ActionKind.OPEN_WORKBUDDY: ("WorkBuddy",),
     key_mapping.ActionKind.OPEN_CLAUDE: ("Claude",),
     key_mapping.ActionKind.OPEN_CMUX: ("cmux",),
     key_mapping.ActionKind.OPEN_WECHAT: ("微信", "WeChat", "Weixin"),
@@ -100,8 +98,6 @@ def _candidate_paths(executable_names: Sequence[str]) -> Iterable[Path]:
     common_relative_directories = (
         Path("Programs"),
         Path("Programs", "Common"),
-        Path("Programs", "WorkBuddy"),
-        Path("WorkBuddy"),
         Path("Google", "Chrome", "Application"),
         Path("Microsoft", "Edge", "Application"),
         Path("Tencent", "WeChat"),
@@ -166,8 +162,7 @@ def _packaged_desktop_command(kind: key_mapping.ActionKind) -> Optional[Command]
     try:
         result = subprocess.run(
             ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
-             "Get-StartApps | Where-Object { $_.Name -eq 'Codex' -or $_.Name -eq 'Claude' "
-             "-or $_.AppID -like 'OpenAI.Codex_*!*' } | "
+             "Get-StartApps | Where-Object { $_.Name -eq 'Codex' -or $_.Name -eq 'Claude' } | "
              "Select-Object Name,AppID | ConvertTo-Json -Compress"],
             capture_output=True,
             text=True,
@@ -185,18 +180,9 @@ def _packaged_desktop_command(kind: key_mapping.ActionKind) -> Optional[Command]
     if not isinstance(entries, list):
         return None
     for entry in entries:
-        if not isinstance(entry, dict):
+        if not isinstance(entry, dict) or entry.get("Name") != name:
             continue
         app_id = entry.get("AppID")
-        # The Codex package can display as ChatGPT; match its stable package
-        # identity instead of launching an unrelated ChatGPT app or agent CLI.
-        codex_package = (
-            kind == key_mapping.ActionKind.OPEN_CODEX
-            and isinstance(app_id, str)
-            and app_id.casefold().startswith("openai.codex_")
-        )
-        if entry.get("Name") != name and not codex_package:
-            continue
         if (isinstance(app_id, str) and "!" in app_id
                 and not any(char in app_id for char in "\r\n\x00")):
             explorer = Path(os.environ.get("WINDIR", r"C:\Windows")) / "explorer.exe"

@@ -2020,11 +2020,7 @@ Item {
                         tokens: root.tokens
                         kind: noteKind
                         text: SettingsController.interceptionAvailable
-                            ? qsTr("已启用")
-                            : SettingsController.interceptionPendingReboot
-                                ? qsTr("待重启")
-                                : SettingsController.interceptionInstalled
-                                    ? qsTr("已安装") : qsTr("未安装")
+                            ? qsTr("已安装") : qsTr("未安装")
                         font.pixelSize: tokens.fontSizeControl
                         font.weight: Font.DemiBold
                         color: tokens.textSecondary
@@ -2057,8 +2053,8 @@ Item {
                     tokens: root.tokens
                     compactMinimumWidth: tokens.buttonWidth4Chars
                     flat: true
-                    // 未安装时显示「安装驱动」；驱动已注册（已启用或待重启）时换成「卸载驱动」。
-                    visible: !SettingsController.interceptionInstalled
+                    // 未安装时显示「安装驱动」，已安装时换成「卸载驱动」。
+                    visible: !SettingsController.interceptionAvailable
                     enabled: SettingsController.interceptionInstallerAvailable
                     text: qsTr("安装驱动")
                     Accessible.name: qsTr("安装 Interception 驱动")
@@ -2071,7 +2067,7 @@ Item {
                     tokens: root.tokens
                     compactMinimumWidth: tokens.buttonWidth4Chars
                     flat: true
-                    visible: SettingsController.interceptionInstalled
+                    visible: SettingsController.interceptionAvailable
                     enabled: SettingsController.interceptionInstallerAvailable
                     text: qsTr("卸载驱动")
                     Accessible.name: qsTr("卸载 Interception 驱动")

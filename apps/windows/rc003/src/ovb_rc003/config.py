@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
@@ -181,6 +182,76 @@ def config_path(root: Path = None) -> Path:  # type: ignore[assignment]
 
 def key_bindings_path(root: Path = None) -> Path:  # type: ignore[assignment]
     return (root or config_root()) / KEY_BINDINGS_FILENAME
+
+
+# 返回键/音量键补充通道（HID tap）的降级记录，单独一份文件，不混进
+# config.json：授权取消、授权失败或按键组件不可校验时写一条，下一次启动
+# 直接跳过 tap，不再反复弹授权；用户手动关掉补充通道也记在同一份文件里
+# （state=disabled）。文件里只有状态和原因，不含任何设备标识。
+HID_TAP_DEGRADED_FILENAME = "hid-tap-degraded.json"
+HID_TAP_STATE_DEGRADED = "degraded"
+HID_TAP_STATE_DISABLED = "disabled"
+_HID_TAP_STATES = frozenset({HID_TAP_STATE_DEGRADED, HID_TAP_STATE_DISABLED})
+
+
+def hid_tap_degraded_path(root: Path = None) -> Path:  # type: ignore[assignment]
+    return (root or config_root()) / HID_TAP_DEGRADED_FILENAME
+
+
+def read_hid_tap_degraded(root: Path = None) -> Optional[Dict[str, str]]:  # type: ignore[assignment]
+    """Return ``{"state", "reason"}`` when the tap was degraded or disabled.
+
+    A missing, unreadable or unrecognised file means "no record": the tap is
+    allowed to start normally.
+    """
+
+    try:
+        with open(hid_tap_degraded_path(root), "r", encoding="utf-8") as handle:
+            document = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(document, dict):
+        return None
+    state = str(document.get("state", "")).strip().lower()
+    if state not in _HID_TAP_STATES:
+        return None
+    return {
+        "state": state,
+        "reason": str(document.get("reason", "")).strip()[:64],
+    }
+
+
+def save_hid_tap_degraded(
+    root: Path = None, *, state: str, reason: str = ""  # type: ignore[assignment]
+) -> bool:
+    """Persist one degradation/disable record.
+
+    Returns False when the folder is not writable; a read-only config folder
+    must never break the button path, it only means the record cannot stick.
+    """
+
+    if state not in _HID_TAP_STATES:
+        raise ValueError("hid tap state 不受支持。")
+    document = {
+        "version": 1,
+        "state": state,
+        "reason": str(reason)[:64],
+        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+    }
+    try:
+        _save_json_atomic(hid_tap_degraded_path(root), document)
+    except OSError:
+        return False
+    return True
+
+
+def clear_hid_tap_degraded(root: Path = None) -> None:  # type: ignore[assignment]
+    """Drop the record so the next service start retries the tap once."""
+
+    try:
+        hid_tap_degraded_path(root).unlink()
+    except OSError:
+        pass
 
 
 # 外部插件（Vokie）下发的语音键统一打这个标记：它们自带快捷键，只能排序、
@@ -347,8 +418,8 @@ def _assert_no_forbidden_keys(data: Dict[str, Any]) -> None:
         )
 
 
-def load_config(path: Path, *, required: bool = False) -> Dict[str, Any]:
-    return _normalize_loaded_config(_read_settings_document(path, required=required))
+def load_config(path: Path) -> Dict[str, Any]:
+    return _normalize_loaded_config(_read_settings_document(path))
 
 
 def _normalize_loaded_config(stored: dict) -> Dict[str, Any]:
@@ -496,8 +567,8 @@ def _normalize_remote_recording_limit(document):
     document["remote_recording_limit_seconds"] = limit
 
 
-def _read_settings_document(path, *, required: bool = False):
-    if not required and not Path(path).is_file():
+def _read_settings_document(path):
+    if not Path(path).is_file():
         return {}
     value = json.loads(Path(path).read_text(encoding="utf-8-sig"))
     if not isinstance(value, dict):
@@ -1394,24 +1465,16 @@ def default_key_bindings(profile: str = "xiaomi-rc003") -> Dict[str, Any]:
     }
 
 
-def load_key_bindings(
-    path: Path, *, selected: dict | None = None, required: bool = False
-) -> Dict[str, Any]:
-    if selected is None:
-        selected = _read_settings_document(
-            Path(path).with_name(CONFIG_FILENAME), required=required
-        )
-    return _load_key_bindings_for_selection(path, selected, required=required)
+def load_key_bindings(path: Path) -> Dict[str, Any]:
+    selected = _read_settings_document(Path(path).with_name(CONFIG_FILENAME))
+    return _load_key_bindings_for_selection(path, selected)
 
 
-def _load_key_bindings_for_selection(
-    path: Path, selected: dict, *, required: bool = False
-) -> Dict[str, Any]:
+def _load_key_bindings_for_selection(path: Path, selected: dict) -> Dict[str, Any]:
     from . import remote_settings, remote_selection
     profile = remote_selection.active_profile(selected) or remote_selection.RC003_PROFILE
     bindings = default_key_bindings(profile)
-    path = Path(path)
-    if required or path.is_file():
+    if path.is_file():
         with path.open("r", encoding="utf-8-sig") as handle:
             stored = json.load(handle)
         if not isinstance(stored, dict):
@@ -1479,8 +1542,7 @@ def normalize_voice_product_boundary(
         if action.kind == key_mapping.ActionKind.VOICE:
             if button_id == "mic" and legacy_mode == "hold":
                 primary[button_id] = key_mapping.ButtonAction(
-                    key_mapping.ActionKind.VOICE_HOLD,
-                    inject_mode=action.inject_mode,
+                    key_mapping.ActionKind.VOICE_HOLD
                 ).to_dict()
             else:
                 removed[button_id] = action.kind.value

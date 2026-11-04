@@ -149,12 +149,9 @@ class VoiceReceiver:
                 self._startup_overflow = True
             return
         if not self.available:
-            # A host shortcut and remote audio must share the same verified
-            # session. A notification without a negotiated stream cannot start
-            # a shortcut-only hold (and leave it stuck when STOP is lost).
-            if self.observation and kind in ("audio", "control"):
+            if self.observation and attribute in (0x3c, 0x3f):
                 self.observation.count("not_available")
-                if kind == "control":
+                if attribute == 0x3f:
                     self.observation.control(value, stamp, "unavailable", "not_available")
             return
         now = time.monotonic()

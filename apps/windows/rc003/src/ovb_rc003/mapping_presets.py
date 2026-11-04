@@ -14,7 +14,15 @@ import json
 from pathlib import Path
 from uuid import UUID, uuid4
 
-from . import config, device_catalog, key_mapping, remote_layout, settings_ui, win32_keys
+from . import (
+    config,
+    device_catalog,
+    key_mapping,
+    remote_layout,
+    remote_selection,
+    settings_ui,
+    win32_keys,
+)
 
 FILENAME = "mapping_presets.json"
 FORMAT = "RemoteMic.key-mapping"
@@ -27,7 +35,7 @@ BUNDLE_APP_FIELDS = {"name", "process", "hotkey", "mapping"}
 MAX_BYTES = 2 * 1024 * 1024
 MAX_PRESETS = 100
 MAPPING_FIELDS = ("bindings", "secondary_bindings", "display_notes")
-PROFILES = (device_catalog.RC003_ID,)
+PROFILES = (device_catalog.RC003_ID, remote_selection.CHROMECAST_PROFILE)
 AUTO_ID = "automatic"
 AUTO_NAME = "26-1012 自动保存"
 SCHEMA_VERSION = 3

@@ -75,7 +75,6 @@ _REFERENCE_ACTION_LABELS: Dict[key_mapping.ActionKind, str] = {
     key_mapping.ActionKind.ELEMENT_NAVIGATION_TOGGLE: "元素导航开关",
     key_mapping.ActionKind.OPEN_REMOTE_MIC: _OPEN_APPLICATION_DISPLAY,
     key_mapping.ActionKind.OPEN_CODEX: "打开 Codex",
-    key_mapping.ActionKind.OPEN_WORKBUDDY: "打开 WorkBuddy",
     key_mapping.ActionKind.OPEN_CLAUDE: "打开 Claude",
     key_mapping.ActionKind.OPEN_CMUX: "打开 cmux 终端",
     # Keep saved mappings readable; this action is no longer a menu preset.
@@ -143,7 +142,7 @@ ACTION_OPTION_GROUPS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
     (
         "启动应用",
         (
-            _OPEN_APPLICATION_DISPLAY, "打开 Codex", "打开 WorkBuddy", "打开 Claude", "打开 cmux 终端",
+            _OPEN_APPLICATION_DISPLAY, "打开 Claude", "打开 cmux 终端",
             "打开 Cursor", "打开 Slack", "打开企业微信", "打开网易云音乐",
             "打开 Chrome", "打开 Edge", "打开 Zed",
         ),
@@ -342,19 +341,6 @@ def voice_slot_for_display(text: str) -> Optional[int]:
     if 1 <= number <= key_mapping.MAX_VOICE_SLOTS:
         return number
     return None
-
-
-def voice_slot_mapping_display(slot: int, hotkey_text: str) -> str:
-    """Show a voice row's recorded host shortcut when one exists.
-
-    ``语音1`` is the internal slot name, not the key that reaches the input
-    method. Show the recorded host key (for example ``ralt``) instead.
-    Keep the slot name as the
-    empty/unrecorded fallback so old configurations remain editable.
-    """
-
-    text = str(hotkey_text or "").strip()
-    return text or voice_slot_display(slot)
 
 
 def is_voice_mode_cycle_display(text: str) -> bool:
@@ -734,38 +720,6 @@ def _resolve_hold_shortcut(
     return str(hotkey_text).strip()
 
 
-def _preserve_voice_slot_for_hotkey_display(
-    button_id: str,
-    text: str,
-    *,
-    base_bindings: dict,
-    slot_hotkeys: Dict[int, str],
-) -> Optional[key_mapping.ButtonAction]:
-    """Keep a voice action when the mapping view is showing its host key.
-
-    The mapping page now renders ``ralt`` instead of ``语音1`` for an already
-    assigned voice slot. On save, recognize that display form only for the
-    row that was already bound to that slot; a normal row typed as ``ralt``
-    remains an ordinary key-combo mapping.
-    """
-
-    raw_bindings = base_bindings.get("bindings", {})
-    raw_action = raw_bindings.get(button_id) if isinstance(raw_bindings, dict) else None
-    if not isinstance(raw_action, dict):
-        return None
-    try:
-        previous = key_mapping.ButtonAction.from_dict(raw_action)
-    except (KeyError, TypeError, ValueError):
-        return None
-    slot = key_mapping.voice_slot_for_action(previous)
-    if slot is None:
-        return None
-    candidate = str(slot_hotkeys.get(slot, "")).strip()
-    if not candidate or str(text).strip().casefold() != candidate.casefold():
-        return None
-    return previous
-
-
 def build_save_model(
     *,
     button_display_map: Dict[str, str],
@@ -797,22 +751,13 @@ def build_save_model(
     bindings: Dict[str, dict] = {}
     voice_slot_bindings: Dict[int, str] = {}
     for button_id, text in button_display_map.items():
-        action = _preserve_voice_slot_for_hotkey_display(
+        action = _validated_button_action(
             button_id,
+            key_mapping.ButtonTrigger.SINGLE_CLICK.value,
             text,
             base_bindings=base_bindings,
-            slot_hotkeys=slot_hotkeys,
+            inject_mode=_resolve_inject_mode(button_inject_modes, button_id),
         )
-        if action is not None and isinstance(button_inject_modes, dict) and button_id in button_inject_modes:
-            action = replace(action, inject_mode=_resolve_inject_mode(button_inject_modes, button_id))
-        if action is None:
-            action = _validated_button_action(
-                button_id,
-                key_mapping.ButtonTrigger.SINGLE_CLICK.value,
-                text,
-                base_bindings=base_bindings,
-                inject_mode=_resolve_inject_mode(button_inject_modes, button_id),
-            )
         if action is None:
             continue
         voice_slot = key_mapping.voice_slot_for_action(action)

@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 import time
 
-from . import config, frida_compat, remote_selection
+from . import config, remote_selection
 from .chromecast_buttons import HidButtonReceiver, empty_stop_details
 from .chromecast_channel import Channel, ParentLease, DIAGNOSTIC_REASONS
 from .chromecast_device_windows import SelectedDevice
@@ -19,7 +19,7 @@ from .chromecast_pipe_windows import PipeError, inspect_peer, verify_peer
 def _selected(entity):
     settings = config.load_config(config.config_path())
     return (remote_selection.active_key(settings) == entity
-            and remote_selection.active_profile(settings) in remote_selection.GOOGLE_REMOTE_PROFILES)
+            and remote_selection.active_profile(settings) == remote_selection.CHROMECAST_PROFILE)
 
 
 async def receive(identity, parent, pipe):
@@ -27,13 +27,6 @@ async def receive(identity, parent, pipe):
     lease = ParentLease(time.monotonic())
     device = tap = receiver = voice = voice_open = initialize = tap_start = None
     announced = False
-    # 9451 的侧边音量键单独走 Frida 复制通道；这条通道被系统拦截或找不到入口
-    # 时只关掉它，前面板按键（Raw Input）和语音照常工作。
-    settings = config.load_config(config.config_path())
-    google_tv = remote_selection.active_profile(settings) == remote_selection.GOOGLE_TV_PROFILE
-    volume_disabled = google_tv and bool(
-        frida_compat.read_google_tv_volume_degraded_state(config.config_root())
-    )
     cleanup_ok = True
     reason, stage = "stopped", "start"
     voice_enabled = False
@@ -108,17 +101,11 @@ async def receive(identity, parent, pipe):
                 await initialize
                 initialize = None
                 stage = "capture"
-                if volume_disabled:
-                    # 侧边音量键此前已被关闭：不再挂 Frida，前面板按键和语音
-                    # 仍从这条接收链路正常开始。
-                    observation.stage("hid_primary_ready")
-                    tap_start = None
-                    deadline = time.monotonic() + 5
-                else:
-                    tap = HidTap(identity.entity)
-                    tap_start = asyncio.create_task(asyncio.to_thread(tap.start))
-                    deadline = time.monotonic() + 25
-                    observation.stage("hid_primary_start")
+                receiver = HidButtonReceiver(identity.entity, identity.generation)
+                tap = HidTap(identity.entity)
+                tap_start = asyncio.create_task(asyncio.to_thread(tap.start))
+                deadline = time.monotonic() + 25
+                observation.stage("hid_primary_start")
             if tap_start is not None:
                 if not tap_start.done():
                     if now > deadline:
@@ -129,35 +116,12 @@ async def receive(identity, parent, pipe):
                     await tap_start
                 except Exception as error:
                     code = str(error)
-                    mapped = code if code in {"hid_source_unconfirmed", "hid_symbol_unavailable"} else "hid_capture_failed"
-                    if google_tv and mapped != "hid_source_unconfirmed":
-                        # 设备身份没确认是临时问题（遥控器没连好），继续报错；
-                        # 其余失败（组件缺失、系统拦截、入口变化）只关掉侧边音量。
-                        try:
-                            frida_compat.record_google_tv_volume_degraded_state(
-                                config.config_root(),
-                                frida_compat.HidTapState.UNAVAILABLE.value,
-                            )
-                        except OSError:
-                            pass
-                        tap = None
-                        volume_disabled = True
-                        observation.stage("hid_primary_ready")
-                    else:
-                        raise PipeError(mapped) from None
-                else:
-                    receiver = HidButtonReceiver(
-                        identity.entity, identity.generation, product_id=tap.product_id
-                    )
+                    raise PipeError(code if code in {"hid_source_unconfirmed", "hid_symbol_unavailable"}
+                                    else "hid_capture_failed") from None
                 tap_start = None
                 deadline = time.monotonic() + 5
-            if volume_disabled and not announced:
-                # 没有私有报告通道时，接收链路仍要宣布就绪，语音才能打开。
-                pipe.write(events.encode("ready"))
-                announced = True
-                observation.stage("source_ready")
             stage = "receive"
-            for kind, payload, stamp in (tap.poll() if tap is not None else ()):
+            for kind, payload, stamp in tap.poll():
                 if kind == "error":
                     raise PipeError("hid_capture_failed")
                 if kind == "hook_ready":

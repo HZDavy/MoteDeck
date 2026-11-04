@@ -22,12 +22,6 @@ _VOICE_HOTKEY_BACKEND_MARKED = "marked_keybd_event"
 # is re-sent here at the typematic rate.  The first repeat starts at the same
 # 0.55 s boundary the tap/hold gesture uses, so a tap never looks like a hold.
 _VOICE_HOTKEY_REPEAT_INITIAL_DELAY_SECONDS = 0.550
-_NON_REPEATABLE_HOLD_KEYS = frozenset({
-    "shift", "lshift", "rshift",
-    "ctrl", "lctrl", "rctrl",
-    "alt", "lalt", "ralt",
-    "win", "lwin", "rwin",
-})
 
 @dataclass(frozen=True)
 class ShortcutServices:
@@ -84,6 +78,7 @@ class VoiceShortcutSession:
         cancelled=None,
         voice_slot: Optional[int] = None,
         inject_mode: Optional[str] = None,
+        require_tracked_hold: bool = True,
     ) -> bool:
         backend = backend_override or self.services.configured_backend()
         tokens = tokens_override or self.recorded_tokens()
@@ -110,7 +105,9 @@ class VoiceShortcutSession:
                 self.pending_tokens = tokens
                 self.pending_backend = backend
                 self.pending_inject_mode = inject_mode
-            self.send_action(action, tokens, inject_mode)
+            self.send_action(
+                action, tokens, inject_mode, require_tracked_hold=require_tracked_hold
+            )
             if action == voice_controller.VoiceHostAction.KEY_DOWN:
                 self.active_backend = backend
                 self._start_hold_repeat_locked()
@@ -155,10 +152,15 @@ class VoiceShortcutSession:
         action: voice_controller.VoiceHostAction,
         tokens: Tuple[str, ...],
         inject_mode: Optional[str] = None,
+        *,
+        require_tracked_hold: bool = True,
     ) -> None:
         backend = injection_backend.backend_for(inject_mode)
         if action == voice_controller.VoiceHostAction.KEY_DOWN:
-            backend.key_down(tokens)
+            if require_tracked_hold:
+                backend.key_down(tokens)
+            else:
+                backend.key_down(tokens, require_tracked_hold=False)
         else:
             backend.key_up(tokens)
 
@@ -167,11 +169,6 @@ class VoiceShortcutSession:
 
         self._stop_hold_repeat_locked()
         if not self.pending_tokens:
-            return
-        # A physical keyboard does not typematic-repeat a modifier-only hold.
-        # Repeating RAlt can retrigger or toggle a global voice shortcut many
-        # times while one remote press is still active.
-        if self.pending_tokens[-1] in _NON_REPEATABLE_HOLD_KEYS:
             return
         self.repeat_stopping = False
         self.repeat_token = object()

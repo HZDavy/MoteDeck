@@ -26,7 +26,7 @@ def _capture_item(value):
 
 def _selected(entity):
     settings = config.load_config(config.config_path())
-    return remote_selection.active_key(settings) == entity and remote_selection.active_profile(settings) in remote_selection.GOOGLE_REMOTE_PROFILES
+    return remote_selection.active_key(settings) == entity and remote_selection.active_profile(settings) == remote_selection.CHROMECAST_PROFILE
 
 
 async def _probe_source(device, marker, observation):
@@ -228,12 +228,9 @@ async def receive(identity, parent, pipe):
                 from .chromecast_voice_receiver import VoiceReceiver
                 voice = VoiceReceiver(device, lambda kind, attempt, data, stamp:
                     pipe.write(events.encode("voice", event=kind, attempt=attempt, data=data, time=stamp)),
-                    detect_only=start["mode"] == "detect", observation=observation,
-                    direct_notifications=True)
+                    detect_only=start["mode"] == "detect", observation=observation)
+                receiver.on_notification = voice.notification
                 voice_open = asyncio.create_task(voice.open())
-            if voice:
-                for attribute, value, stamp in device.poll_voice():
-                    voice.notification(attribute, value, stamp)
             if voice and voice_open.done():
                 stage = "voice_open"
                 await voice_open
@@ -281,8 +278,6 @@ async def receive(identity, parent, pipe):
                         diagnostic("voice_stop", "failed", receiver.reason, receiver.stop_details)
                         cleanup_ok = False
                         break
-                    for attribute, value, stamp in device.poll_voice():
-                        voice.notification(attribute, value, stamp)
                     await voice.tick()
                     if voice.hardware_stopped:
                         break
@@ -328,7 +323,6 @@ async def receive(identity, parent, pipe):
                         for task in tasks:
                             task.cancel()
                         await asyncio.gather(*tasks, return_exceptions=True)
-                        await resource.close_voice()
                         resource.close()
                     diagnostic(cleanup_stage, "done", reason)
                 except Exception:

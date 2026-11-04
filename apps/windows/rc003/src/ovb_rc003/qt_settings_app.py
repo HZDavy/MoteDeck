@@ -891,13 +891,7 @@ def _load_qt_classes() -> dict:
             if role == self.DisplayNameRole:
                 return remote_layout.display_names(self._profile)[button_id]
             if role == self.HidUsageRole:
-                if self._profile == remote_selection.GOOGLE_TV_PROFILE:
-                    if button_id in {"volume_up", "volume_down"}:
-                        return "Google TV Remote · 侧边音量键"
-                    if button_id == "mic":
-                        return "Google TV Remote · 语音控制"
-                    return "Google TV Remote · 前面板按键"
-                if self._profile in remote_selection.GOOGLE_REMOTE_PROFILES:
+                if self._profile == remote_selection.CHROMECAST_PROFILE:
                     code = remote_layout.CHROMECAST_REPORT_CODES.get(button_id)
                     return (
                         f"普通报告 0x{code:02X}"
@@ -1758,6 +1752,12 @@ def _load_qt_classes() -> dict:
                     f"旧语音配置已停用（{affected}）。请重新选择动作；完成后会自动保存；"
                     "停用前不会执行该按钮的单击、双击或长按动作。"
                 )
+            # 软件方案在各型号之间共用一份列表：另一台遥控器第一次打开时，
+            # 把已有方案补过来，缺的按键默认禁用。
+            try:
+                self._app_profile_store().adopt_apps_from_siblings()
+            except Exception:  # noqa: BLE001 - 补不齐也不能挡启动
+                pass
             # 配置档案里的「自动保存」行只是当前按键设置的投影，启动时就要填好，
             # 否则第一次打开配置档案会是空列表，直到某次保存才出现。
             try:
@@ -2104,14 +2104,7 @@ def _load_qt_classes() -> dict:
                 if action_dict is not None:
                     try:
                         action = key_mapping.ButtonAction.from_dict(action_dict)
-                        display_text = settings_ui._action_to_display(action)
-                        voice_slot = key_mapping.voice_slot_for_action(action)
-                        if voice_slot is not None:
-                            display_text = settings_ui.voice_slot_mapping_display(
-                                voice_slot,
-                                self._effective_voice_slot_hotkey(voice_slot),
-                            )
-                        display_map[button_id] = display_text
+                        display_map[button_id] = settings_ui._action_to_display(action)
                         inject_mode_map[button_id] = action.inject_mode
                     except (KeyError, TypeError, ValueError):
                         display_map[button_id] = ""
@@ -2162,6 +2155,11 @@ def _load_qt_classes() -> dict:
             if 0 <= self._selected_device_index < len(self._DEVICE_ORDER):
                 return self._DEVICE_ORDER[self._selected_device_index]
             return self._selected_device_fallback_id
+
+        def _app_profile_store(self) -> app_profiles.AppProfileStore:
+            # 每个遥控器型号各有一份应用配置库，必须跟着当前选中的设备走。
+            return app_profiles.AppProfileStore(
+                self._config_root, self._selected_device_id())
 
         def _remote_selection(self) -> dict:
             from . import remote_selection
@@ -2273,13 +2271,13 @@ def _load_qt_classes() -> dict:
             choices = []
             for row in rows:
                 key, profile = row["key"], row["profile"]
-                conflict = key in saved and not remote_selection.profiles_compatible(saved[key], profile)
+                conflict = key in saved and saved[key] != profile
                 ready = self._remote_scan_valid and key in present and not conflict
                 note = ("（设备信息不一致）" if conflict else
                         "（待重新读取）" if not self._remote_scan_valid else
                         "（本次未找到）" if key not in present else "")
                 choices.append(dict(key=key, profile=profile,
-                    label=remote_selection.label(key, profile if not conflict else saved[key], peers) + note,
+                    label=remote_selection.label(key, saved.get(key, profile), peers) + note,
                     canUse=ready, isActive=key == active))
             return choices
 
@@ -2336,7 +2334,6 @@ def _load_qt_classes() -> dict:
                 path = config.config_path(self._config_root)
                 updated = config.load_config(path)
                 changed = remote_selection.active_key(updated) != selection["active"]
-                profile_changed = remote_selection.active_profile(updated) != remote_selection.profile_for_key(selection, selection["active"])
                 if changed:
                     saved, saved_bindings = config.switch_remote_settings(
                         path, config.key_bindings_path(self._config_root), selection,
@@ -2352,14 +2349,17 @@ def _load_qt_classes() -> dict:
                 self._remote_feedback("设备选择保存失败，原选择已保留，请重试。")
                 return False
             self._config = saved
-            if profile_changed and not changed:
-                self._load_bindings_into_model()
-                self.selectedDeviceIndexChanged.emit()
-                self.selectedDeviceChanged.emit()
             if changed:
                 self._bindings = saved_bindings
                 self._removed_voice_bindings = config.normalize_voice_product_boundary(saved, saved_bindings)
                 self._load_bindings_into_model()
+                # 刚换到的遥控器可能还没同步过软件方案，补一次，保证两台看到
+                # 的应用列表一样多。
+                try:
+                    self._app_profile_store().adopt_apps_from_siblings()
+                except Exception:  # noqa: BLE001 - 补不齐也不能挡切换
+                    pass
+                self._refresh_mapping_presets()
                 self._voice_hotkey = str(saved["voice_hotkeys"].get("hold", ""))
                 self._sync_voice_key_cache()
                 self._set_mapping_dirty(False)
@@ -2395,7 +2395,7 @@ def _load_qt_classes() -> dict:
             except remote_selection.SelectionError as exc:
                 self._remote_feedback(str(exc))
                 return
-            if updated == self._remote_selection() and not self._remote_save_uncertain:
+            if key == self.activeRemoteKey and not self._remote_save_uncertain:
                 self._remote_feedback("当前已在使用这台设备。")
                 return
             self._change_active_remote(updated, allow_legacy_binding=legacy_binding)
@@ -3551,15 +3551,9 @@ def _load_qt_classes() -> dict:
         ) -> _InputStartResult:
             from . import remote_selection
             selected_key = remote_selection.active_key(self._config)
-            bridge_profile = remote_selection.active_profile(self._config)
             if not selected_key:
                 return _InputStartResult("key_detection", False, "请先在设备页选择要使用的遥控器。")
-            # When the bridge is already running, request detection from its
-            # existing input owner for every profile. Registering another
-            # Raw Input window in this process can replace the bridge window
-            # for a device class and leave the service without input afterward.
-            use_bridge_detection = bridge_running
-            if use_bridge_detection:
+            if bridge_running:
                 try:
                     request = key_detection_bridge.request_detection(
                         self._config_root
@@ -3589,14 +3583,9 @@ def _load_qt_classes() -> dict:
             failures: List[str] = []
             try:
                 paths = raw_input_windows.enumerate_matching_device_paths()
-                if bridge_profile in remote_selection.GOOGLE_REMOTE_PROFILES:
-                    device_path = remote_selection.selected_raw_paths(
-                        paths, selected_key
-                    )
-                else:
-                    device_path = remote_selection.selected_raw_path(
-                        paths, selected_key
-                    )
+                device_path = (
+                    remote_selection.selected_raw_path(paths, selected_key)
+                )
                 listener = raw_input_windows.RawInputButtonListener(
                     lambda *_: None,
                     self._on_raw_input_event,
@@ -4272,7 +4261,7 @@ def _load_qt_classes() -> dict:
             if replacement is not None:
                 new_bindings = replacement
             if self._mapping_edit_target:
-                store = app_profiles.AppProfileStore(self._config_root)
+                store = self._app_profile_store()
                 try:
                     store.update_mapping(self._mapping_edit_target,
                                          app_profiles.snapshot(new_bindings, self._selected_device_id()))
@@ -4755,25 +4744,6 @@ def _load_qt_classes() -> dict:
             from . import injection_backend
 
             return injection_backend.interception_available()
-
-        @Property(bool, notify=injectModesChanged)
-        def interceptionInstalled(self) -> bool:
-            """驱动是否已注册（安装完成，但可能还没重启生效）。"""
-
-            from . import injection_backend
-
-            return injection_backend.interception_driver_installed()
-
-        @Property(bool, notify=injectModesChanged)
-        def interceptionPendingReboot(self) -> bool:
-            """已安装但尚未生效：驱动已注册、当前却不可用。"""
-
-            from . import injection_backend
-
-            return (
-                not injection_backend.interception_available()
-                and injection_backend.interception_driver_installed()
-            )
 
         @Property(str, notify=injectModesChanged)
         def interceptionUnavailableReason(self) -> str:
@@ -5599,10 +5569,12 @@ def _load_qt_classes() -> dict:
             try:
                 self._openmexia_devices = self._openmexia_client.devices()
             except openmexia_client.OpenMexiaError as exc:
+                self._openmexia_drop_stale_app_profiles()
                 if announce:
                     self._set_error_message(str(exc), self._VOICE_PAGE_INDEX)
                 return False
             except Exception as exc:  # noqa: BLE001 - Qt 槽不能甩异常
+                self._openmexia_drop_stale_app_profiles()
                 if announce:
                     self._set_error_message(
                         f"连接 OpenMexia 失败：{exc}", self._VOICE_PAGE_INDEX
@@ -5665,22 +5637,33 @@ def _load_qt_classes() -> dict:
             if self.configurationReadOnly:
                 return
             profile = self._selected_device_id()
-            store = app_profiles.AppProfileStore(self._config_root)
+            store = self._app_profile_store()
             try:
                 mapping = app_profiles.snapshot(self._bindings, profile)
                 restored = self._openmexia_read_app_stash(profile)
                 if restored is not None:
                     mapping = restored
-                store.ensure_app(
+                identity = store.ensure_app(
                     openmexia_client.APP_PROFILE_NAME,
                     openmexia_client.PROCESS_NAME,
                     mapping,
                 )
                 if restored is not None:
+                    self._openmexia_drop_app_stash(profile)
+                # 另一台遥控器上那条配置已经跟着同步过去了，把它自己调过的
+                # 那份映射补回去，别用这台遥控器的映射覆盖它。
+                for other in app_profiles.PROFILES:
+                    if other == profile:
+                        continue
+                    stash = self._openmexia_read_app_stash(other)
+                    if stash is None:
+                        continue
                     try:
-                        self._openmexia_app_stash_path().unlink(missing_ok=True)
-                    except OSError:
-                        pass
+                        app_profiles.AppProfileStore(
+                            self._config_root, other).update_mapping(identity, stash)
+                    except Exception:  # noqa: BLE001 - 恢复失败就先用同步过来的
+                        continue
+                    self._openmexia_drop_app_stash(other)
             except Exception as exc:  # noqa: BLE001 - 配置写不进去不影响连接
                 self._set_error_message(f"OpenMexia 应用配置添加失败：{exc}", self._VOICE_PAGE_INDEX)
                 return
@@ -5689,41 +5672,100 @@ def _load_qt_classes() -> dict:
         def _openmexia_app_stash_path(self) -> Path:
             return Path(self._config_root) / "openmexia_app_mapping.json"
 
-        def _openmexia_read_app_stash(self, profile: str) -> Optional[dict]:
-            """断开时暂存的那份按键映射；读不出来就当没有。"""
+        def _openmexia_read_stash_table(self) -> Dict[str, dict]:
+            """读出按遥控器型号分开的暂存表；读不出来当空。"""
 
             try:
                 with self._openmexia_app_stash_path().open("r", encoding="utf-8") as handle:
                     stored = json.load(handle)
+            except Exception:  # noqa: BLE001 - 暂存只是锦上添花
+                return {}
+            if not isinstance(stored, dict):
+                return {}
+            table = stored.get("profiles")
+            if isinstance(table, dict):
+                return {key: row for key, row in table.items() if isinstance(row, dict)}
+            # 旧版只存一份、没记型号，按小米处理。
+            if "mapping" in stored:
+                return {device_catalog.RC003_ID: stored}
+            return {}
+
+        def _openmexia_write_app_stash(self, profile: str, entry: dict) -> None:
+            try:
+                table = self._openmexia_read_stash_table()
+                table[profile] = {"name": entry["name"], "mapping": entry["mapping"]}
+                config._save_json_atomic(
+                    self._openmexia_app_stash_path(), {"profiles": table})
+            except Exception:  # noqa: BLE001 - 存不下也照常移除
+                pass
+
+        def _openmexia_drop_app_stash(self, profile: str) -> None:
+            try:
+                table = self._openmexia_read_stash_table()
+                if table.pop(profile, None) is None:
+                    return
+                if table:
+                    config._save_json_atomic(
+                        self._openmexia_app_stash_path(), {"profiles": table})
+                else:
+                    self._openmexia_app_stash_path().unlink(missing_ok=True)
+            except Exception:  # noqa: BLE001 - 暂存只是锦上添花
+                pass
+
+        def _openmexia_read_app_stash(self, profile: str) -> Optional[dict]:
+            """断开时暂存的那份按键映射；读不出来就当没有。"""
+
+            try:
+                stored = self._openmexia_read_stash_table().get(profile)
+                if stored is None:
+                    return None
                 return app_profiles.validate_mapping(stored["mapping"], profile, partial=True)
             except Exception:  # noqa: BLE001 - 暂存只是锦上添花
                 return None
+
+        def _openmexia_drop_stale_app_profiles(self) -> None:
+            """连不上插件时，把它以前留下的软件配置一并清掉。
+
+            只是“重新拉一次设备”失败（原本就连着）时不动配置。
+            """
+
+            if self._openmexia_connected:
+                return
+            self._openmexia_release_app_profile()
 
         def _openmexia_release_app_profile(self) -> None:
             """断开插件：移除它自带的软件配置，但把按键映射暂存下来。"""
 
             if self.configurationReadOnly:
                 return
-            store = app_profiles.AppProfileStore(self._config_root)
-            try:
-                entry = store.find_app(openmexia_client.PROCESS_NAME)
-                if entry is None:
-                    return
+            active = self._selected_device_id()
+            # 软件方案在各型号的库之间是同步的，先把每份映射都读出来存好，
+            # 再删一次——删这一下会跟着同步到其它型号。
+            found: Dict[str, dict] = {}
+            for profile in app_profiles.PROFILES:
                 try:
-                    config._save_json_atomic(self._openmexia_app_stash_path(), {
-                        "name": entry["name"],
-                        "mapping": entry["mapping"],
-                    })
-                except Exception:  # noqa: BLE001 - 存不下也照常移除
-                    pass
-                store.delete(entry["id"])
-                if entry["id"] == self._mapping_edit_target:
-                    self._mapping_edit_target = ""
-                    self.mappingEditTargetChanged.emit()
-                    self._load_bindings_into_model()
-                self._refresh_mapping_presets()
+                    entry = app_profiles.AppProfileStore(
+                        self._config_root, profile
+                    ).find_app(openmexia_client.PROCESS_NAME)
+                except Exception:  # noqa: BLE001 - 断开流程不能因此中断
+                    continue
+                if entry is not None:
+                    found[profile] = entry
+            if not found:
+                return
+            for profile, entry in found.items():
+                self._openmexia_write_app_stash(profile, entry)
+            source = active if active in found else next(iter(found))
+            entry = found[source]
+            try:
+                app_profiles.AppProfileStore(self._config_root, source).delete(entry["id"])
             except Exception:  # noqa: BLE001 - 断开流程不能因此中断
-                pass
+                return
+            if entry["id"] == self._mapping_edit_target:
+                self._mapping_edit_target = ""
+                self.mappingEditTargetChanged.emit()
+                self._load_bindings_into_model()
+            self._refresh_mapping_presets()
 
         def _remember_openmexia_connection(self, enabled: bool) -> None:
             """记住 OpenMexia 的连接开关，下次启动照它决定要不要自动连回去。"""
@@ -6039,6 +6081,14 @@ def _load_qt_classes() -> dict:
                 else ""
             ),
             notify=hidHelperStateChanged,
+        )
+
+        def _hid_tap_enabled(self) -> bool:
+            # 小米遥控器的返回/音量键补充通道：没有降级或手动关闭记录就是开着的。
+            return config.read_hid_tap_degraded(self._config_root) is None
+
+        hidTapEnabled = Property(
+            bool, _hid_tap_enabled, notify=bridgeInputStateChanged
         )
 
         startHidden = Property(bool, lambda self: self._start_hidden, constant=True)
@@ -7708,88 +7758,57 @@ def _load_qt_classes() -> dict:
 
         @Slot()
         def restartBridge(self) -> None:
-            self._begin_bridge_restart(
-                automatic=False, retry_hid_tap=True
-            )
+            # 用户主动重启服务（含“重新授权”）：清掉降级记录，重试一次返回/音量键。
+            record = config.read_hid_tap_degraded(self._config_root)
+            if (
+                record is not None
+                and record["state"] == config.HID_TAP_STATE_DEGRADED
+            ):
+                config.clear_hid_tap_degraded(self._config_root)
+                self.bridgeInputStateChanged.emit()
+            self._begin_bridge_restart(automatic=False)
 
         @Slot(bool)
-        def setHidSupplementEnabled(self, enabled: bool) -> None:
-            """开关就是用户自己的选择：关闭时持久化，打开时清掉并重试。"""
+        def setHidTapEnabled(self, enabled: bool) -> None:
+            """「返回/音量键」开关：只管补充通道，普通按键和语音不受影响。"""
 
+            enabled = bool(enabled)
             if self.configurationReadOnly:
+                self.bridgeInputStateChanged.emit()
                 return
-            try:
-                if enabled:
-                    frida_compat.clear_hid_tap_degraded_state(
-                        self._config_root
+            if enabled:
+                status = bridge_runtime_status.read_status(self._config_root)
+                if (
+                    self._bridge_running
+                    and status is not None
+                    and status.voice_active
+                ):
+                    self.bridgeInputStateChanged.emit()
+                    self._set_error_message(
+                        "当前正在语音输入；结束本次语音后再打开返回/音量键。",
+                        self._DEVICE_PAGE_INDEX,
                     )
-                else:
-                    frida_compat.record_hid_tap_degraded_state(
-                        self._config_root,
-                        frida_compat.HID_TAP_USER_DISABLED_STATE,
-                    )
-            except OSError:
+                    return
+                # 打开：清掉降级/关闭记录，重启服务重新尝试授权。
+                config.clear_hid_tap_degraded(self._config_root)
+            elif not config.save_hid_tap_degraded(
+                self._config_root, state=config.HID_TAP_STATE_DISABLED
+            ):
+                self.bridgeInputStateChanged.emit()
                 self._set_error_message(
-                    "按键组件状态未能保存，请重试。",
-                    self._DEVICE_PAGE_INDEX,
+                    "无法保存返回/音量键设置。", self._DEVICE_PAGE_INDEX
                 )
                 return
             self.bridgeInputStateChanged.emit()
+            self._set_error_message("")
             if self._bridge_running:
                 self._begin_bridge_restart(automatic=False)
-
-        hidSupplementEnabled = Property(
-            bool,
-            lambda self: not frida_compat.read_hid_tap_degraded_state(
-                self._config_root
-            ),
-            notify=bridgeInputStateChanged,
-        )
-
-        def _get_is_google_tv_remote(self) -> bool:
-            from . import remote_selection
-
-            return self.activeRemoteProfile == remote_selection.GOOGLE_TV_PROFILE
-
-        isGoogleTvRemote = Property(
-            bool,
-            _get_is_google_tv_remote,
-            notify=remoteSelectionChanged,
-        )
-
-        @Slot(bool)
-        def setGoogleTvVolumeEnabled(self, enabled: bool) -> None:
-            """Google TV 遥控器只有侧边音量键走 Frida；关闭时只影响这一项。"""
-
-            if self.configurationReadOnly:
-                return
-            try:
-                if enabled:
-                    frida_compat.clear_google_tv_volume_degraded_state(
-                        self._config_root
-                    )
-                else:
-                    frida_compat.record_google_tv_volume_degraded_state(
-                        self._config_root,
-                        frida_compat.HID_TAP_USER_DISABLED_STATE,
-                    )
-            except OSError:
-                self._set_error_message(
-                    "侧面音量键状态未能保存，请重试。",
-                    self._DEVICE_PAGE_INDEX,
+            else:
+                self._set_launch_status(
+                    "正在重启服务，重新尝试接收返回/音量键…"
+                    if enabled
+                    else "已关闭返回/音量键；其它按键与语音不受影响。"
                 )
-                return
-            self.bridgeInputStateChanged.emit()
-            if self._bridge_running:
-                self._begin_bridge_restart(automatic=False)
-
-        googleTvVolumeEnabled = Property(
-            bool,
-            lambda self: not frida_compat.read_google_tv_volume_degraded_state(
-                self._config_root
-            ),
-            notify=bridgeInputStateChanged,
-        )
 
         @Slot()
         def reconnectBridgeNow(self) -> None:
@@ -7854,7 +7873,6 @@ def _load_qt_classes() -> dict:
             *,
             automatic: bool,
             allow_active_voice: bool = False,
-            retry_hid_tap: bool = False,
         ) -> None:
             if self.configurationReadOnly:
                 return
@@ -7889,18 +7907,6 @@ def _load_qt_classes() -> dict:
             self._set_bridge_input_states(None)
             self._bridge_status_missing_since = None
             self._set_error_message("")
-            if retry_hid_tap:
-                # An explicit retry (重新授权/重启服务, or after enabling the
-                # privileged key component): drop the remembered supplement
-                # failure so the tap runs again.
-                try:
-                    frida_compat.clear_hid_tap_degraded_state(
-                        self._config_root
-                    )
-                except OSError:
-                    logger.warning(
-                        "could not clear the HID tap degradation", exc_info=True
-                    )
             self._set_launch_status(
                 "检测到旧版或按键通道异常；正在正常停止服务并启动当前版本…"
                 if automatic
@@ -8336,7 +8342,7 @@ def _load_qt_classes() -> dict:
                     raise ValueError("正在处理设置或输入，请完成后重试。")
                 if identity == app_profiles.GLOBAL_ID:
                     raise ValueError("自动保存项代表当前按键设置，不能设置状态。")
-                app_profiles.AppProfileStore(self._config_root).set_status(
+                self._app_profile_store().set_status(
                     identity, scope, process, hotkey)
                 self._refresh_mapping_presets()
                 return {"ok": True, "id": identity, "message": "配置状态已保存。"}
@@ -8365,7 +8371,7 @@ def _load_qt_classes() -> dict:
         def _refresh_mapping_presets(self) -> None:
             profile = self._selected_device_id()
             source, device = self._live_voice_fields()
-            entries = app_profiles.AppProfileStore(self._config_root).view(
+            entries = self._app_profile_store().view(
                 self._bindings, profile,
                 voice_input_source=source, voice_local_input_device=device,
                 voice_keys=config.voice_key_configs(self._config))
@@ -8395,7 +8401,7 @@ def _load_qt_classes() -> dict:
             if not identity:
                 return "", self._bindings
             try:
-                entry = app_profiles.AppProfileStore(self._config_root).get(identity)
+                entry = self._app_profile_store().get(identity)
                 if entry["scope"] != "app":
                     return "", self._bindings
                 return identity, app_profiles.apply_to(self._bindings, entry, profile)
@@ -8409,7 +8415,7 @@ def _load_qt_classes() -> dict:
             if not self._mapping_edit_target:
                 return ""
             try:
-                return app_profiles.AppProfileStore(self._config_root).get(
+                return self._app_profile_store().get(
                     self._mapping_edit_target)["name"]
             except Exception:  # noqa: BLE001 - label is cosmetic
                 return ""
@@ -8457,7 +8463,7 @@ def _load_qt_classes() -> dict:
 
         def _refresh_mapping_apps(self) -> None:
             try:
-                entries = app_profiles.AppProfileStore(self._config_root).list_apps()
+                entries = self._app_profile_store().list_apps()
             except Exception:  # noqa: BLE001 - an unreadable store must not break the panel
                 entries = []
             # Resolve every saved process in one pass: a single window scan can
@@ -8529,7 +8535,7 @@ def _load_qt_classes() -> dict:
                 if identity in ("", app_profiles.GLOBAL_ID):
                     identity = ""
                 if identity:
-                    entry = app_profiles.AppProfileStore(self._config_root).get(identity)
+                    entry = self._app_profile_store().get(identity)
                     if entry["scope"] != "app":
                         raise ValueError("这套配置没有绑定应用程序。")
                 if identity == self._mapping_edit_target:
@@ -8620,7 +8626,7 @@ def _load_qt_classes() -> dict:
                 if "." not in process:
                     process += ".exe"
                 profile = self._selected_device_id()
-                store = app_profiles.AppProfileStore(self._config_root)
+                store = self._app_profile_store()
                 existing = store.find_app(process)
                 if existing is not None:
                     identity = existing["id"]
@@ -8678,7 +8684,7 @@ def _load_qt_classes() -> dict:
                 self._busy_for_app_edit()
                 if identity == app_profiles.GLOBAL_ID:
                     raise ValueError("自动保存项不能删除。")
-                store = app_profiles.AppProfileStore(self._config_root)
+                store = self._app_profile_store()
                 entry = store.get(identity)
                 if str(entry["process"]).casefold() == openmexia_client.PROCESS_NAME:
                     raise ValueError(
@@ -8705,7 +8711,7 @@ def _load_qt_classes() -> dict:
                     self._run_mapping_auto_save()
                     if self._mapping_dirty:
                         raise ValueError("按键映射尚未保存完成，请稍后重试。")
-                app_profiles.AppProfileStore(self._config_root).move_app(
+                self._app_profile_store().move_app(
                     str(identity or ""), int(position))
                 self._refresh_mapping_apps()
                 return {"ok": True, "id": identity, "message": ""}
@@ -8733,7 +8739,7 @@ def _load_qt_classes() -> dict:
                 profile = self._selected_device_id()
                 identity, _ = self._resolved_edit_target()
                 source, device = self._live_voice_fields()
-                store = app_profiles.AppProfileStore(self._config_root)
+                store = self._app_profile_store()
                 if identity:
                     # An app layout stores only its own overrides, so export that
                     # instead of the global-plus-app layout shown on screen.
@@ -8776,7 +8782,7 @@ def _load_qt_classes() -> dict:
                         raise ValueError("按键映射尚未保存完成，请稍后重试。")
                 profile = self._selected_device_id()
                 source, device = self._live_voice_fields()
-                count = app_profiles.AppProfileStore(self._config_root).export_library(
+                count = self._app_profile_store().export_library(
                     Path(url.toLocalFile()),
                     profile,
                     app_profiles.snapshot(self._bindings, profile),
@@ -8814,7 +8820,7 @@ def _load_qt_classes() -> dict:
                     base, {"mapping": document["mapping"]}, profile)
                 name = "全局布局"
                 if identity:
-                    name = f"「{app_profiles.AppProfileStore(self._config_root).get(identity)['name']}」"
+                    name = f"「{self._app_profile_store().get(identity)['name']}」"
             except Exception as exc:  # noqa: BLE001 - Qt slots must not escape
                 detail = str(exc)
                 message = detail if len(detail) <= 240 else detail[:240] + "…"
@@ -8839,7 +8845,7 @@ def _load_qt_classes() -> dict:
                 if (self._mapping_auto_save_temporarily_blocked() or self._remote_selection_busy
                         or self._get_input_capture_in_use() or self._application_exit_requested):
                     raise ValueError("正在处理设置或输入，请完成后重试。")
-                store = app_profiles.AppProfileStore(self._config_root)
+                store = self._app_profile_store()
                 profile = self._selected_device_id()
                 source, device = self._live_voice_fields()
                 message = ""

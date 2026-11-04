@@ -3,34 +3,11 @@
   "projectOwner": "HZDavy",
   "repoType": "github",
   "repoHost": "https://github.com",
-  "files": [
-    "README.md"
-  ],
+  "files": ["README.md"],
   "imageSize": 80,
   "commit": false,
   "contributorsPerLine": 8,
   "linkToUsage": true,
   "skipCi": true,
-  "contributors": [
-    {
-      "login": "Ultraw",
-      "name": "Ultraw",
-      "avatar_url": "https://avatars.githubusercontent.com/u/25666456?v=4",
-      "profile": "https://github.com/Ultraw",
-      "contributions": [
-        "bug"
-      ]
-    },
-    {
-      "login": "vermouth587",
-      "name": "vermouth587",
-      "avatar_url": "https://avatars.githubusercontent.com/u/50365488?v=4",
-      "profile": "https://github.com/vermouth587",
-      "contributions": [
-        "bug"
-      ]
-    }
-  ],
-  "commitType": "docs",
-  "commitConvention": "angular"
+  "contributors": []
 }
