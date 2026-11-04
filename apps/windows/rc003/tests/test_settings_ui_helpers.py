@@ -100,7 +100,8 @@ class DisplayRoundTripTests(unittest.TestCase):
         self.assertNotIn("lctrl+win", flattened)
         self.assertNotIn("ralt", flattened)
         self.assertNotIn("ralt+space", flattened)
-        self.assertNotIn("打开 Codex", flattened)
+        self.assertIn("打开 Codex", flattened)
+        self.assertIn("打开 WorkBuddy", flattened)
         self.assertIn("打开 Claude", flattened)
         mouse_group = dict(settings_ui.ACTION_OPTION_GROUPS)["鼠标操作"]
         self.assertEqual(
@@ -136,6 +137,7 @@ class DisplayRoundTripTests(unittest.TestCase):
         expected = {
             "打开MoteDeck": key_mapping.ActionKind.OPEN_REMOTE_MIC,
             "打开 Codex": key_mapping.ActionKind.OPEN_CODEX,
+            "打开 WorkBuddy": key_mapping.ActionKind.OPEN_WORKBUDDY,
             "打开 Claude": key_mapping.ActionKind.OPEN_CLAUDE,
             "打开 cmux 终端": key_mapping.ActionKind.OPEN_CMUX,
             "打开 Chrome": key_mapping.ActionKind.OPEN_CHROME,

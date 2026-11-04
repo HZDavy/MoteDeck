@@ -75,6 +75,7 @@ _REFERENCE_ACTION_LABELS: Dict[key_mapping.ActionKind, str] = {
     key_mapping.ActionKind.ELEMENT_NAVIGATION_TOGGLE: "元素导航开关",
     key_mapping.ActionKind.OPEN_REMOTE_MIC: _OPEN_APPLICATION_DISPLAY,
     key_mapping.ActionKind.OPEN_CODEX: "打开 Codex",
+    key_mapping.ActionKind.OPEN_WORKBUDDY: "打开 WorkBuddy",
     key_mapping.ActionKind.OPEN_CLAUDE: "打开 Claude",
     key_mapping.ActionKind.OPEN_CMUX: "打开 cmux 终端",
     # Keep saved mappings readable; this action is no longer a menu preset.
@@ -142,7 +143,7 @@ ACTION_OPTION_GROUPS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
     (
         "启动应用",
         (
-            _OPEN_APPLICATION_DISPLAY, "打开 Claude", "打开 cmux 终端",
+            _OPEN_APPLICATION_DISPLAY, "打开 Codex", "打开 WorkBuddy", "打开 Claude", "打开 cmux 终端",
             "打开 Cursor", "打开 Slack", "打开企业微信", "打开网易云音乐",
             "打开 Chrome", "打开 Edge", "打开 Zed",
         ),

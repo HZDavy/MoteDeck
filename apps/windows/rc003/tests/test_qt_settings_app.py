@@ -2488,12 +2488,18 @@ class SettingsControllerTests(unittest.TestCase):
             qt_settings_app.action_executor,
             "resolve_application_command",
             side_effect=lambda action: ("C:/Apps/Claude.exe",)
-            if action.kind == key_mapping.ActionKind.OPEN_CLAUDE else None,
+            if action.kind in (key_mapping.ActionKind.OPEN_CLAUDE,
+                               key_mapping.ActionKind.OPEN_CODEX,
+                               key_mapping.ActionKind.OPEN_WORKBUDDY) else None,
         ):
             primary = controller.primaryActionOptionsFor("up")
             secondary = controller.secondaryActionOptionsFor("up")
         self.assertIn("打开 Claude", primary)
         self.assertIn("打开 Claude", secondary)
+        self.assertIn("打开 Codex", primary)
+        self.assertIn("打开 WorkBuddy", primary)
+        self.assertIn("打开 Codex", secondary)
+        self.assertIn("打开 WorkBuddy", secondary)
         self.assertNotIn("打开 cmux 终端", primary)
         self.assertNotIn("打开微信", secondary)
         self.assertNotIn("滚轮向上", primary)
