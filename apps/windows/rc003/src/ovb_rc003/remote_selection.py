@@ -27,8 +27,10 @@ _MAX_DEVICES = 128
 RC003_PROFILE = "xiaomi-rc003"
 RC001_PROFILE = "xiaomi-rc001"
 CHROMECAST_PROFILE = "chromecast-remote"
+GOOGLE_TV_PROFILE = "google-tv-remote"
+GOOGLE_REMOTE_PROFILES = frozenset({CHROMECAST_PROFILE, GOOGLE_TV_PROFILE})
 XIAOMI_PROFILES = frozenset({RC003_PROFILE, RC001_PROFILE})
-KNOWN_PROFILES = frozenset({RC003_PROFILE, RC001_PROFILE, CHROMECAST_PROFILE})
+KNOWN_PROFILES = XIAOMI_PROFILES | GOOGLE_REMOTE_PROFILES
 # 早期试装版为了让谷歌遥控器在没有真机时也能点按，写进过一个固定 digest 的
 # “模拟”条目。正式版只认真机，读到这条旧记录时直接丢弃，免得它被当成真机
 # 去配对/连 GATT。
@@ -211,8 +213,15 @@ def select_paired_device(selection: dict, key: str, paired: list[dict]) -> tuple
     if row is None or row.get("profile") not in KNOWN_PROFILES:
         raise SelectionError("未找到这台已配对且支持的设备，请刷新后重新选择。")
     saved_profile = profile_for_key(result, key)
-    if saved_profile and saved_profile != row["profile"]:
+    if saved_profile and not profiles_compatible(saved_profile, row["profile"]):
         raise SelectionError("设备型号信息与已保存记录不一致，请重新检查。")
+    # Upgrade the old shared Google profile only after a fresh paired-device
+    # scan identifies this same physical device. Device-scoped settings keep
+    # their existing key, including mappings, microphone and voice hotkey.
+    if saved_profile == CHROMECAST_PROFILE and row["profile"] == GOOGLE_TV_PROFILE:
+        for record in result["devices"]:
+            if record["key"] == key:
+                record["profile"] = GOOGLE_TV_PROFILE
     known_xiaomi = {item["key"] for item in result["devices"] + paired
                     if item.get("profile") in XIAOMI_PROFILES}
     result = select_device(add_device(result, row), key)
@@ -226,6 +235,10 @@ def candidate_key(info: object) -> str:
     if value is None:
         raise SelectionError("无法读取所选蓝牙设备的身份。")
     return container_key(value if isinstance(value, (str, uuid.UUID)) else unbox_guid(value))
+
+
+def profiles_compatible(saved: str, observed: str) -> bool:
+    return saved == observed or (saved == CHROMECAST_PROFILE and observed == GOOGLE_TV_PROFILE)
 
 
 class _PropertyKey(ctypes.Structure):
@@ -302,6 +315,20 @@ def selected_raw_path(paths: list[str], key: str, *, resolve=None, diagnostic: d
             else:
                 details["errors_omitted"] += 1
             continue
+    # The observed Google TV Remote publishes two HID collections under one
+    # ContainerId: a keyboard shadow and the Consumer-control collection that
+    # actually carries the 3-byte report-ID-2 button packets.  The generic
+    # fail-closed rule remains in place, but this exact Windows HID interface
+    # is a deterministic, device-scoped preference when both belong to the
+    # already-verified selected physical remote.
+    if len(matches) > 1 and all("pid&9451" in path.casefold() for path in matches):
+        consumer_paths = [
+            path for path in matches
+            if "#{4d1e55b2-f16f-11cf-88cb-001111000030}" in path.casefold()
+        ]
+        if len(consumer_paths) == 1:
+            matches = consumer_paths
+
     details["selected_paths"] = len(matches)
     if diagnostic is not None:
         reason = ("ambiguous_selected_interface" if len(matches) > 1 else
@@ -311,6 +338,34 @@ def selected_raw_path(paths: list[str], key: str, *, resolve=None, diagnostic: d
                   "no_matching_interface")
         diagnostic.update(details, reason=reason)
     return hid_identity.select_single_device_path(matches)
+
+
+def selected_raw_paths(paths: list[str], key: str, *, resolve=None) -> list[str]:
+    """Return every Raw Input collection belonging to the selected device.
+
+    Google TV Remote exposes keyboard and Consumer Control collections under
+    one Bluetooth container. The normal single-path selector intentionally
+    prefers Consumer Control for the private report tap, but ordinary volume
+    keys can arrive on the keyboard collection. Raw Input consumers that want
+    translated Windows edges must listen to both exact, container-verified
+    paths.
+    """
+    from . import hid_identity
+    if not valid_key(key):
+        raise hid_identity.NoDevicePathFoundError("no selected remote")
+    resolve = resolve or raw_path_key
+    matches = []
+    for path in paths:
+        if not hid_identity.device_path_matches_google(path):
+            continue
+        try:
+            if resolve(path) == key:
+                matches.append(path)
+        except (SelectionError, OSError):
+            continue
+    if not matches:
+        raise hid_identity.NoDevicePathFoundError("no selected remote collection")
+    return matches
 
 
 async def _scan_paired() -> list[dict]:
@@ -330,6 +385,8 @@ async def _scan_paired() -> list[dict]:
             profile = RC003_PROFILE
         elif identity.matches_rc001_name(name):
             profile = RC001_PROFILE
+        elif identity.normalize_name(name) == "google tv remote":
+            profile = GOOGLE_TV_PROFILE
         elif identity.matches_chromecast_name(name):
             profile = CHROMECAST_PROFILE
         else:

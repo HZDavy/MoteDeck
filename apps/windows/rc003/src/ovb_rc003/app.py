@@ -262,7 +262,7 @@ class RC003App:
         self._remote_profile = selected_profile
         # 谷歌遥控器只走真实接收链路（chromecast_runtime）。
         self._chromecast_real = bool(
-            selected_profile == remote_selection.CHROMECAST_PROFILE
+            selected_profile in remote_selection.GOOGLE_REMOTE_PROFILES
             and self._selected_remote_key
         )
         self._chromecast_runtime = None
@@ -1011,15 +1011,21 @@ class RC003App:
         with self._voice_shortcut.lock:
             self._accept_input_events = True
         if self._remote_profile == remote_selection.CHROMECAST_PROFILE:
-            # The Raw Input / HID tap / voice-key physicalizer owners below match
-            # the RC003 HID identity. A real Chromecast remote brings its own
-            # receiver process (see chromecast_runtime) and never uses these three.
+            # 9450 的按键与语音都由 chromecast_runtime 子进程负责。主进程
+            # 再开 Raw Input、私有 tap 或语音键物理钩子都会抢占同一设备的
+            # HID/GATT 连接，导致子进程收不到任何按键通知。
             return
         with self._voice_key_physicalizer_lifecycle_lock:
             self._voice_key_physicalizer_stopping = False
+        self._start_voice_key_physicalizer()
+        if self._remote_profile in remote_selection.GOOGLE_REMOTE_PROFILES:
+            # 9451 是真实键盘集合，由主进程通过 Raw Input 接收。
+            with self._raw_input_lifecycle_lock:
+                self._raw_input_stopping = False
+            self._start_hid_listener()
+            return
         with self._raw_input_lifecycle_lock:
             self._raw_input_stopping = False
-        self._start_voice_key_physicalizer()
         self._start_hid_listener()
         self._start_hid_report_tap()
 
@@ -1588,9 +1594,23 @@ class RC003App:
         lookup_outcome = "lookup_interrupted"
         try:
             device_path = None
-            paths = raw_input_windows.enumerate_matching_device_paths(diagnostic=enumeration)
-            device_path = remote_selection.selected_raw_path(
-                paths, self._selected_remote_key, diagnostic=selection)
+            google_remote = (
+                self._remote_profile in remote_selection.GOOGLE_REMOTE_PROFILES
+            )
+            paths = raw_input_windows.enumerate_matching_device_paths(
+                matches=(
+                    hid_identity.device_path_matches_google
+                    if google_remote
+                    else None
+                ),
+                diagnostic=enumeration,
+            )
+            if google_remote:
+                device_path = remote_selection.selected_raw_paths(
+                    paths, self._selected_remote_key)
+            else:
+                device_path = remote_selection.selected_raw_path(
+                    paths, self._selected_remote_key, diagnostic=selection)
             lookup_outcome = "path_selected"
         except raw_input_windows.RawInputUnavailableError as exc:
             lookup_outcome = "unavailable"
@@ -1782,9 +1802,22 @@ class RC003App:
 
         This is independent of the normal Raw Input listener.  A missing or
         unverified Gadget is a button-only degradation and must not prevent
-        BLE voice from starting.
+        BLE voice from starting.  Once a start failed for a reason that will
+        not change by itself (Smart App Control / authorization), the failure
+        is remembered and the tap is skipped instead of prompting again.
         """
 
+        degraded_state = frida_compat.read_hid_tap_degraded_state(
+            self._config_root
+        )
+        if degraded_state:
+            self._set_runtime_input_state(hid_tap_state=degraded_state)
+            self._logger.info(
+                "startup: RC003 HID report tap stays off after an earlier "
+                "terminal failure; state=%s",
+                degraded_state,
+            )
+            return
         self._set_runtime_input_state(hid_tap_state="starting")
         tap = frida_compat.RC003HidReportTap(
             self._on_direct_hid_report,
@@ -2608,6 +2641,16 @@ class RC003App:
             detail=str(detail or ""),
         )
         self._set_runtime_input_state(hid_tap_state=status)
+        if status in frida_compat.HID_TAP_DEGRADED_STATES:
+            try:
+                frida_compat.record_hid_tap_degraded_state(
+                    self._config_root, status
+                )
+            except OSError:
+                self._logger.warning(
+                    "could not persist the HID tap degradation; state=%s",
+                    status,
+                )
         interception_ready = status == frida_compat.HidTapState.READY.value
         interception_armed = status in {
             frida_compat.HidTapState.ATTACHED_WAITING_IO.value,
@@ -5163,6 +5206,15 @@ class RC003App:
         _listener: Optional[raw_input_windows.RawInputButtonListener] = None,
         _generation: Optional[int] = None,
     ) -> None:
+        # ATVV owns the Chromecast microphone button. Windows may mirror that
+        # physical press as a translated keyboard edge; forwarding both edges
+        # would start a second, ordinary mapped voice gesture beside the
+        # proven remote-mic session.
+        if (
+            self._remote_profile in remote_selection.GOOGLE_REMOTE_PROFILES
+            and button_id == "mic"
+        ):
+            return
         event_source = {
             "keyboard": "raw_keyboard",
             "hid": "raw_hid",
@@ -5849,12 +5901,20 @@ class RC003App:
                 ):
                     return
 
-                # Raw Input can observe Windows' original key event, but it
-                # cannot suppress that event. Until the HID tap owns the
-                # report, every custom mapping must therefore fail closed.
-                raw_mapping_bypassed = True
+                # Raw Input cannot suppress Windows' original key event.
+                # Preserve native behavior for keys Windows already handles,
+                # while allowing Chromecast-only buttons with no native key
+                # equivalent to reach the configured mapping pipeline.
+                # Xiaomi profiles remain fail-closed until their HID tap owns
+                # the report.
+                raw_mapping_bypassed = (
+                    self._remote_profile not in remote_selection.GOOGLE_REMOTE_PROFILES
+                )
 
                 if button_id in self._raw_fallback_buttons_down:
+                    # The matching release belongs to the native Windows
+                    # key that was deliberately left untouched on key-down.
+                    raw_mapping_bypassed = True
                     if not is_pressed:
                         self._cancel_raw_fallback_hold_guard_locked(button_id)
                         self._raw_fallback_buttons_down.discard(button_id)
@@ -5866,10 +5926,25 @@ class RC003App:
                         and not self._raw_fallback_tracking_active
                     ):
                         effective_windows_button = button_id
-                    preserve_windows_original = (
-                        effective_windows_button in _RAW_FALLBACK_KEY_TOKENS
-                    )
+                    if (
+                        self._remote_profile in remote_selection.GOOGLE_REMOTE_PROFILES
+                        and event_source == "raw_hid"
+                    ):
+                        # Raw HID's logical button name is not proof that
+                        # Windows generated the same native keyboard action.
+                        # On Google TV reports only Home and Mute are known
+                        # to have native Consumer Control behavior; directions,
+                        # OK, Back and app buttons must reach the mapper.
+                        preserve_windows_original = effective_windows_button in {
+                            "home",
+                            "volume_mute",
+                        }
+                    else:
+                        preserve_windows_original = (
+                            effective_windows_button in _RAW_FALLBACK_KEY_TOKENS
+                        )
                     if preserve_windows_original:
+                        raw_mapping_bypassed = True
                         if is_pressed:
                             self._raw_fallback_buttons_down.add(button_id)
                             if not self._arm_raw_fallback_hold_guard_locked(button_id):
@@ -5893,9 +5968,9 @@ class RC003App:
                                 event_source,
                             )
                     elif is_pressed:
-                        self._logger.warning(
-                            "RC003 mapping bypassed for non-intercepted input; "
-                            "no Windows original available: button=%s source=%s",
+                        self._logger.info(
+                            "Raw HID input has no Windows original; configured "
+                            "mapping accepted: button=%s source=%s",
                             button_id,
                             event_source,
                         )

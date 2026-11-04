@@ -8,13 +8,17 @@ import threading
 import time
 import uuid
 
-from . import raw_input_windows, remote_selection
+from . import identity, raw_input_windows, remote_selection
 from .chromecast_pipe_windows import PipeError
 from .chromecast_voice import GET_CAPABILITIES
 
 # Observed model/revision contract, NOT a default for arbitrary Chromecast
 # firmware. Both PnP identity and the live nonce proof must succeed each run.
-_VERIFIED_INPUT_HANDLES = {(0x18D1, 0x9450, 0x0110): 0x29}
+_VERIFIED_INPUT_HANDLES = {
+    (0x18D1, 0x9450, 0x0110): 0x29,
+    # Google TV Remote variant observed on this Windows installation.
+    (0x18D1, 0x9451, 0x0105): 0x29,
+}
 # The same verified firmware exposes declaration handles through WinRT, while
 # ATT notifications carry VALUE handles. These are not interchangeable. Never
 # guess "+1" for an unknown layout; open() has already enforced the PnP revision.
@@ -25,7 +29,11 @@ _PNP = re.compile(r"(?:dev_vid&[0-9a-f]{2}|vid_)([0-9a-f]{4})(?:_pid&|&pid_)([0-
 
 def supported_path(path):
     match = _PNP.search(path)
-    return bool(match and tuple(int(part, 16) for part in match.groups()[:2]) == (0x18D1, 0x9450))
+    return bool(
+        match
+        and tuple(int(part, 16) for part in match.groups()[:2])
+        in {(0x18D1, 0x9450), (0x18D1, 0x9451)}
+    )
 
 
 def input_handle(entity, *, enumerate_paths=None, resolve=None):
@@ -117,7 +125,7 @@ class SelectedDevice:
                     selected.append(info)
             except remote_selection.SelectionError:
                 continue
-        if len(selected) != 1 or selected[0].name.strip().casefold() != "chromecast remote":
+        if len(selected) != 1 or not identity.matches_chromecast_name(selected[0].name):
             raise PipeError("source_unconfirmed")
         if require_input:
             self.attribute = await self._resolve_input()

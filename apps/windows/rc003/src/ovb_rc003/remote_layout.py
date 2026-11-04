@@ -168,19 +168,19 @@ CHROMECAST_REPORT_CODES = {
 
 
 def button_order(profile: str = "xiaomi-rc003") -> Tuple[str, ...]:
-    if profile == "chromecast-remote":
+    if profile in {"chromecast-remote", "google-tv-remote"}:
         return tuple(item.button_id for item in CHROMECAST_HOTSPOTS)
     return BUTTON_ORDER
 
 
 def display_names(profile: str = "xiaomi-rc003") -> Dict[str, str]:
-    return CHROMECAST_DISPLAY_NAMES if profile == "chromecast-remote" else BUTTON_DISPLAY_NAMES
+    return CHROMECAST_DISPLAY_NAMES if profile in {"chromecast-remote", "google-tv-remote"} else BUTTON_DISPLAY_NAMES
 
 
 def default_actions(profile: str = "xiaomi-rc003") -> dict:
     from . import key_mapping
     defaults = key_mapping.default_button_actions()
-    if profile != "chromecast-remote":
+    if profile not in {"chromecast-remote", "google-tv-remote"}:
         return defaults
     result = {
         button: defaults.get(
@@ -195,7 +195,7 @@ def default_actions(profile: str = "xiaomi-rc003") -> dict:
 
 
 def hotspot_for(button_id: str, profile: str = "xiaomi-rc003") -> Optional[ButtonHotspot]:
-    if profile == "chromecast-remote":
+    if profile in {"chromecast-remote", "google-tv-remote"}:
         return next(
             (item for item in CHROMECAST_HOTSPOTS if item.button_id == button_id),
             None,
