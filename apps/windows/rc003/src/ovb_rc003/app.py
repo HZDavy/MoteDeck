@@ -1797,9 +1797,22 @@ class RC003App:
 
         This is independent of the normal Raw Input listener.  A missing or
         unverified Gadget is a button-only degradation and must not prevent
-        BLE voice from starting.
+        BLE voice from starting.  Once a start failed for a reason that will
+        not change by itself (Smart App Control / authorization), the failure
+        is remembered and the tap is skipped instead of prompting again.
         """
 
+        degraded_state = frida_compat.read_hid_tap_degraded_state(
+            self._config_root
+        )
+        if degraded_state:
+            self._set_runtime_input_state(hid_tap_state=degraded_state)
+            self._logger.info(
+                "startup: RC003 HID report tap stays off after an earlier "
+                "terminal failure; state=%s",
+                degraded_state,
+            )
+            return
         self._set_runtime_input_state(hid_tap_state="starting")
         tap = frida_compat.RC003HidReportTap(
             self._on_direct_hid_report,
@@ -2623,6 +2636,16 @@ class RC003App:
             detail=str(detail or ""),
         )
         self._set_runtime_input_state(hid_tap_state=status)
+        if status in frida_compat.HID_TAP_DEGRADED_STATES:
+            try:
+                frida_compat.record_hid_tap_degraded_state(
+                    self._config_root, status
+                )
+            except OSError:
+                self._logger.warning(
+                    "could not persist the HID tap degradation; state=%s",
+                    status,
+                )
         interception_ready = status == frida_compat.HidTapState.READY.value
         interception_armed = status in {
             frida_compat.HidTapState.ATTACHED_WAITING_IO.value,

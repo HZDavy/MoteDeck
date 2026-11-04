@@ -7708,7 +7708,88 @@ def _load_qt_classes() -> dict:
 
         @Slot()
         def restartBridge(self) -> None:
-            self._begin_bridge_restart(automatic=False)
+            self._begin_bridge_restart(
+                automatic=False, retry_hid_tap=True
+            )
+
+        @Slot(bool)
+        def setHidSupplementEnabled(self, enabled: bool) -> None:
+            """开关就是用户自己的选择：关闭时持久化，打开时清掉并重试。"""
+
+            if self.configurationReadOnly:
+                return
+            try:
+                if enabled:
+                    frida_compat.clear_hid_tap_degraded_state(
+                        self._config_root
+                    )
+                else:
+                    frida_compat.record_hid_tap_degraded_state(
+                        self._config_root,
+                        frida_compat.HID_TAP_USER_DISABLED_STATE,
+                    )
+            except OSError:
+                self._set_error_message(
+                    "按键组件状态未能保存，请重试。",
+                    self._DEVICE_PAGE_INDEX,
+                )
+                return
+            self.bridgeInputStateChanged.emit()
+            if self._bridge_running:
+                self._begin_bridge_restart(automatic=False)
+
+        hidSupplementEnabled = Property(
+            bool,
+            lambda self: not frida_compat.read_hid_tap_degraded_state(
+                self._config_root
+            ),
+            notify=bridgeInputStateChanged,
+        )
+
+        def _get_is_google_tv_remote(self) -> bool:
+            from . import remote_selection
+
+            return self.activeRemoteProfile == remote_selection.GOOGLE_TV_PROFILE
+
+        isGoogleTvRemote = Property(
+            bool,
+            _get_is_google_tv_remote,
+            notify=remoteSelectionChanged,
+        )
+
+        @Slot(bool)
+        def setGoogleTvVolumeEnabled(self, enabled: bool) -> None:
+            """Google TV 遥控器只有侧边音量键走 Frida；关闭时只影响这一项。"""
+
+            if self.configurationReadOnly:
+                return
+            try:
+                if enabled:
+                    frida_compat.clear_google_tv_volume_degraded_state(
+                        self._config_root
+                    )
+                else:
+                    frida_compat.record_google_tv_volume_degraded_state(
+                        self._config_root,
+                        frida_compat.HID_TAP_USER_DISABLED_STATE,
+                    )
+            except OSError:
+                self._set_error_message(
+                    "侧面音量键状态未能保存，请重试。",
+                    self._DEVICE_PAGE_INDEX,
+                )
+                return
+            self.bridgeInputStateChanged.emit()
+            if self._bridge_running:
+                self._begin_bridge_restart(automatic=False)
+
+        googleTvVolumeEnabled = Property(
+            bool,
+            lambda self: not frida_compat.read_google_tv_volume_degraded_state(
+                self._config_root
+            ),
+            notify=bridgeInputStateChanged,
+        )
 
         @Slot()
         def reconnectBridgeNow(self) -> None:
@@ -7773,6 +7854,7 @@ def _load_qt_classes() -> dict:
             *,
             automatic: bool,
             allow_active_voice: bool = False,
+            retry_hid_tap: bool = False,
         ) -> None:
             if self.configurationReadOnly:
                 return
@@ -7807,6 +7889,18 @@ def _load_qt_classes() -> dict:
             self._set_bridge_input_states(None)
             self._bridge_status_missing_since = None
             self._set_error_message("")
+            if retry_hid_tap:
+                # An explicit retry (重新授权/重启服务, or after enabling the
+                # privileged key component): drop the remembered supplement
+                # failure so the tap runs again.
+                try:
+                    frida_compat.clear_hid_tap_degraded_state(
+                        self._config_root
+                    )
+                except OSError:
+                    logger.warning(
+                        "could not clear the HID tap degradation", exc_info=True
+                    )
             self._set_launch_status(
                 "检测到旧版或按键通道异常；正在正常停止服务并启动当前版本…"
                 if automatic

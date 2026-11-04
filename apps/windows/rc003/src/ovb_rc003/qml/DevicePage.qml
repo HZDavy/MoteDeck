@@ -191,6 +191,8 @@ Item {
                 ? "disabled" : "permission"
         }
         if (SettingsController.bridgeRunning) {
+            if (SettingsController.hidTapState === "disabled_by_user")
+                return "supplement_disabled"
             if (SettingsController.hidTapState === "authorization_cancelled")
                 return "source_authorization_cancelled"
             if (SettingsController.hidTapState === "authorization_failed")
@@ -273,6 +275,7 @@ Item {
         case "permission": return qsTr("点击“修复权限”")
         case "version": return qsTr("请安装兼容版")
         case "component_unavailable": return qsTr("按键组件不完整")
+        case "supplement_disabled": return qsTr("已关闭")
         case "restart_computer": return qsTr("请重启电脑一次")
         case "shared_host": return qsTr("按键来源待区分")
         case "waiting_remote": return qsTr("未连接")
@@ -299,7 +302,7 @@ Item {
                 || code === "original_only")
             return tokens.voiceAccent
         if (code === "cleanup" || code === "unchecked" || code === "pending"
-                || code === "service_stopped")
+                || code === "service_stopped" || code === "supplement_disabled")
             return tokens.disabledText
         return tokens.errorColor
     }
@@ -789,6 +792,8 @@ Item {
                         ? qsTr("旧按键组件未释放，请重启电脑")
                         : root.buttonReceiverStateCode() === "component_unavailable"
                         ? qsTr("组件缺失或校验失败，补齐后重开程序")
+                        : root.buttonReceiverStateCode() === "supplement_disabled"
+                        ? qsTr("返回键与音量键已关闭，可用右侧开关重新打开")
                         : root.buttonReceiverStateCode() === "recovering"
                         ? qsTr("按键设备尚未就绪，正在自动重试")
                         : qsTr("让遥控器按键在电脑上生效")
@@ -826,10 +831,54 @@ Item {
                     CompactButton {
                         id: buttonReceiverPrimaryButton
                         objectName: "openButtonSettingsButton"
+                        visible: !SettingsController.isRc003Device
+                            && !SettingsController.isGoogleTvRemote
                         tokens: root.tokens
                         flat: true
                         text: qsTr("按键设置")
                         onClicked: root.openButtonsRequested()
+                    }
+                    RowLayout {
+                        visible: SettingsController.isRc003Device
+                        spacing: 8
+                        Label {
+                            text: qsTr("返回/音量键")
+                            font.family: root.tokens.fontFamily
+                            font.pixelSize: 12
+                            color: root.tokens.textTertiary
+                        }
+                        CompactSwitch {
+                            objectName: "hidSupplementSwitch"
+                            tokens: root.tokens
+                            enabled: !SettingsController.configurationReadOnly
+                            checked: SettingsController.hidSupplementEnabled
+                            Accessible.name: qsTr("返回键与音量键")
+                            onToggled: {
+                                if (checked !== SettingsController.hidSupplementEnabled)
+                                    SettingsController.setHidSupplementEnabled(checked)
+                            }
+                        }
+                    }
+                    RowLayout {
+                        visible: SettingsController.isGoogleTvRemote
+                        spacing: 8
+                        Label {
+                            text: qsTr("侧面音量键")
+                            font.family: root.tokens.fontFamily
+                            font.pixelSize: 12
+                            color: root.tokens.textTertiary
+                        }
+                        CompactSwitch {
+                            objectName: "googleTvVolumeSwitch"
+                            tokens: root.tokens
+                            enabled: !SettingsController.configurationReadOnly
+                            checked: SettingsController.googleTvVolumeEnabled
+                            Accessible.name: qsTr("侧面音量键")
+                            onToggled: {
+                                if (checked !== SettingsController.googleTvVolumeEnabled)
+                                    SettingsController.setGoogleTvVolumeEnabled(checked)
+                            }
+                        }
                     }
                 }
 

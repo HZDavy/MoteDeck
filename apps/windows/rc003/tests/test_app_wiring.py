@@ -7427,6 +7427,41 @@ class HidTapStartupStateTests(_AppWiringTestCase):
 
         self.assertIs(self.app._hid_report_tap, instances[0])
 
+    def test_start_skips_the_tap_after_a_remembered_terminal_failure(self):
+        frida_compat.record_hid_tap_degraded_state(
+            self.app._config_root,
+            frida_compat.HidTapState.AUTHORIZATION_FAILED.value,
+        )
+        with mock.patch.object(
+            app_module.frida_compat, "RC003HidReportTap"
+        ) as tap_class:
+            self.app._start_hid_report_tap()
+
+        tap_class.assert_not_called()
+        self.assertEqual(
+            self.app._runtime_hid_tap_state,
+            frida_compat.HidTapState.AUTHORIZATION_FAILED.value,
+        )
+
+    def test_terminal_tap_failure_is_remembered_for_the_next_start(self):
+        self.app._on_hid_tap_status(
+            frida_compat.HidTapState.AUTHORIZATION_FAILED.value,
+            "source_authorization_failed",
+        )
+
+        self.assertEqual(
+            frida_compat.read_hid_tap_degraded_state(self.app._config_root),
+            frida_compat.HidTapState.AUTHORIZATION_FAILED.value,
+        )
+
+    def test_transient_tap_failure_is_not_remembered(self):
+        self.app._on_hid_tap_status("unhealthy", "socket_lost")
+
+        self.assertEqual(
+            frida_compat.read_hid_tap_degraded_state(self.app._config_root),
+            "",
+        )
+
 
 class VoiceCleanupFailurePreservesPendingStateTests(_AppWiringTestCase):
     """A failed key-up must remain owed after cleanup or audio stop."""
