@@ -118,7 +118,7 @@ class VoiceHost:
             return
         # Refresh before claiming the shortcut so one attempt never mixes two
         # hotkey configurations.
-        services.reload_settings()
+        settings_ready = services.reload_settings()
         with services.shortcut.lock:
             if self.state != "idle" or not self.closed or attempt <= self.attempt:
                 return
@@ -128,6 +128,9 @@ class VoiceHost:
             self.failure_result = None
             self._output_pcm = []
             self._playback_cleanup_pending = False
+            if settings_ready is False:
+                self._fail_voice("语音配置尚未就绪，请松开后重试")
+                return
             tokens = services.shortcut.recorded_tokens()
             if not tokens:
                 self._fail_voice("尚未设置语音快捷键，无法开始语音输入")
@@ -149,6 +152,7 @@ class VoiceHost:
             self.diagnostic_started = True
             action = services.shortcut.controller.on_mic_button_pressed()
             inject_mode = services.voice_inject_mode()
+            services.logger.info("Chromecast voice shortcut backend=%s attempt=%s", inject_mode, attempt)
             if not services.shortcut.apply(action, inject_mode=inject_mode):
                 services.shortcut.controller.cancel_pending()
                 self._fail_voice("语音快捷键未能送达")
@@ -180,6 +184,8 @@ class VoiceHost:
         if kind == "host_start":
             self._start_host(attempt)
             return
+        if kind == "mic":
+            return  # Detection metadata never starts a shortcut without audio.
         if attempt != self.attempt:
             return
         if kind == "host_stop":

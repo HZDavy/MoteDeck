@@ -11,6 +11,8 @@ from dataclasses import dataclass
 import math
 import re
 
+from . import atvv_protocol as proto
+
 MODES = ("hold", "toggle")
 LIMITS = (60, 120, 180, 300, 600)
 DEFAULT_LIMIT = 120
@@ -19,20 +21,25 @@ STOP_TIMEOUT = 5.0
 QUIET_SECONDS = .3
 EXTEND_SECONDS = 20.0  # Internal protocol maintenance, never a UI preference.
 
-# Google initialization is explicit on every receiver connection. The runtime
-# below implements v1.0 ADPCM and physical hold-to-talk streams: 16-kHz codec
-# (0x02) as-is, and 8-kHz codec (0x01) upsampled to 16 kHz before reaching the
-# virtual microphone.
+# Google initialization is explicit on every receiver connection. Google TV
+# remote firmware may negotiate either 8-kHz (codec 1) or 16-kHz (codec 2)
+# ADPCM; the host decoder normalizes both to 16-kHz PCM.
 GET_CAPABILITIES = bytes((0x0a, 1, 0, 0, 2, 3))
 CAPABILITIES_TIMEOUT = 3.0
 
 
 def supported_capabilities(payload):
-    # Codec bits: 0x01 = 8 kHz ADPCM, 0x02 = 16 kHz ADPCM. Google TV remotes
-    # advertise only 0x01, so accepting just 0x02 used to reject them outright.
-    return (isinstance(payload, bytes) and len(payload) == 9
-            and payload[:3] == b"\x0b\x01\x00" and payload[3] & 0x03 != 0
-            and payload[4] == 3 and 1 <= int.from_bytes(payload[5:7], "big") <= 512)
+    if not isinstance(payload, bytes) or len(payload) not in (7, 9):
+        return False
+    capabilities = proto.ATVVCapabilities.parse(payload)
+    return bool(
+        capabilities is not None
+        and capabilities.version == 0x0100
+        and capabilities.codecs & 0x03
+        and capabilities.interaction & 0x03
+        and capabilities.sample_rate in (8000.0, 16000.0)
+        and 1 <= capabilities.frame_size <= 512
+    )
 
 
 # A bounded diagnostic vocabulary shared by the receiver and parent. It carries

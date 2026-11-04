@@ -169,7 +169,10 @@ class SelectedDevice:
                                    audio=int(audio.characteristic_properties), control=int(control.characteristic_properties),
                                    tx_handle=int(tx.attribute_handle), audio_handle=int(audio.attribute_handle),
                                    control_handle=int(control.attribute_handle))
-        if tuple(int(c.attribute_handle) for c in (tx, audio, control)) != _VERIFIED_VOICE_DECLARATIONS:
+        # Direct WinRT callbacks are attached to the UUID-resolved characteristic
+        # objects of the selected device. They do not need the firmware-specific
+        # declaration/value handle translation used by passive ATT capture.
+        if not direct and tuple(int(c.attribute_handle) for c in (tx, audio, control)) != _VERIFIED_VOICE_DECLARATIONS:
             raise PipeError("unsupported_layout")
         self.voice_tx = tx
         properties = tx.characteristic_properties
@@ -179,14 +182,18 @@ class SelectedDevice:
             self.voice_write_option = GattWriteOption.WRITE_WITHOUT_RESPONSE
         else:
             raise PipeError("unsupported_layout")
-        self.voice_attributes = dict(_VERIFIED_VOICE_VALUES)
+        self.voice_attributes = (
+            {int(audio.attribute_handle): "audio", int(control.attribute_handle): "control"}
+            if direct else dict(_VERIFIED_VOICE_VALUES)
+        )
         if direct:
             from winrt.windows.devices.bluetooth.genericattributeprofile import (
                 GattClientCharacteristicConfigurationDescriptorValue as CccdValue,
             )
             self._voice_open = True
-            for characteristic, attribute in ((audio, 0x3C), (control, 0x3F)):
-                self.voice_evidence["step"] = "audio_subscription" if attribute == 0x3C else "control_subscription"
+            for characteristic, kind in ((audio, "audio"), (control, "control")):
+                attribute = int(characteristic.attribute_handle)
+                self.voice_evidence["step"] = kind + "_subscription"
                 self.voice_evidence["status"] = -1
                 def notify(_sender, args, attribute=attribute):
                     if not self._voice_open:

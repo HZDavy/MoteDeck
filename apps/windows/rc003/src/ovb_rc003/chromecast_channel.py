@@ -285,7 +285,9 @@ class Channel:
                     parse_lifecycle(message["data"])
                 except ValueError as exc:
                     raise ChannelError("invalid_voice_lifecycle") from exc
-            elif message["event"] == "mic" and (message["attempt"] != 0 or message["data"] != "pressed"):
+            elif message["event"] == "mic" and (
+                    message["attempt"] != 0
+                    or message["data"] not in ("pressed", "released")):
                 raise ChannelError("invalid_mic_detection")
             elif message["event"] == "probe" and (message["attempt"] != 0 or not re.fullmatch(
                     r"layout/[0-9a-f]{4}/[0-9a-f]{4}|notify/[0-9a-f]{4}/[0-9]{1,4}"

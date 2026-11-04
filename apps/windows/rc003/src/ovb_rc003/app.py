@@ -948,7 +948,7 @@ class RC003App:
                 shortcut=self._voice_shortcut,
                 settings=lambda: self._config,
                 logger=self._logger,
-                reload_settings=self._reload_settings_if_changed,
+                reload_settings=self._refresh_chromecast_voice_settings,
                 apply_pending_settings=(
                     self._apply_pending_voice_settings_if_idle_locked
                 ),
@@ -967,14 +967,24 @@ class RC003App:
             )
         )
 
+    def _refresh_chromecast_voice_settings(self) -> bool:
+        # A voice attempt must not depend on an indefinitely cached backend.
+        # Both Google profiles share this receiver; retain the saved backend
+        # even if a previous snapshot has the same file timestamps.
+        return self._reload_settings_if_changed(
+            force=self._chromecast_real
+        )
+
     def _chromecast_voice_inject_mode(self) -> Optional[str]:
-        """Chromecast 语音键的注入后端。
-
-        谷歌遥控器的语音键常常配成普通组合键（key_combo）而不是 VOICE_HOLD，
-        语音槽因此没有归属按钮；按语音一解析，取不到时由
-        ``_voice_slot_inject_mode`` 退回话筒键自己配置的注入方式。
-        """
-
+        mic = self._primary_button_action("mic")
+        if (
+            self._chromecast_real
+            and mic is not None
+            and mic.kind == key_mapping.ActionKind.KEY_COMBO
+        ):
+            # This GATT edge belongs to the physical mic, not a different
+            # button that happens to use voice slot 1.
+            return mic.inject_mode
         return self._voice_slot_inject_mode(1)
 
     def _cancel_chromecast_mappings(self) -> None:
@@ -5281,22 +5291,34 @@ class RC003App:
         with self._voice_shortcut.lock:
             self._apply_pending_voice_settings_if_idle_locked()
 
-    def _reload_settings_if_changed(self) -> None:
+    def _reload_settings_if_changed(self, *, force: bool = False) -> bool:
         """Apply mapping and voice-setting edits without a bridge restart."""
 
         current_config_mtime_ns = self._settings_file_mtime_ns(self._config_path)
         current_bindings_mtime_ns = self._settings_file_mtime_ns(self._bindings_path)
         if (
-            current_config_mtime_ns == self._config_mtime_ns
+            not force
+            and current_config_mtime_ns == self._config_mtime_ns
             and current_bindings_mtime_ns == self._bindings_mtime_ns
         ):
-            return
+            return True
         try:
-            refreshed_config = config.load_config(self._config_path)
+            # Require files once they have existed (or for a new Google TV
+            # voice attempt). A transient missing file is not a reset request.
+            snapshot = (self._settings_file_mtime_ns(self._config_path),
+                        self._settings_file_mtime_ns(self._bindings_path))
+            refreshed_config = config.load_config(
+                self._config_path, required=force or self._config_mtime_ns >= 0
+            )
             from . import remote_selection
             if remote_selection.active_key(refreshed_config) != remote_selection.active_key(self._config):
                 raise remote_selection.SelectionError("设备选择已变化，须先停止旧服务再切换。")
-            refreshed_bindings = config.load_key_bindings(self._bindings_path)
+            if remote_selection.active_profile(refreshed_config) != remote_selection.active_profile(self._config):
+                raise remote_selection.SelectionError("遥控器型号已变化，须先停止旧服务再切换。")
+            refreshed_bindings = config.load_key_bindings(
+                self._bindings_path, selected=refreshed_config,
+                required=force or self._bindings_mtime_ns >= 0,
+            )
             removed_voice_bindings = config.normalize_voice_product_boundary(
                 refreshed_config,
                 refreshed_bindings,
@@ -5314,10 +5336,8 @@ class RC003App:
             )
         except Exception as exc:  # noqa: BLE001 - keep the last valid settings
             self._logger.warning("settings reload skipped: %s", exc)
-            with self._voice_shortcut.lock:
-                self._config_mtime_ns = current_config_mtime_ns
-                self._bindings_mtime_ns = current_bindings_mtime_ns
-            return
+            # Do not acknowledge a failed read: retry the same saved revision.
+            return False
 
         self._diagnostic_trace.set_enabled(
             bool(refreshed_config.get("diagnostic_trace_enabled", False))
@@ -5325,6 +5345,28 @@ class RC003App:
         self._record_device_diagnostic_context()
         with self._voice_shortcut.lock:
             with self._button_mapping_lock:
+                if snapshot != (
+                    self._settings_file_mtime_ns(self._config_path),
+                    self._settings_file_mtime_ns(self._bindings_path),
+                ):
+                    self._logger.warning("settings changed while reading; retry pending")
+                    return False
+                overlay_id = self._preset_override_id if force else None
+                base_bindings = refreshed_bindings
+                if force:
+                    if not (self._voice_settings_idle_locked() and self._ordinary_button_mappings_idle()):
+                        return False  # never change a held shortcut's owner
+                    if overlay_id is not None:
+                        try:
+                            refreshed_bindings = app_profiles.apply_to(
+                                base_bindings, self._preset_store.get(overlay_id), self._remote_profile
+                            )
+                        except Exception:
+                            self._logger.warning("voice settings refresh skipped: application preset unavailable")
+                            return False
+                        removed_voice_bindings = dict(refreshed_bindings.get(
+                            config.RUNTIME_REMOVED_VOICE_BINDINGS_KEY, {}
+                        ))
                 refreshed_settings = refreshed_hotkey_serialized
                 current_settings = (
                     self._voice_shortcut.hotkey.serialize()
@@ -5340,11 +5382,13 @@ class RC003App:
                         and refreshed_settings != current_settings
                     ):
                         self._apply_voice_settings_locked(voice_hotkey)
+                    elif voice_hotkey is None and current_settings:
+                        self._clear_voice_hotkey_locked()
                     if self._ordinary_button_mappings_idle():
                         self._button_combos.reset()
                         self._bindings = refreshed_bindings
-                        self._preset_override_id = None
-                        self._preset_base_bindings = None
+                        self._preset_override_id = overlay_id
+                        self._preset_base_bindings = base_bindings if overlay_id is not None else None
                         self._sync_physical_bindings_to_listener()
                         self._removed_voice_bindings = removed_voice_bindings
                         self._pending_bindings = None
@@ -5365,8 +5409,7 @@ class RC003App:
                     self._diagnostic_trace.emit("voice_configuration_deferred",
                         release_pending=self._voice_shortcut.pending_tokens is not None,
                         reason="active_voice_not_idle", **self._diagnostic_trace.current_context())
-                self._config_mtime_ns = current_config_mtime_ns
-                self._bindings_mtime_ns = current_bindings_mtime_ns
+                self._config_mtime_ns, self._bindings_mtime_ns = snapshot
         if removed_voice_bindings:
             self._logger.warning(
                 "legacy voice mappings disabled until user reselects actions: %s",
@@ -5374,6 +5417,7 @@ class RC003App:
             )
         if self._pending_bindings is None:
             self._logger.info("settings reloaded from disk")
+        return True
 
     def request_settings_reload_now(self) -> None:
         """Apply saved settings promptly from the bridge event-loop thread."""
