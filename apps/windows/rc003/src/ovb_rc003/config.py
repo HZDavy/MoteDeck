@@ -347,8 +347,8 @@ def _assert_no_forbidden_keys(data: Dict[str, Any]) -> None:
         )
 
 
-def load_config(path: Path) -> Dict[str, Any]:
-    return _normalize_loaded_config(_read_settings_document(path))
+def load_config(path: Path, *, required: bool = False) -> Dict[str, Any]:
+    return _normalize_loaded_config(_read_settings_document(path, required=required))
 
 
 def _normalize_loaded_config(stored: dict) -> Dict[str, Any]:
@@ -496,8 +496,8 @@ def _normalize_remote_recording_limit(document):
     document["remote_recording_limit_seconds"] = limit
 
 
-def _read_settings_document(path):
-    if not Path(path).is_file():
+def _read_settings_document(path, *, required: bool = False):
+    if not required and not Path(path).is_file():
         return {}
     value = json.loads(Path(path).read_text(encoding="utf-8-sig"))
     if not isinstance(value, dict):
@@ -1394,16 +1394,24 @@ def default_key_bindings(profile: str = "xiaomi-rc003") -> Dict[str, Any]:
     }
 
 
-def load_key_bindings(path: Path) -> Dict[str, Any]:
-    selected = _read_settings_document(Path(path).with_name(CONFIG_FILENAME))
-    return _load_key_bindings_for_selection(path, selected)
+def load_key_bindings(
+    path: Path, *, selected: dict | None = None, required: bool = False
+) -> Dict[str, Any]:
+    if selected is None:
+        selected = _read_settings_document(
+            Path(path).with_name(CONFIG_FILENAME), required=required
+        )
+    return _load_key_bindings_for_selection(path, selected, required=required)
 
 
-def _load_key_bindings_for_selection(path: Path, selected: dict) -> Dict[str, Any]:
+def _load_key_bindings_for_selection(
+    path: Path, selected: dict, *, required: bool = False
+) -> Dict[str, Any]:
     from . import remote_settings, remote_selection
     profile = remote_selection.active_profile(selected) or remote_selection.RC003_PROFILE
     bindings = default_key_bindings(profile)
-    if path.is_file():
+    path = Path(path)
+    if required or path.is_file():
         with path.open("r", encoding="utf-8-sig") as handle:
             stored = json.load(handle)
         if not isinstance(stored, dict):
@@ -1471,7 +1479,8 @@ def normalize_voice_product_boundary(
         if action.kind == key_mapping.ActionKind.VOICE:
             if button_id == "mic" and legacy_mode == "hold":
                 primary[button_id] = key_mapping.ButtonAction(
-                    key_mapping.ActionKind.VOICE_HOLD
+                    key_mapping.ActionKind.VOICE_HOLD,
+                    inject_mode=action.inject_mode,
                 ).to_dict()
             else:
                 removed[button_id] = action.kind.value

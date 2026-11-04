@@ -247,7 +247,7 @@ class _FakeHidListenerForFailedStart:
     def is_running(self):
         return self._is_running_after_failed_start
 
-    def start(self, device_path):
+    def start(self, device_path, *, family_matcher=None):
         self.start_calls += 1
         raise app_module.raw_input_windows.RawInputUnavailableError("simulated failed start")
 
@@ -296,7 +296,7 @@ class _FakeRecoveringRawListener:
     def set_physical_bindings(self, bindings):
         self.physical_bindings = dict(bindings)
 
-    def start(self, _device_path):
+    def start(self, _device_path, *, family_matcher=None):
         self.start_calls += 1
         if self.start_error is not None:
             self.is_running = self.running_after_error
@@ -6447,7 +6447,7 @@ class InputLifecycleTests(_AppWiringTestCase):
         reconnects = []
 
         class RemovedDuringStartListener(_FakeRecoveringRawListener):
-            def start(self, _device_path):
+            def start(self, _device_path, *, family_matcher=None):
                 self.start_calls += 1
                 self.is_running = True
                 self.removed_callback()

@@ -99,6 +99,18 @@ class PairedVoiceTests(unittest.TestCase):
     def test_detection_event_cannot_start_key_without_audio(self):
         self.event("mic", "pressed")
         self.assertEqual(self.order, [])
+    def test_unreadable_settings_send_no_key_and_next_attempt_can_recover(self):
+        self.services.reload_settings.return_value = False
+        self.event("host_start")
+        self.assertEqual(self.order, [])
+        self.assertEqual(self.host.state, "stopping")
+        self.event("host_stop")
+        self.event("state", "idle")
+        self.services.reload_settings.return_value = True
+        self.host._handle(dict(event="host_start", attempt=2))
+        self.assertEqual(self.host.state, "recording")
+        self.assertEqual(self.order, ["audio_open", (VoiceHostAction.KEY_DOWN, "sendinput")])
+
     def test_shutdown_releases_held_key(self):
         self.event("host_start")
         self.host._close_resources()
