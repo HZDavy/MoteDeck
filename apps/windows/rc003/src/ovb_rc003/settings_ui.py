@@ -66,6 +66,7 @@ _REFERENCE_ACTION_LABELS: Dict[key_mapping.ActionKind, str] = {
     key_mapping.ActionKind.SYSTEM_VOLUME_DOWN: "系统音量 −",
     key_mapping.ActionKind.SYSTEM_VOLUME_MUTE: "系统静音",
     key_mapping.ActionKind.PLAY_PAUSE: "播放 / 暂停",
+    key_mapping.ActionKind.ACTIVATE_DOUBAO_IME: "切换到豆包输入法",
     key_mapping.ActionKind.MOUSE_LEFT_CLICK: "鼠标左键单击",
     key_mapping.ActionKind.MOUSE_RIGHT_CLICK: "鼠标右键单击",
     key_mapping.ActionKind.MOUSE_MIDDLE_CLICK: "鼠标中键单击",
@@ -139,6 +140,7 @@ ACTION_OPTION_GROUPS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
             "系统静音", "播放 / 暂停",
         ),
     ),
+    ("输入法", ("切换到豆包输入法",)),
     ("语音", ("语音模式切换",)),
     (
         "启动应用",

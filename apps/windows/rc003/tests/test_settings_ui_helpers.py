@@ -64,6 +64,7 @@ class DisplayRoundTripTests(unittest.TestCase):
             "鼠标 X2 单击": key_mapping.ActionKind.MOUSE_X2_CLICK,
             "语音模式切换": key_mapping.ActionKind.VOICE_MODE_CYCLE,
             "元素导航开关": key_mapping.ActionKind.ELEMENT_NAVIGATION_TOGGLE,
+            "切换到豆包输入法": key_mapping.ActionKind.ACTIVATE_DOUBAO_IME,
         }
         for label, action_kind in expected.items():
             restored = _display_to_action(label)
@@ -103,6 +104,7 @@ class DisplayRoundTripTests(unittest.TestCase):
         self.assertIn("打开 Codex", flattened)
         self.assertIn("打开 WorkBuddy", flattened)
         self.assertIn("打开 Claude", flattened)
+        self.assertIn("切换到豆包输入法", flattened)
         mouse_group = dict(settings_ui.ACTION_OPTION_GROUPS)["鼠标操作"]
         self.assertEqual(
             mouse_group[:6],

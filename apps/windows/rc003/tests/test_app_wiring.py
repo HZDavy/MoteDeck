@@ -41,6 +41,7 @@ from ovb_rc003 import (
     identity,
     key_detection_bridge,
     key_mapping,
+    input_method_profile_windows,
     logging_setup,
     app_profiles,
     preset_switch_windows,
@@ -2757,6 +2758,15 @@ class OrdinaryButtonGestureWiringTests(_AppWiringTestCase):
             effects = [stack.enter_context(mock.patch.object(win32_input, name)) for name in senders]
             effects.append(stack.enter_context(mock.patch.object(
                 app_module, "open_configured_application", return_value=True
+            )))
+            effects.append(stack.enter_context(mock.patch.object(
+                input_method_profile_windows, "activate_doubao_input_method",
+                return_value=input_method_profile_windows.InputMethodProfile(
+                    "{9D2B2E2B-3C93-4D2F-9D35-6EEB85F0D2B0}",
+                    0x0804,
+                    "{2B4D4B3A-4D4F-4C0A-8E66-7F771A2B9C10}",
+                    "豆包输入法",
+                ),
             )))
             effects.append(stack.enter_context(mock.patch.object(
                 app_module.element_navigation_control_windows,

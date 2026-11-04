@@ -76,6 +76,7 @@ class ActionKind(str, Enum):
     SYSTEM_VOLUME_DOWN = "system_volume_down"
     SYSTEM_VOLUME_MUTE = "system_volume_mute"
     PLAY_PAUSE = "play_pause"
+    ACTIVATE_DOUBAO_IME = "activate_doubao_ime"
     MOUSE_LEFT_CLICK = "mouse_left_click"
     MOUSE_RIGHT_CLICK = "mouse_right_click"
     MOUSE_MIDDLE_CLICK = "mouse_middle_click"

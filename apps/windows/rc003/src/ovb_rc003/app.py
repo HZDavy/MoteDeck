@@ -82,6 +82,7 @@ from . import (
     hid_identity,
     hotkey,
     injection_backend,
+    input_method_profile_windows,
     input_method_watch_windows,
     key_detection_bridge,
     key_mapping,
@@ -6842,6 +6843,20 @@ class RC003App:
                 win32_input.send_volume_mute()
             elif action.kind == key_mapping.ActionKind.PLAY_PAUSE:
                 win32_input.send_play_pause()
+            elif action.kind == key_mapping.ActionKind.ACTIVATE_DOUBAO_IME:
+                try:
+                    profile = (
+                        input_method_profile_windows.activate_doubao_input_method()
+                    )
+                    self._logger.info(
+                        "input method activated: description=%s langid=0x%04X",
+                        profile.description or "豆包输入法",
+                        profile.langid,
+                    )
+                except input_method_profile_windows.InputMethodUnavailableError as exc:
+                    action_error = "input_method_unavailable"
+                    action_error_type = type(exc).__name__
+                    self._logger.warning("input method activation failed: %s", exc)
             elif action.kind in _BUTTON_ACTION_MOUSE_BUTTONS:
                 if _BUTTON_ACTION_MOUSE_BUTTONS[action.kind] in self._button_mouse_holds:
                     return
