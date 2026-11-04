@@ -1019,12 +1019,12 @@ class RC003App:
             self._voice_key_physicalizer_stopping = False
         self._start_voice_key_physicalizer()
         if self._remote_profile in remote_selection.GOOGLE_REMOTE_PROFILES:
-            # The Chromecast receiver owns the private HOGP report tap, but
-            # Windows still exposes the keyboard/consumer-control collections
-            # through Raw Input. Keep that ordinary path alive so Home, Mute,
-            # arrows, volume and any other translated collection can be mapped
-            # and detected after the receiver connects. The private report tap
-            # remains owned by chromecast_runtime.
+            if self._remote_profile == remote_selection.CHROMECAST_PROFILE:
+                # 9450 的按键与语音都由 chromecast_runtime 子进程负责。主进程
+                # 再开 Raw Input 或私有 tap 会抢占同一设备的 HID/GATT 连接，
+                # 导致子进程收不到任何按键通知。
+                return
+            # 9451 是真实键盘集合，由主进程通过 Raw Input 接收。
             with self._raw_input_lifecycle_lock:
                 self._raw_input_stopping = False
             self._start_hid_listener()
@@ -1599,8 +1599,18 @@ class RC003App:
         lookup_outcome = "lookup_interrupted"
         try:
             device_path = None
-            paths = raw_input_windows.enumerate_matching_device_paths(diagnostic=enumeration)
-            if self._remote_profile in remote_selection.GOOGLE_REMOTE_PROFILES:
+            google_remote = (
+                self._remote_profile in remote_selection.GOOGLE_REMOTE_PROFILES
+            )
+            paths = raw_input_windows.enumerate_matching_device_paths(
+                matches=(
+                    hid_identity.device_path_matches_google
+                    if google_remote
+                    else None
+                ),
+                diagnostic=enumeration,
+            )
+            if google_remote:
                 device_path = remote_selection.selected_raw_paths(
                     paths, self._selected_remote_key)
             else:
@@ -1724,7 +1734,14 @@ class RC003App:
                 )
             )
         try:
-            listener.start(device_path)
+            listener.start(
+                device_path,
+                family_matcher=(
+                    hid_identity.device_path_matches_google
+                    if google_remote
+                    else None
+                ),
+            )
         except raw_input_windows.RawInputUnavailableError as exc:
             if listener.is_running:
                 self._set_raw_listener_state("failed_running")

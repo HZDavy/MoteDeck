@@ -356,7 +356,7 @@ def selected_raw_paths(paths: list[str], key: str, *, resolve=None) -> list[str]
     resolve = resolve or raw_path_key
     matches = []
     for path in paths:
-        if not hid_identity.device_path_matches_rc003(path):
+        if not hid_identity.device_path_matches_google(path):
             continue
         try:
             if resolve(path) == key:

@@ -144,7 +144,26 @@ def device_path_matches_rc003(device_interface_path: str) -> bool:
     return (
         any(token in low for token in ble_vid_tokens)
         and f"pid&{device_profile.HID_PRODUCT_ID:04x}" in low
-    ) or ("dev_vid&0218d1" in low and "pid&9451" in low)
+    )
+
+
+_GOOGLE_RAW_PATH_TOKENS = (
+    ("vid_18d1", "pid_9450"),
+    ("dev_vid&0118d1", "pid&9450"),
+    ("dev_vid&0218d1", "pid&9451"),
+)
+
+
+def device_path_matches_google(device_interface_path: str) -> bool:
+    """True for either Google remote's Raw Input HID collection paths.
+
+    Google remotes expose their keyboard and Consumer Control collections
+    under one Bluetooth container; both the classic ``VID_18D1&PID_9450``
+    spelling and the BLE HID spelling are accepted.
+    """
+
+    low = device_interface_path.lower()
+    return any(vid in low and pid in low for vid, pid in _GOOGLE_RAW_PATH_TOKENS)
 
 
 def normalize_device_path(device_interface_path: str) -> str:

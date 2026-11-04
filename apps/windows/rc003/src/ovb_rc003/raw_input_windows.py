@@ -698,6 +698,9 @@ class RawInputButtonListener:
         self._device_path: Optional[str] = None
         self._normalized_device_path: Optional[str] = None
         self._normalized_device_paths = frozenset()
+        # 同一个蓝牙遥控器可能有多个 HID 集合，枚举路径和事件路径的写法
+        # 不一定完全一致；谷歌遥控器允许按家族身份兜底认领事件。
+        self._family_matcher: Optional[Callable[[str], bool]] = None
         self._class_name: Optional[str] = None
         self._raw_input_header_healthy = True
 
@@ -769,6 +772,7 @@ class RawInputButtonListener:
         device_path: Optional[str],
         *,
         start_timeout: float = _DEFAULT_START_TIMEOUT_SECONDS,
+        family_matcher: Optional[Callable[[str], bool]] = None,
         _run_target: Optional[Callable[[], None]] = None,
     ) -> None:
         """Starts the background message-loop thread scoped to
@@ -807,6 +811,7 @@ class RawInputButtonListener:
         if _run_target is None:
             _require_windows()
         self._device_path = device_path
+        self._family_matcher = family_matcher
         selected_paths = (
             tuple(device_path)
             if isinstance(device_path, (list, tuple, set, frozenset))
@@ -1492,6 +1497,8 @@ class RawInputButtonListener:
                 and normalized_device_path == self._normalized_device_path
             )
         )
+        if not selected_device and self._family_matcher is not None:
+            selected_device = self._family_matcher(device_path)
         rc003_device = hid_identity.device_path_matches_rc003(device_path)
         physical_keyboard = (
             packet_type == RIM_TYPEKEYBOARD
