@@ -266,7 +266,7 @@ class HoldRepeatTests(unittest.TestCase):
         return session.timers[-1]
 
     def test_key_down_starts_the_first_repeat_at_the_hold_boundary(self):
-        session, _ = make_session()
+        session, _ = make_session("ctrl+a")
         timer = self._press(session)
         self.assertEqual(
             timer.delay, shortcut._VOICE_HOTKEY_REPEAT_INITIAL_DELAY_SECONDS
@@ -274,8 +274,19 @@ class HoldRepeatTests(unittest.TestCase):
         self.assertTrue(timer.started)
         self.assertEqual(session.repeat_timer, timer)
 
+    def test_modifier_only_right_alt_hold_does_not_repeat(self):
+        session, _ = make_session("ralt")
+        with mock.patch.object(
+            shortcut.win32_input, "send_voice_key_combo_down"
+        ):
+            self.assertTrue(
+                session.apply(voice_controller.VoiceHostAction.KEY_DOWN)
+            )
+        self.assertEqual(session.timers, [])
+        self.assertIsNone(session.repeat_timer)
+
     def test_repeat_resends_only_the_held_key_and_reschedules(self):
-        session, _ = make_session()
+        session, _ = make_session("ctrl+a")
         timer = self._press(session)
         backend = mock.Mock()
         with mock.patch.object(
@@ -285,7 +296,7 @@ class HoldRepeatTests(unittest.TestCase):
         ):
             timer.fire()
         backend_for.assert_called_once_with(session.pending_inject_mode)
-        backend.key_repeat.assert_called_once_with(("ctrl", "win"))
+        backend.key_repeat.assert_called_once_with(("ctrl", "a"))
         backend.key_down.assert_not_called()
         backend.key_up.assert_not_called()
         self.assertEqual(len(session.timers), 2)
@@ -293,7 +304,7 @@ class HoldRepeatTests(unittest.TestCase):
         self.assertTrue(session.timers[-1].started)
 
     def test_key_up_cancels_the_pending_repeat(self):
-        session, _ = make_session()
+        session, _ = make_session("ctrl+a")
         timer = self._press(session)
         with mock.patch.object(
             shortcut.win32_input, "send_voice_key_combo_up"
@@ -308,7 +319,7 @@ class HoldRepeatTests(unittest.TestCase):
         self.assertIsNone(session.repeat_timer)
 
     def test_stale_repeat_tick_is_ignored(self):
-        session, _ = make_session()
+        session, _ = make_session("ctrl+a")
         self._press(session)
         with mock.patch.object(
             shortcut.injection_backend, "backend_for"
@@ -317,7 +328,7 @@ class HoldRepeatTests(unittest.TestCase):
         backend_for.assert_not_called()
 
     def test_failed_repeat_stops_the_hold(self):
-        session, _ = make_session()
+        session, _ = make_session("ctrl+a")
         timer = self._press(session)
         with mock.patch.object(
             shortcut.injection_backend,

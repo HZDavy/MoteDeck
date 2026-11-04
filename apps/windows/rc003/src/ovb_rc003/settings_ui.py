@@ -751,12 +751,19 @@ def build_save_model(
     bindings: Dict[str, dict] = {}
     voice_slot_bindings: Dict[int, str] = {}
     for button_id, text in button_display_map.items():
+        # Missing editor fields retain the saved backend; an explicit choice wins.
+        mode = _resolve_inject_mode(button_inject_modes, button_id)
+        if not isinstance(button_inject_modes, dict) or button_id not in button_inject_modes:
+            if base_bindings is not None:
+                mode = key_mapping.button_action_for(
+                    base_bindings, button_id, key_mapping.ButtonTrigger.SINGLE_CLICK
+                ).inject_mode
         action = _validated_button_action(
             button_id,
             key_mapping.ButtonTrigger.SINGLE_CLICK.value,
             text,
             base_bindings=base_bindings,
-            inject_mode=_resolve_inject_mode(button_inject_modes, button_id),
+            inject_mode=mode,
         )
         if action is None:
             continue

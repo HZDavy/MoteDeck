@@ -650,6 +650,25 @@ class LiveSettingsReloadTests(_AppWiringTestCase):
             key_mapping.INJECT_MODE_INTERCEPTION,
         )
 
+    def test_direct_gatt_mic_key_combo_owns_voice_slot_inject_mode(self):
+        # Google TV remotes deliver the microphone edge on the voice GATT
+        # channel, while the settings page can store that button as the actual
+        # host shortcut.  The direct voice session must still inherit the
+        # button's driver-level injection selection.
+        bindings = config.default_key_bindings()
+        bindings["bindings"]["mic"] = key_mapping.ButtonAction(
+            key_mapping.ActionKind.KEY_COMBO,
+            keys=("ralt",),
+            inject_mode=key_mapping.INJECT_MODE_INTERCEPTION,
+        ).to_dict()
+        self._save_button_bindings(bindings)
+        self.app._reload_settings_if_changed()
+
+        self.assertEqual(
+            self.app._voice_slot_inject_mode(1),
+            key_mapping.INJECT_MODE_INTERCEPTION,
+        )
+
     def test_voice_slot_bound_to_its_own_button_keeps_its_inject_mode(self):
         bindings = config.default_key_bindings()
         bindings["bindings"]["mic"] = key_mapping.ButtonAction(
