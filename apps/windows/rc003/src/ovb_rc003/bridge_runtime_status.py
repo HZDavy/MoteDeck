@@ -42,6 +42,9 @@ FAILED_RAW_INPUT_STATES = frozenset(
         "failed_running",
         "failed_stopping",
         "stopped",
+        # The Google/Chromecast transport publishes its own terminal code.
+        # Without it, a dead receiver is not recognized by UI recovery.
+        "chromecast_peer_lost",
     }
 )
 FAILED_HID_TAP_STATES = frozenset(
