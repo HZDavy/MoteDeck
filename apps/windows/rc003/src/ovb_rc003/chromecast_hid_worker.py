@@ -19,7 +19,7 @@ from .chromecast_pipe_windows import PipeError, inspect_peer, verify_peer
 def _selected(entity):
     settings = config.load_config(config.config_path())
     return (remote_selection.active_key(settings) == entity
-            and remote_selection.active_profile(settings) == remote_selection.CHROMECAST_PROFILE)
+            and remote_selection.active_profile(settings) in remote_selection.GOOGLE_REMOTE_PROFILES)
 
 
 async def receive(identity, parent, pipe):
@@ -101,7 +101,6 @@ async def receive(identity, parent, pipe):
                 await initialize
                 initialize = None
                 stage = "capture"
-                receiver = HidButtonReceiver(identity.entity, identity.generation)
                 tap = HidTap(identity.entity)
                 tap_start = asyncio.create_task(asyncio.to_thread(tap.start))
                 deadline = time.monotonic() + 25
@@ -118,6 +117,9 @@ async def receive(identity, parent, pipe):
                     code = str(error)
                     raise PipeError(code if code in {"hid_source_unconfirmed", "hid_symbol_unavailable"}
                                     else "hid_capture_failed") from None
+                receiver = HidButtonReceiver(
+                    identity.entity, identity.generation, product_id=tap.product_id
+                )
                 tap_start = None
                 deadline = time.monotonic() + 5
             stage = "receive"

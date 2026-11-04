@@ -36,11 +36,12 @@ class SelectionContractTests(unittest.TestCase):
             self.assertEqual(selection.scan_main([str(path)]), 0)
             rows = {row["key"]: row for row in selection._read_scan_result(str(path), 0)}
             self.assertEqual(rows[A]["label"], selection.label(A))
-            self.assertEqual(rows[B]["label"], "Google TV Remote（暂不支持）")
+            self.assertEqual(rows[B]["label"], selection.label(B, selection.GOOGLE_TV_PROFILE))
+            self.assertEqual(rows[B]["profile"], selection.GOOGLE_TV_PROFILE)
             unnamed = selection.container_key(devices[2].properties["System.Devices.Aep.ContainerId"])
             self.assertEqual(rows[unnamed]["label"], f"未命名蓝牙设备 · {unnamed[:6].upper()}（暂不支持）")
-            with self.assertRaises(selection.SelectionError):
-                selection.add_device(selection.empty_selection(), rows[B])
+            google = selection.add_device(selection.empty_selection(), rows[B])
+            self.assertEqual(google["devices"], [{"key": B, "profile": selection.GOOGLE_TV_PROFILE}])
             saved = selection.add_device(selection.empty_selection(), rows[A])
             self.assertEqual(saved["devices"], [{"key": A, "profile": "xiaomi-rc003"}])
 
@@ -463,6 +464,49 @@ class SelectionControllerTests(unittest.TestCase):
     tearDown = _Fixture.tearDown
     _make_controller = _Fixture._make_controller
     _wait_for_qt = _Fixture._wait_for_qt
+
+    def test_google_profile_upgrade_preserves_bindings_and_voice_settings(self):
+        settings = config.default_config()
+        settings[selection.KEY] = {
+            "schema": 1, "active": A,
+            "devices": [{"key": A, "profile": selection.CHROMECAST_PROFILE}],
+        }
+        settings["voice_hotkeys"]["hold"] = "ralt"
+        path = config.config_path(config.config_root())
+        config.save_config(path, settings)
+        bindings_path = config.key_bindings_path(config.config_root())
+        config.save_key_bindings(bindings_path, config.default_key_bindings(selection.CHROMECAST_PROFILE))
+        controller, model = self._make_controller()
+        before = config.load_config(path)
+        bindings_before = bindings_path.read_bytes()
+        controller._on_remote_devices_ready(([
+            {"key": A, "profile": selection.GOOGLE_TV_PROFILE}], ""))
+        choice = controller.remoteDeviceChoices[0]
+        self.assertTrue(choice["canUse"])
+        self.assertIn("Google TV Remote", choice["label"])
+        with mock.patch.object(controller, "_refresh_bridge_status", return_value=False):
+            controller.useRemoteDevice(A)
+        after = config.load_config(path)
+        self.assertEqual(selection.active_profile(after), selection.GOOGLE_TV_PROFILE)
+        self.assertEqual(selection.active_key(after), A)
+        self.assertEqual(after["selected_device_profile"], selection.GOOGLE_TV_PROFILE)
+        self.assertEqual(bindings_path.read_bytes(), bindings_before)
+        self.assertEqual(
+            {k: v for k, v in before.items() if k not in {selection.KEY, "selected_device_profile"}},
+            {k: v for k, v in after.items() if k not in {selection.KEY, "selected_device_profile"}},
+        )
+        index = model.index(model.index_of("volume_up"), 0)
+        self.assertIn("Google TV Remote", model.data(index, model.HidUsageRole))
+
+    def test_google_profile_upgrade_requires_a_successful_scan(self):
+        controller = self.seed()
+        before = controller._remote_selection()
+        controller._remote_scan_valid = False
+        controller._remote_devices = [{"key": A, "profile": selection.GOOGLE_TV_PROFILE}]
+        with mock.patch.object(controller, "_change_active_remote") as change:
+            controller.useRemoteDevice(A)
+        change.assert_not_called()
+        self.assertEqual(controller._remote_selection(), before)
 
     def seed(self):
         settings = config.default_config()

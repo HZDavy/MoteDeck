@@ -69,7 +69,7 @@ def _source_resource_root() -> Path:
 
 
 def _candidate_paths(profile: str = "xiaomi-rc003") -> Iterator[Path]:
-    if profile == "chromecast-remote":
+    if profile in {"chromecast-remote", "google-tv-remote"}:
         filename = _CHROMECAST_PHOTO_FILENAME
     elif profile == "xiaomi-rc001":
         filename = _RC001_PHOTO_FILENAME

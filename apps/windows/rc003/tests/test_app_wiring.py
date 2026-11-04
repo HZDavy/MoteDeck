@@ -45,6 +45,7 @@ from ovb_rc003 import (
     app_profiles,
     preset_switch_windows,
     raw_input_windows,
+    remote_selection,
     settings_ui,
     voice_gesture,
     win32_input,
@@ -647,6 +648,25 @@ class LiveSettingsReloadTests(_AppWiringTestCase):
 
         self.assertEqual(
             self.app._voice_slot_inject_mode(2),
+            key_mapping.INJECT_MODE_INTERCEPTION,
+        )
+
+    def test_direct_gatt_mic_key_combo_owns_voice_slot_inject_mode(self):
+        # Google TV remotes deliver the microphone edge on the voice GATT
+        # channel, while the settings page can store that button as the actual
+        # host shortcut.  The direct voice session must still inherit the
+        # button's driver-level injection selection.
+        bindings = config.default_key_bindings()
+        bindings["bindings"]["mic"] = key_mapping.ButtonAction(
+            key_mapping.ActionKind.KEY_COMBO,
+            keys=("ralt",),
+            inject_mode=key_mapping.INJECT_MODE_INTERCEPTION,
+        ).to_dict()
+        self._save_button_bindings(bindings)
+        self.app._reload_settings_if_changed()
+
+        self.assertEqual(
+            self.app._voice_slot_inject_mode(1),
             key_mapping.INJECT_MODE_INTERCEPTION,
         )
 
@@ -3248,6 +3268,17 @@ class OrdinaryButtonGestureWiringTests(_AppWiringTestCase):
         release.assert_not_called()
         self.assertEqual(self.app._raw_fallback_buttons_down, set())
 
+        self.app._direct_hid_interception_ready = True
+        with mock.patch.object(self.app._button_gestures, "press") as press, mock.patch.object(
+            self.app._button_gestures, "release"
+        ) as release:
+            self.app._on_raw_button_event("ok", True, "hid")
+            self.app._on_raw_button_event("ok", False, "hid")
+
+        press.assert_not_called()
+        release.assert_not_called()
+        self.assertEqual(self.app._raw_fallback_buttons_down, set())
+
     def test_raw_keyboard_fallback_tracks_both_edges_without_sticking(self):
         self.app._direct_hid_interception_ready = False
 
@@ -3335,17 +3366,207 @@ class OrdinaryButtonGestureWiringTests(_AppWiringTestCase):
 
         press.assert_not_called()
         release.assert_not_called()
-        self.assertEqual(self.app._raw_fallback_buttons_down, set())
 
-        self.app._direct_hid_interception_ready = True
+    def test_chromecast_raw_non_native_key_reaches_mapping_pipeline(self):
+        self.app._remote_profile = app_module.remote_selection.CHROMECAST_PROFILE
+        self.app._direct_hid_interception_ready = False
         with mock.patch.object(self.app._button_gestures, "press") as press, mock.patch.object(
             self.app._button_gestures, "release"
         ) as release:
-            self.app._on_raw_button_event("ok", True, "hid")
-            self.app._on_raw_button_event("ok", False, "hid")
+            self.app._on_raw_button_event("youtube", True, "hid")
+            self.app._on_raw_button_event("youtube", False, "hid")
+
+        press.assert_called_once_with("youtube")
+        release.assert_called_once_with("youtube")
+
+    def test_chromecast_raw_navigation_buttons_reach_mapping_with_native_aliases(self):
+        self.app._remote_profile = app_module.remote_selection.CHROMECAST_PROFILE
+        self.app._direct_hid_interception_ready = False
+        for button in ("up", "down", "left", "right", "ok", "back"):
+            with self.subTest(button=button), mock.patch.object(
+                self.app._button_gestures, "press"
+            ) as press, mock.patch.object(
+                self.app._button_gestures, "release"
+            ) as release:
+                self.app._on_raw_button_event(button, True, "hid", button)
+                self.app._on_raw_button_event(button, False, "hid", button)
+
+            press.assert_called_once_with(button)
+            release.assert_called_once_with(button)
+        self.assertEqual(self.app._raw_fallback_buttons_down, set())
+
+    def test_chromecast_raw_home_keeps_native_behavior_without_mapping(self):
+        self.app._remote_profile = app_module.remote_selection.CHROMECAST_PROFILE
+        self.app._direct_hid_interception_ready = False
+        with mock.patch.object(self.app._button_gestures, "press") as press, mock.patch.object(
+            self.app._button_gestures, "release"
+        ) as release:
+            self.app._on_raw_button_event("home", True, "hid")
+            self.app._on_raw_button_event("home", False, "hid")
 
         press.assert_not_called()
         release.assert_not_called()
+
+    def test_chromecast_raw_edges_execute_configured_actions_once(self):
+        self._use_recorded_repeat_timers()
+        self.app._remote_profile = app_module.remote_selection.CHROMECAST_PROFILE
+        self.app._direct_hid_interception_ready = False
+        outputs = []
+
+        class FakeBackend:
+            def key_down(self, tokens):
+                outputs.append(("down", tuple(tokens)))
+
+            def key_up(self, tokens):
+                outputs.append(("up", tuple(tokens)))
+
+        mapped_tokens = {
+            "down": ("lctrl", "f9"),
+            "ok": ("lctrl", "f10"),
+            "back": ("lctrl", "f11"),
+        }
+        for button, tokens in mapped_tokens.items():
+            self.app._bindings["bindings"][button] = key_mapping.ButtonAction(
+                kind=key_mapping.ActionKind.KEY_COMBO,
+                keys=tokens,
+                inject_mode=key_mapping.INJECT_MODE_INTERCEPTION,
+            ).to_dict()
+
+        with mock.patch.object(
+            app_module.injection_backend, "backend_for", return_value=FakeBackend()
+        ), mock.patch.object(
+            app_module.element_navigation_control_windows,
+            "route_mapped_navigation_key",
+            return_value=False,
+        ):
+            for button in mapped_tokens:
+                self.app._on_raw_button_event(button, True, "hid", button)
+                self.app._on_raw_button_event(button, False, "hid", button)
+
+            expected = [
+                event
+                for button in mapped_tokens
+                for event in (("down", mapped_tokens[button]), ("up", mapped_tokens[button]))
+            ]
+            self.assertEqual(outputs, expected)
+
+            # These HID events keep Windows' native Home/Mute behavior and
+            # must not inject the configured duplicate actions.
+            for button in ("home", "volume_mute"):
+                self.app._bindings["bindings"][button] = key_mapping.ButtonAction(
+                    kind=key_mapping.ActionKind.KEY_COMBO,
+                    keys=("lctrl", "f12"),
+                    inject_mode=key_mapping.INJECT_MODE_INTERCEPTION,
+                ).to_dict()
+                self.app._on_raw_button_event(button, True, "hid", button)
+                self.app._on_raw_button_event(button, False, "hid", button)
+
+            # The physical mic edge belongs to the separate ATVV voice path.
+            self.app._bindings["bindings"]["mic"] = key_mapping.ButtonAction(
+                kind=key_mapping.ActionKind.KEY_COMBO,
+                keys=("lctrl", "f8"),
+                inject_mode=key_mapping.INJECT_MODE_INTERCEPTION,
+            ).to_dict()
+            self.app._on_raw_button_event("mic", True, "hid", "mic")
+            self.app._on_raw_button_event("mic", False, "hid", "mic")
+
+        self.assertEqual(outputs, expected)
+        self.assertEqual(self.app._raw_fallback_buttons_down, set())
+
+    def test_chromecast_raw_default_semantic_actions_reach_sendinput_once(self):
+        self._use_recorded_repeat_timers()
+        self.app._remote_profile = app_module.remote_selection.CHROMECAST_PROFILE
+        self.app._direct_hid_interception_ready = False
+        emitted = []
+        held = set()
+
+        def fake_sendinput_tap(tokens):
+            tokens = tuple(tokens)
+            for token in tokens:
+                emitted.append((token, "down"))
+                held.add(token)
+            for token in reversed(tokens):
+                emitted.append((token, "up"))
+                held.discard(token)
+
+        class FakeSendInputBackend:
+            def key_down(self, tokens):
+                for token in tokens:
+                    emitted.append((token, "down"))
+                    held.add(token)
+
+            def key_up(self, tokens):
+                for token in tokens:
+                    emitted.append((token, "up"))
+                    held.discard(token)
+
+        actions = {
+            "down": (key_mapping.ActionKind.ARROW_DOWN, ("down",)),
+            "ok": (key_mapping.ActionKind.RETURN, ("enter",)),
+            "back": (key_mapping.ActionKind.DELETE_BACKWARD, ("backspace",)),
+        }
+        for button, (kind, _tokens) in actions.items():
+            self.app._bindings["bindings"][button] = key_mapping.ButtonAction(
+                kind=kind,
+                inject_mode=key_mapping.DEFAULT_INJECT_MODE,
+            ).to_dict()
+
+        with mock.patch.object(
+            win32_input, "send_key_combo_tap", side_effect=fake_sendinput_tap
+        ), mock.patch.object(
+            app_module.injection_backend,
+            "backend_for",
+            return_value=FakeSendInputBackend(),
+        ), mock.patch.object(
+            app_module.element_navigation_control_windows,
+            "route_mapped_navigation_key",
+            return_value=False,
+        ):
+            for button in actions:
+                self.app._on_raw_button_event(button, True, "hid", button)
+                self.app._on_raw_button_event(button, False, "hid", button)
+
+        expected = [
+            item
+            for _button, (_kind, tokens) in actions.items()
+            for token in tokens
+            for item in ((token, "down"), (token, "up"))
+        ]
+        self.assertEqual(emitted, expected)
+        self.assertEqual(held, set())
+        self.assertEqual(self.app._raw_fallback_buttons_down, set())
+
+    def test_chromecast_volume_edge_executes_and_cancel_releases_backend(self):
+        self._use_recorded_repeat_timers()
+        self.app._remote_profile = app_module.remote_selection.CHROMECAST_PROFILE
+        outputs = []
+
+        class FakeBackend:
+            def key_down(self, tokens):
+                outputs.append(("down", tuple(tokens)))
+
+            def key_up(self, tokens):
+                outputs.append(("up", tuple(tokens)))
+
+        tokens = ("lctrl", "f7")
+        self.app._bindings["bindings"]["volume_up"] = key_mapping.ButtonAction(
+            kind=key_mapping.ActionKind.KEY_COMBO,
+            keys=tokens,
+            inject_mode=key_mapping.INJECT_MODE_INTERCEPTION,
+        ).to_dict()
+        edge = lambda action: type("Edge", (), {"button": "volume_up", "action": action})()
+
+        with mock.patch.object(
+            app_module.injection_backend, "backend_for", return_value=FakeBackend()
+        ), mock.patch.object(
+            app_module.element_navigation_control_windows,
+            "route_mapped_navigation_key",
+            return_value=False,
+        ):
+            self.app._route_chromecast_edge(edge("down"))
+            self.app._route_chromecast_edge(edge("cancel"))
+
+        self.assertEqual(outputs, [("down", tokens), ("up", tokens)])
 
     def test_raw_hid_fallback_clears_when_keyboard_edge_arrives_last(self):
         self.app._direct_hid_interception_ready = False
@@ -5623,6 +5844,26 @@ class InputLifecycleTests(_AppWiringTestCase):
             self.app._start_input_channels()
 
         self.assertEqual(calls, ["physicalizer", "raw_input", "hid_tap"])
+
+    def test_chromecast_starts_voice_hook_and_raw_input_without_private_tap(self):
+        calls = []
+        self.app._remote_profile = remote_selection.CHROMECAST_PROFILE
+        with mock.patch.object(
+            self.app,
+            "_start_voice_key_physicalizer",
+            side_effect=lambda: calls.append("physicalizer"),
+        ), mock.patch.object(
+            self.app,
+            "_start_hid_listener",
+            side_effect=lambda: calls.append("raw_input"),
+        ), mock.patch.object(
+            self.app,
+            "_start_hid_report_tap",
+            side_effect=lambda: calls.append("hid_tap"),
+        ):
+            self.app._start_input_channels()
+
+        self.assertEqual(calls, ["physicalizer", "raw_input"])
 
     def test_unavailable_voice_physicalizer_degrades_without_losing_owner_state(self):
         timers = []

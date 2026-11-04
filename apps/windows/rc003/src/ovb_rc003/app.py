@@ -262,7 +262,7 @@ class RC003App:
         self._remote_profile = selected_profile
         # 谷歌遥控器只走真实接收链路（chromecast_runtime）。
         self._chromecast_real = bool(
-            selected_profile == remote_selection.CHROMECAST_PROFILE
+            selected_profile in remote_selection.GOOGLE_REMOTE_PROFILES
             and self._selected_remote_key
         )
         self._chromecast_runtime = None
@@ -1010,16 +1010,27 @@ class RC003App:
 
         with self._voice_shortcut.lock:
             self._accept_input_events = True
-        if self._remote_profile == remote_selection.CHROMECAST_PROFILE:
-            # The Raw Input / HID tap / voice-key physicalizer owners below match
-            # the RC003 HID identity. A real Chromecast remote brings its own
-            # receiver process (see chromecast_runtime) and never uses these three.
-            return
+        # Every profile that can hold a recorded voice shortcut needs the
+        # process-wide modifier hook.  In particular, Chromecast owns its HID
+        # and ATVV input in a child receiver, but its RAlt shortcut is still
+        # emitted by this desktop process and must be tracked/physicalized
+        # here.
         with self._voice_key_physicalizer_lifecycle_lock:
             self._voice_key_physicalizer_stopping = False
+        self._start_voice_key_physicalizer()
+        if self._remote_profile in remote_selection.GOOGLE_REMOTE_PROFILES:
+            # The Chromecast receiver owns the private HOGP report tap, but
+            # Windows still exposes the keyboard/consumer-control collections
+            # through Raw Input. Keep that ordinary path alive so Home, Mute,
+            # arrows, volume and any other translated collection can be mapped
+            # and detected after the receiver connects. The private report tap
+            # remains owned by chromecast_runtime.
+            with self._raw_input_lifecycle_lock:
+                self._raw_input_stopping = False
+            self._start_hid_listener()
+            return
         with self._raw_input_lifecycle_lock:
             self._raw_input_stopping = False
-        self._start_voice_key_physicalizer()
         self._start_hid_listener()
         self._start_hid_report_tap()
 
@@ -1589,8 +1600,12 @@ class RC003App:
         try:
             device_path = None
             paths = raw_input_windows.enumerate_matching_device_paths(diagnostic=enumeration)
-            device_path = remote_selection.selected_raw_path(
-                paths, self._selected_remote_key, diagnostic=selection)
+            if self._remote_profile in remote_selection.GOOGLE_REMOTE_PROFILES:
+                device_path = remote_selection.selected_raw_paths(
+                    paths, self._selected_remote_key)
+            else:
+                device_path = remote_selection.selected_raw_path(
+                    paths, self._selected_remote_key, diagnostic=selection)
             lookup_outcome = "path_selected"
         except raw_input_windows.RawInputUnavailableError as exc:
             lookup_outcome = "unavailable"
@@ -5163,6 +5178,15 @@ class RC003App:
         _listener: Optional[raw_input_windows.RawInputButtonListener] = None,
         _generation: Optional[int] = None,
     ) -> None:
+        # ATVV owns the Chromecast microphone button. Windows may mirror that
+        # physical press as a translated keyboard edge; forwarding both edges
+        # would start a second, ordinary mapped voice gesture beside the
+        # proven remote-mic session.
+        if (
+            self._remote_profile in remote_selection.GOOGLE_REMOTE_PROFILES
+            and button_id == "mic"
+        ):
+            return
         event_source = {
             "keyboard": "raw_keyboard",
             "hid": "raw_hid",
@@ -5849,12 +5873,20 @@ class RC003App:
                 ):
                     return
 
-                # Raw Input can observe Windows' original key event, but it
-                # cannot suppress that event. Until the HID tap owns the
-                # report, every custom mapping must therefore fail closed.
-                raw_mapping_bypassed = True
+                # Raw Input cannot suppress Windows' original key event.
+                # Preserve native behavior for keys Windows already handles,
+                # while allowing Chromecast-only buttons with no native key
+                # equivalent to reach the configured mapping pipeline.
+                # Xiaomi profiles remain fail-closed until their HID tap owns
+                # the report.
+                raw_mapping_bypassed = (
+                    self._remote_profile not in remote_selection.GOOGLE_REMOTE_PROFILES
+                )
 
                 if button_id in self._raw_fallback_buttons_down:
+                    # The matching release belongs to the native Windows
+                    # key that was deliberately left untouched on key-down.
+                    raw_mapping_bypassed = True
                     if not is_pressed:
                         self._cancel_raw_fallback_hold_guard_locked(button_id)
                         self._raw_fallback_buttons_down.discard(button_id)
@@ -5866,10 +5898,25 @@ class RC003App:
                         and not self._raw_fallback_tracking_active
                     ):
                         effective_windows_button = button_id
-                    preserve_windows_original = (
-                        effective_windows_button in _RAW_FALLBACK_KEY_TOKENS
-                    )
+                    if (
+                        self._remote_profile in remote_selection.GOOGLE_REMOTE_PROFILES
+                        and event_source == "raw_hid"
+                    ):
+                        # Raw HID's logical button name is not proof that
+                        # Windows generated the same native keyboard action.
+                        # On Google TV reports only Home and Mute are known
+                        # to have native Consumer Control behavior; directions,
+                        # OK, Back and app buttons must reach the mapper.
+                        preserve_windows_original = effective_windows_button in {
+                            "home",
+                            "volume_mute",
+                        }
+                    else:
+                        preserve_windows_original = (
+                            effective_windows_button in _RAW_FALLBACK_KEY_TOKENS
+                        )
                     if preserve_windows_original:
+                        raw_mapping_bypassed = True
                         if is_pressed:
                             self._raw_fallback_buttons_down.add(button_id)
                             if not self._arm_raw_fallback_hold_guard_locked(button_id):

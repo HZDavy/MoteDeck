@@ -8,13 +8,17 @@ import threading
 import time
 import uuid
 
-from . import raw_input_windows, remote_selection
+from . import identity, raw_input_windows, remote_selection
 from .chromecast_pipe_windows import PipeError
 from .chromecast_voice import GET_CAPABILITIES
 
 # Observed model/revision contract, NOT a default for arbitrary Chromecast
 # firmware. Both PnP identity and the live nonce proof must succeed each run.
-_VERIFIED_INPUT_HANDLES = {(0x18D1, 0x9450, 0x0110): 0x29}
+_VERIFIED_INPUT_HANDLES = {
+    (0x18D1, 0x9450, 0x0110): 0x29,
+    # Google TV Remote variant observed on this Windows installation.
+    (0x18D1, 0x9451, 0x0105): 0x29,
+}
 # The same verified firmware exposes declaration handles through WinRT, while
 # ATT notifications carry VALUE handles. These are not interchangeable. Never
 # guess "+1" for an unknown layout; open() has already enforced the PnP revision.
@@ -25,7 +29,11 @@ _PNP = re.compile(r"(?:dev_vid&[0-9a-f]{2}|vid_)([0-9a-f]{4})(?:_pid&|&pid_)([0-
 
 def supported_path(path):
     match = _PNP.search(path)
-    return bool(match and tuple(int(part, 16) for part in match.groups()[:2]) == (0x18D1, 0x9450))
+    return bool(
+        match
+        and tuple(int(part, 16) for part in match.groups()[:2])
+        in {(0x18D1, 0x9450), (0x18D1, 0x9451)}
+    )
 
 
 def input_handle(entity, *, enumerate_paths=None, resolve=None):
@@ -117,7 +125,7 @@ class SelectedDevice:
                     selected.append(info)
             except remote_selection.SelectionError:
                 continue
-        if len(selected) != 1 or selected[0].name.strip().casefold() != "chromecast remote":
+        if len(selected) != 1 or not identity.matches_chromecast_name(selected[0].name):
             raise PipeError("source_unconfirmed")
         if require_input:
             self.attribute = await self._resolve_input()
@@ -169,7 +177,10 @@ class SelectedDevice:
                                    audio=int(audio.characteristic_properties), control=int(control.characteristic_properties),
                                    tx_handle=int(tx.attribute_handle), audio_handle=int(audio.attribute_handle),
                                    control_handle=int(control.attribute_handle))
-        if tuple(int(c.attribute_handle) for c in (tx, audio, control)) != _VERIFIED_VOICE_DECLARATIONS:
+        # Direct WinRT callbacks are attached to the UUID-resolved characteristic
+        # objects of the selected device. They do not need the firmware-specific
+        # declaration/value handle translation used by passive ATT capture.
+        if not direct and tuple(int(c.attribute_handle) for c in (tx, audio, control)) != _VERIFIED_VOICE_DECLARATIONS:
             raise PipeError("unsupported_layout")
         self.voice_tx = tx
         properties = tx.characteristic_properties
@@ -179,14 +190,18 @@ class SelectedDevice:
             self.voice_write_option = GattWriteOption.WRITE_WITHOUT_RESPONSE
         else:
             raise PipeError("unsupported_layout")
-        self.voice_attributes = dict(_VERIFIED_VOICE_VALUES)
+        self.voice_attributes = (
+            {int(audio.attribute_handle): "audio", int(control.attribute_handle): "control"}
+            if direct else dict(_VERIFIED_VOICE_VALUES)
+        )
         if direct:
             from winrt.windows.devices.bluetooth.genericattributeprofile import (
                 GattClientCharacteristicConfigurationDescriptorValue as CccdValue,
             )
             self._voice_open = True
-            for characteristic, attribute in ((audio, 0x3C), (control, 0x3F)):
-                self.voice_evidence["step"] = "audio_subscription" if attribute == 0x3C else "control_subscription"
+            for characteristic, kind in ((audio, "audio"), (control, "control")):
+                attribute = int(characteristic.attribute_handle)
+                self.voice_evidence["step"] = kind + "_subscription"
                 self.voice_evidence["status"] = -1
                 def notify(_sender, args, attribute=attribute):
                     if not self._voice_open:

@@ -180,6 +180,8 @@ class VoiceHost:
         if kind == "host_start":
             self._start_host(attempt)
             return
+        if kind == "mic":
+            return  # Detection metadata never starts a shortcut without audio.
         if attempt != self.attempt:
             return
         if kind == "host_stop":

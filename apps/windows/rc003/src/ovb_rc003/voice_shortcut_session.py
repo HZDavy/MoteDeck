@@ -22,6 +22,12 @@ _VOICE_HOTKEY_BACKEND_MARKED = "marked_keybd_event"
 # is re-sent here at the typematic rate.  The first repeat starts at the same
 # 0.55 s boundary the tap/hold gesture uses, so a tap never looks like a hold.
 _VOICE_HOTKEY_REPEAT_INITIAL_DELAY_SECONDS = 0.550
+_NON_REPEATABLE_HOLD_KEYS = frozenset({
+    "shift", "lshift", "rshift",
+    "ctrl", "lctrl", "rctrl",
+    "alt", "lalt", "ralt",
+    "win", "lwin", "rwin",
+})
 
 @dataclass(frozen=True)
 class ShortcutServices:
@@ -161,6 +167,11 @@ class VoiceShortcutSession:
 
         self._stop_hold_repeat_locked()
         if not self.pending_tokens:
+            return
+        # A physical keyboard does not typematic-repeat a modifier-only hold.
+        # Repeating RAlt can retrigger or toggle a global voice shortcut many
+        # times while one remote press is still active.
+        if self.pending_tokens[-1] in _NON_REPEATABLE_HOLD_KEYS:
             return
         self.repeat_stopping = False
         self.repeat_token = object()

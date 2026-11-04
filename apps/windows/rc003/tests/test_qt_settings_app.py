@@ -689,6 +689,8 @@ class SettingsControllerTests(unittest.TestCase):
             self.assertTrue(option["label"])
             self.assertIsInstance(option["reason"], str)
         self.assertIsInstance(controller.interceptionAvailable, bool)
+        self.assertIsInstance(controller.interceptionInstalled, bool)
+        self.assertIsInstance(controller.interceptionPendingReboot, bool)
         self.assertIsInstance(controller.interceptionUnavailableHint, str)
 
         controller.setButtonInjectMode("power", "interception")
@@ -6273,6 +6275,9 @@ class SettingsControllerTests(unittest.TestCase):
 
     def test_running_bridge_detection_returns_button_without_starting_local_hid(self):
         controller, model = self._make_controller(selected_remote=True)
+        controller._config["remote_selection"]["devices"][0]["profile"] = (
+            "chromecast-remote"
+        )
         self._bridge_status_patch.stop()
         self._bridge_status_patch = mock.patch.object(
             qt_settings_app.single_instance,
@@ -11465,6 +11470,9 @@ class SettingsShellSourceContractTests(unittest.TestCase):
         )
         self.assertIn('qsTr("安装驱动")', self.buttons_qml)
         self.assertIn('qsTr("卸载驱动")', self.buttons_qml)
+        self.assertIn("SettingsController.interceptionInstalled", self.buttons_qml)
+        self.assertIn("SettingsController.interceptionPendingReboot", self.buttons_qml)
+        self.assertIn('qsTr("待重启")', self.buttons_qml)
         # Launching the vendor installer is never reported as a silent success.
         self.assertIn("root.interceptionDriverMessage = result.message", self.buttons_qml)
 

@@ -21,6 +21,63 @@ REPORT_LENGTH = 9
 _REPORT_PREFIX = bytes((0x01, 0x00, 0x00))
 _REPORT_ID = 0x01
 
+# The observed Google TV Remote variant (VID 0x18D1 / PID 0x9451) uses HID
+# report ID 2 and one compact button code. Code 0 is the release/idle report;
+# codes 1..13 select the corresponding Consumer-page usage in descriptor order.
+_CHROMECAST_COMPACT_REPORT_USAGES = (
+    0x0042,  # Menu Up
+    0x0043,  # Menu Down
+    0x0044,  # Menu Left
+    0x0045,  # Menu Right
+    0x0041,  # Menu Pick
+    0x0224,  # AC Back
+    0x0223,  # AC Home
+    0x0221,  # AC Search / Assistant
+    0x00E2,  # Mute
+    0x0077,  # YouTube
+    0x0078,  # Netflix
+    0x0030,  # Power
+    0x0186,  # Programmable / Star
+)
+_GOOGLE_TV_9451_VOLUME_SELECTORS = {1: 0x0080, 2: 0x0081}
+
+
+def decode_google_tv_9451_report(report: bytes) -> Tuple[str, FrozenSet[int]]:
+    """Decode the verified 18D1:9451 report-ID-preserved ReadFile formats.
+
+    Report ID 1 is a six-slot Keyboard-page selector array (1=volume up,
+    2=volume down); report ID 2 is a two-slot Consumer selector array.
+    Return the report family with its active usages so an idle report only
+    releases keys from that family.
+    """
+    if not isinstance(report, bytes):
+        raise ValueError("Google TV report must be bytes")
+    if len(report) == 7 and report[0] == 0x01:
+        selectors = report[1:]
+        if any(code not in (0, 1, 2) for code in selectors):
+            raise ValueError("unknown 9451 keyboard selector")
+        return "keyboard", frozenset(_GOOGLE_TV_9451_VOLUME_SELECTORS[code]
+                                     for code in selectors if code)
+    if len(report) == 3 and report[0] == 0x02:
+        selectors = report[1:]
+        if any(code > len(_CHROMECAST_COMPACT_REPORT_USAGES) for code in selectors):
+            raise ValueError("unknown 9451 consumer selector")
+        return "consumer", frozenset(_CHROMECAST_COMPACT_REPORT_USAGES[code - 1]
+                                     for code in selectors if code)
+    raise ValueError("unsupported 9451 report ID or length")
+
+
+def decode_google_tv_9450_report(report: bytes) -> FrozenSet[int]:
+    """Decode the legacy 9450 Consumer report (ID 2 + 16-bit usage)."""
+    if not isinstance(report, bytes) or len(report) != 3 or report[0] != 0x02:
+        raise ValueError("unsupported 9450 report ID or length")
+    usage = int.from_bytes(report[1:3], "little")
+    if usage == 0:
+        return frozenset()
+    if usage not in device_profile.CHROMECAST_CONSUMER_USAGE_IDS and usage not in {0x00E9, 0x00EA}:
+        raise ValueError("unknown 9450 Consumer usage")
+    return frozenset({usage})
+
 
 class HidIdentityError(Exception):
     """Base class for HID device-path resolution failures. All fail closed."""
@@ -84,8 +141,10 @@ def device_path_matches_rc003(device_interface_path: str) -> bool:
         f"dev_vid&{device_profile.HID_VENDOR_ID:06x}",
         f"dev_vid&01{device_profile.HID_VENDOR_ID:04x}",
     )
-    ble_pid_token = f"pid&{device_profile.HID_PRODUCT_ID:04x}"
-    return any(token in low for token in ble_vid_tokens) and ble_pid_token in low
+    return (
+        any(token in low for token in ble_vid_tokens)
+        and f"pid&{device_profile.HID_PRODUCT_ID:04x}" in low
+    ) or ("dev_vid&0218d1" in low and "pid&9451" in low)
 
 
 def normalize_device_path(device_interface_path: str) -> str:
@@ -128,9 +187,11 @@ def decode_report_usages(report: bytes) -> FrozenSet[int]:
         payload = report[1:]
     elif len(report) == 6:
         payload = report
+    elif len(report) == 3 and report[0] == 0x02:
+        return decode_google_tv_9451_report(report)[1]
     else:
         raise ValueError(
-            "expected a 6-byte payload, 7-byte report-id form, or "
+            "expected a 3-byte Google report, 6-byte payload, 7-byte report-id form, or "
             f"{REPORT_LENGTH}-byte RC003 report, got {report!r}"
         )
 
@@ -153,6 +214,7 @@ def decode_active_usages(report: bytes) -> FrozenSet[int]:
         usage
         for usage in decode_report_usages(report)
         if usage in device_profile.BUTTON_USAGE_IDS
+        or usage in device_profile.CHROMECAST_CONSUMER_USAGE_IDS
     )
 
 
@@ -167,7 +229,10 @@ def diff_usages(
 
 
 def usage_to_button(usage: int) -> Optional[str]:
-    return device_profile.BUTTON_USAGE_IDS.get(usage)
+    return (
+        device_profile.BUTTON_USAGE_IDS.get(usage)
+        or device_profile.CHROMECAST_CONSUMER_USAGE_IDS.get(usage)
+    )
 
 
 def parse_rawinput_hid_payload(raw_body: bytes) -> Tuple[bytes, ...]:
