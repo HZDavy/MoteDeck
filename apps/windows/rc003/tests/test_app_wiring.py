@@ -3473,6 +3473,32 @@ class OrdinaryButtonGestureWiringTests(_AppWiringTestCase):
         self.assertEqual(outputs, expected)
         self.assertEqual(self.app._raw_fallback_buttons_down, set())
 
+    def test_google_tv_app_buttons_execute_persisted_application_actions(self):
+        self._use_recorded_repeat_timers()
+        self.app._remote_profile = app_module.remote_selection.GOOGLE_TV_PROFILE
+        self.app._direct_hid_interception_ready = False
+        actions = []
+        self.app._bindings["bindings"]["youtube"] = key_mapping.ButtonAction(
+            kind=key_mapping.ActionKind.OPEN_CODEX,
+        ).to_dict()
+        self.app._bindings["bindings"]["netflix"] = key_mapping.ButtonAction(
+            kind=key_mapping.ActionKind.OPEN_WORKBUDDY,
+        ).to_dict()
+
+        with mock.patch.object(
+            app_module,
+            "open_configured_application",
+            side_effect=lambda action: actions.append(action.kind) or True,
+        ):
+            for button in ("youtube", "netflix"):
+                self.app._on_raw_button_event(button, True, "hid", button)
+                self.app._on_raw_button_event(button, False, "hid", button)
+
+        self.assertEqual(
+            actions,
+            [key_mapping.ActionKind.OPEN_CODEX, key_mapping.ActionKind.OPEN_WORKBUDDY],
+        )
+
     def test_chromecast_raw_default_semantic_actions_reach_sendinput_once(self):
         self._use_recorded_repeat_timers()
         self.app._remote_profile = app_module.remote_selection.CHROMECAST_PROFILE

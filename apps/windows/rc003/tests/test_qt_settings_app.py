@@ -3928,6 +3928,62 @@ class SettingsControllerTests(unittest.TestCase):
 
         self.assertEqual(recoveries, [{"automatic": True}])
 
+    def test_stale_connected_bridge_is_not_shown_connected_and_recovers_once(self):
+        self._bridge_status_patch.stop()
+        self._bridge_status_patch = mock.patch.object(
+            qt_settings_app.single_instance,
+            "bridge_instance_running",
+            return_value=True,
+        )
+        self._bridge_status_patch.start()
+        identity = bridge_runtime_status.current_runtime_identity(
+            qt_settings_app.__version__
+        )
+        bridge_runtime_status.publish_status(
+            config.config_root(),
+            bridge_runtime_status.BridgeConnectionState.CONNECTED,
+            pid=4321,
+            identity=identity,
+            raw_input_state="ready",
+            hid_tap_state=frida_compat.HidTapState.READY.value,
+            voice_key_physicalizer_state="ready",
+            voice_active=True,
+        )
+        path = bridge_runtime_status.status_path(config.config_root())
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["updated_at"] = time.time() - 60.0
+        path.write_text(json.dumps(payload), encoding="utf-8")
+
+        controller, _ = self._make_controller()
+        callbacks = []
+        recoveries = []
+
+        self.assertFalse(controller.bridgeConnected)
+        self.assertEqual(controller.bridgeConnectionState, "stale")
+        self.assertEqual(controller.bridgeLaunchPhase, "waiting")
+        self.assertTrue(controller.bridgeRestartRecommended)
+        self.assertIn("服务状态已过期", controller.launchStatusText)
+        self.assertNotIn("已连接", controller.launchStatusText)
+
+        with mock.patch(
+            "PySide6.QtCore.QTimer.singleShot",
+            side_effect=lambda _delay, callback: callbacks.append(callback),
+        ):
+            controller.refreshBridgeState()
+            controller.refreshBridgeState()
+            self.assertEqual(len(callbacks), 1)
+            with mock.patch.object(
+                controller,
+                "_begin_bridge_restart",
+                side_effect=lambda **kwargs: recoveries.append(kwargs),
+            ):
+                callbacks.pop()()
+
+        self.assertEqual(
+            recoveries,
+            [{"automatic": True, "allow_active_voice": True}],
+        )
+
     def test_manual_restart_refuses_to_interrupt_active_voice(self):
         self._bridge_status_patch.stop()
         self._bridge_status_patch = mock.patch.object(

@@ -1570,13 +1570,17 @@ def _load_qt_classes() -> dict:
                 if runtime_status is not None
                 else bridge_runtime_status.VOICE_RUNTIME_NOT_TESTED
             )
+            runtime_status_stale = self._runtime_status_is_stale(runtime_status)
             self._bridge_connected = bool(
                 runtime_status is not None
+                and not runtime_status_stale
                 and runtime_status.state
                 is bridge_runtime_status.BridgeConnectionState.CONNECTED
             )
             self._bridge_connection_state = (
-                runtime_status.state.value
+                "stale"
+                if runtime_status_stale
+                else runtime_status.state.value
                 if runtime_status is not None
                 else "unknown"
                 if self._bridge_running
@@ -2551,13 +2555,24 @@ def _load_qt_classes() -> dict:
                 self.voiceRuntimeStatusChanged.emit()
 
         @staticmethod
+        def _runtime_status_is_stale(
+            status: Optional[bridge_runtime_status.BridgeRuntimeStatus],
+        ) -> bool:
+            return bool(
+                status is not None
+                and time.time() - status.updated_at
+                > _BRIDGE_STATUS_STALE_AFTER_SECONDS
+            )
+
+        @staticmethod
         def _runtime_status_requires_restart(
             status: bridge_runtime_status.BridgeRuntimeStatus,
         ) -> bool:
             if status.hid_tap_state in {"authorization_cancelled", "authorization_failed"}:
                 return False
             return (
-                bridge_runtime_status.input_channels_failed(status)
+                SettingsController._runtime_status_is_stale(status)
+                or bridge_runtime_status.input_channels_failed(status)
                 or status.voice_key_physicalizer_state in {"failed", "stopped"}
             )
 
@@ -2627,11 +2642,15 @@ def _load_qt_classes() -> dict:
             status: bridge_runtime_status.BridgeRuntimeStatus,
         ) -> str:
             unconfirmed_text = "已收到声音，未确认微信开麦；若未输入文字，请松开后重试"
+            stale = self._runtime_status_is_stale(status)
             connected = (
-                status.state
+                not stale
+                and status.state
                 is bridge_runtime_status.BridgeConnectionState.CONNECTED
             )
-            if connected:
+            if stale:
+                connection_text = "遥控器服务状态已过期"
+            elif connected:
                 connection_text = f"{device_catalog.RC003_DISPLAY_NAME} 已连接"
             elif status.state is bridge_runtime_status.BridgeConnectionState.CONNECTING:
                 connection_text = f"正在连接{device_catalog.RC003_DISPLAY_NAME}"
@@ -2710,15 +2729,18 @@ def _load_qt_classes() -> dict:
                 age = max(0.0, time.time() - status.last_button_at)
                 if age <= 10.0:
                     input_text += f"，刚收到按键（{status.last_button_source or '来源未知'}）"
-            voice_text = "语音进行中" if status.voice_active else "语音空闲"
-            if status.voice_runtime_state == bridge_runtime_status.VOICE_RUNTIME_HOST_UNCONFIRMED:
+            if stale:
+                input_text = "按键通道状态未知"
+                voice_text = "语音状态未知"
+            else:
+                voice_text = "语音进行中" if status.voice_active else "语音空闲"
+            if (
+                not stale
+                and status.voice_runtime_state
+                == bridge_runtime_status.VOICE_RUNTIME_HOST_UNCONFIRMED
+            ):
                 voice_text = unconfirmed_text
-            stale_text = (
-                "；状态更新滞后"
-                if time.time() - status.updated_at
-                > _BRIDGE_STATUS_STALE_AFTER_SECONDS
-                else ""
-            )
+            stale_text = "；正在自动恢复" if stale else ""
             return (
                 f"服务运行中；{connection_text}；{identity_text}；"
                 f"{input_text}；{voice_text}{stale_text}"
@@ -2743,15 +2765,16 @@ def _load_qt_classes() -> dict:
                 elif identity_match is not True:
                     recommended = True
                     automatic = identity_match is False and not status.voice_active
+                elif self._runtime_status_is_stale(status):
+                    recommended = True
+                    # A stale report cannot prove that voice is still active.
+                    # Recover once per UI lifetime instead of preserving a dead
+                    # bridge solely because its final snapshot said otherwise.
+                    automatic = True
                 elif bridge_runtime_status.input_channels_failed(status):
                     recommended = True
                     automatic = not status.voice_active
                 elif status.voice_key_physicalizer_state in {"failed", "stopped"}:
-                    recommended = True
-                elif (
-                    time.time() - status.updated_at
-                    > _BRIDGE_STATUS_STALE_AFTER_SECONDS
-                ):
                     recommended = True
             self._set_bridge_restart_recommended(recommended)
             if (
@@ -2870,8 +2893,11 @@ def _load_qt_classes() -> dict:
             else:
                 self._bridge_status_missing_since = None
             self._set_bridge_input_states(runtime_status)
+            runtime_status_stale = self._runtime_status_is_stale(runtime_status)
             self._set_bridge_connection_state(
-                runtime_status.state.value
+                "stale"
+                if runtime_status_stale
+                else runtime_status.state.value
                 if runtime_status is not None
                 else "unknown"
                 if running
@@ -2879,6 +2905,7 @@ def _load_qt_classes() -> dict:
             )
             connected = bool(
                 runtime_status is not None
+                and not runtime_status_stale
                 and runtime_status.state
                 is bridge_runtime_status.BridgeConnectionState.CONNECTED
             )
@@ -7693,7 +7720,10 @@ def _load_qt_classes() -> dict:
             if not self._bridge_running or self._bridge_recovery_running:
                 return
             status = bridge_runtime_status.read_status(self._config_root)
-            if status is None or status.voice_active:
+            if status is None:
+                return
+            status_stale = self._runtime_status_is_stale(status)
+            if status.voice_active and not status_stale:
                 return
             identity_match = bridge_runtime_status.runtime_identity_matches(
                 status,
@@ -7704,7 +7734,13 @@ def _load_qt_classes() -> dict:
             ):
                 self._set_bridge_restart_recommended(False)
                 return
-            self._begin_bridge_restart(automatic=True)
+            if status_stale:
+                self._begin_bridge_restart(
+                    automatic=True,
+                    allow_active_voice=True,
+                )
+            else:
+                self._begin_bridge_restart(automatic=True)
 
         @Slot()
         def restartBridge(self) -> None:

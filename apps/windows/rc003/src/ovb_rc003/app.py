@@ -6013,9 +6013,9 @@ class RC003App:
                                 event_source,
                             )
                     elif is_pressed:
-                        self._logger.warning(
-                            "RC003 mapping bypassed for non-intercepted input; "
-                            "no Windows original available: button=%s source=%s",
+                        self._logger.info(
+                            "Raw HID input has no Windows original; configured "
+                            "mapping accepted: button=%s source=%s",
                             button_id,
                             event_source,
                         )
