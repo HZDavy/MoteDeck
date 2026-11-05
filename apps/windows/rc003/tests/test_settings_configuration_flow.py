@@ -42,6 +42,51 @@ class ConfigurationFlowTests(unittest.TestCase):
                 mock.patch.object(controller, "_request_endpoint_options_refresh"):
             return controller.selectAndPersistOutputEndpoint(name, "Windows WASAPI")
 
+    def test_google_peer_loss_schedules_one_recovery_not_permission_retry(self):
+        from PySide6.QtCore import QTimer
+        controller, _ = self.controller()
+        controller._set_bridge_running(True)
+        status = bridge_runtime_status.publish_status(
+            controller._config_root,
+            bridge_runtime_status.BridgeConnectionState.WAITING_FOR_DEVICE,
+            raw_input_state="chromecast_peer_lost", hid_tap_state="failed",
+            voice_key_physicalizer_state="ready",
+        )
+        with mock.patch.object(bridge_runtime_status, "runtime_identity_matches", return_value=True), \
+                mock.patch.object(QTimer, "singleShot") as schedule:
+            controller._update_bridge_restart_recommendation(status, schedule_recovery=True)
+            self.assertTrue(controller.bridgeRestartRecommended)
+            self.assertTrue(controller._bridge_recovery_attempted)
+            schedule.assert_called_once()
+            controller._update_bridge_restart_recommendation(status, schedule_recovery=True)
+            schedule.assert_called_once()
+        from dataclasses import replace
+        denied = replace(status, raw_input_state="chromecast_permission_cancelled",
+                         hid_tap_state="authorization_cancelled")
+        self.assertFalse(controller._runtime_status_requires_restart(denied))
+
+    def test_google_pipe_failure_recovers_once_after_active_voice_ends(self):
+        from dataclasses import replace
+        from PySide6.QtCore import QTimer
+        controller, _ = self.controller()
+        controller._set_bridge_running(True)
+        status = bridge_runtime_status.publish_status(
+            controller._config_root,
+            bridge_runtime_status.BridgeConnectionState.WAITING_FOR_DEVICE,
+            raw_input_state="chromecast_capture_failed", hid_tap_state="failed",
+            voice_key_physicalizer_state="ready", voice_active=True,
+        )
+        with mock.patch.object(bridge_runtime_status, "runtime_identity_matches", return_value=True), \
+                mock.patch.object(QTimer, "singleShot") as schedule:
+            controller._update_bridge_restart_recommendation(status, schedule_recovery=True)
+            self.assertTrue(controller.bridgeRestartRecommended)
+            schedule.assert_not_called()
+            idle = replace(status, voice_active=False)
+            controller._update_bridge_restart_recommendation(idle, schedule_recovery=True)
+            schedule.assert_called_once()
+            controller._update_bridge_restart_recommendation(idle, schedule_recovery=True)
+            schedule.assert_called_once()
+
     def test_output_restart_survives_healthy_poll_and_clears_after_stop(self):
         controller, _ = self.controller()
         controller._set_bridge_running(True)
