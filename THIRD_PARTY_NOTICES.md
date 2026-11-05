@@ -155,7 +155,7 @@ license.
 - Build package: `cython==3.2.8`
 - Source: <https://github.com/cython/cython>
 - License: Apache-2.0
-- Build package: `setuptools==80.9.0`
+- Build package: `setuptools==84.1.0`
 - Source: <https://github.com/pypa/setuptools>
 - License: MIT
 
