@@ -78,6 +78,7 @@ class VoiceShortcutSession:
         cancelled=None,
         voice_slot: Optional[int] = None,
         inject_mode: Optional[str] = None,
+        require_tracked_hold: bool = True,
     ) -> bool:
         backend = backend_override or self.services.configured_backend()
         tokens = tokens_override or self.recorded_tokens()
@@ -104,7 +105,9 @@ class VoiceShortcutSession:
                 self.pending_tokens = tokens
                 self.pending_backend = backend
                 self.pending_inject_mode = inject_mode
-            self.send_action(action, tokens, inject_mode)
+            self.send_action(
+                action, tokens, inject_mode, require_tracked_hold=require_tracked_hold
+            )
             if action == voice_controller.VoiceHostAction.KEY_DOWN:
                 self.active_backend = backend
                 self._start_hold_repeat_locked()
@@ -149,10 +152,15 @@ class VoiceShortcutSession:
         action: voice_controller.VoiceHostAction,
         tokens: Tuple[str, ...],
         inject_mode: Optional[str] = None,
+        *,
+        require_tracked_hold: bool = True,
     ) -> None:
         backend = injection_backend.backend_for(inject_mode)
         if action == voice_controller.VoiceHostAction.KEY_DOWN:
-            backend.key_down(tokens)
+            if require_tracked_hold:
+                backend.key_down(tokens)
+            else:
+                backend.key_down(tokens, require_tracked_hold=False)
         else:
             backend.key_up(tokens)
 

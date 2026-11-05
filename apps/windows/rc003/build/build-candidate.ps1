@@ -299,8 +299,22 @@ try {
     $env:RC003_BUILD_SOURCE_ROOT = $cythonSourceRoot
     Write-Host "-- PyInstaller source root: Cython stage --"
     Write-Host "-- PyInstaller build (unsigned candidate) --"
-    & $venvPython -m PyInstaller (Join-Path "build" "RemoteMicRC003.spec") --distpath dist --workpath build\pyinstaller-work --noconfirm
-    Assert-LastExitCode "PyInstaller"
+    # PyInstaller logs INFO lines to native stderr. Windows PowerShell turns
+    # redirected native stderr into ErrorRecord objects; with the script-wide
+    # Stop policy those ordinary lines would abort the build before the real
+    # process exit code can be checked (same reason as the test suite above).
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        & $venvPython -m PyInstaller (Join-Path "build" "RemoteMicRC003.spec") --distpath dist --workpath build\pyinstaller-work --noconfirm 2>&1 |
+            Tee-Object -FilePath (Join-Path "build" "pyinstaller.log")
+        $pyInstallerExitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+    if ($pyInstallerExitCode -ne 0) {
+        throw "PyInstaller failed with exit code $pyInstallerExitCode"
+    }
 
     Write-Host "-- built-artifact dry-run smoke check (no GUI/BLE/HID/audio) --"
     $builtPaths = Get-RC003BuildProductPaths `

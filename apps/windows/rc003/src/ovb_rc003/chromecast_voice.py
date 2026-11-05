@@ -20,18 +20,14 @@ QUIET_SECONDS = .3
 EXTEND_SECONDS = 20.0  # Internal protocol maintenance, never a UI preference.
 
 # Google initialization is explicit on every receiver connection. The runtime
-# below implements v1.0 ADPCM and physical hold-to-talk streams: 16-kHz codec
-# (0x02) as-is, and 8-kHz codec (0x01) upsampled to 16 kHz before reaching the
-# virtual microphone.
+# below implements v1.0, 16-kHz ADPCM and physical hold-to-talk streams only.
 GET_CAPABILITIES = bytes((0x0a, 1, 0, 0, 2, 3))
 CAPABILITIES_TIMEOUT = 3.0
 
 
 def supported_capabilities(payload):
-    # Codec bits: 0x01 = 8 kHz ADPCM, 0x02 = 16 kHz ADPCM. Google TV remotes
-    # advertise only 0x01, so accepting just 0x02 used to reject them outright.
     return (isinstance(payload, bytes) and len(payload) == 9
-            and payload[:3] == b"\x0b\x01\x00" and payload[3] & 0x03 != 0
+            and payload[:3] == b"\x0b\x01\x00" and payload[3] & 2 != 0
             and payload[4] == 3 and 1 <= int.from_bytes(payload[5:7], "big") <= 512)
 
 
@@ -188,7 +184,7 @@ class Recording:
             return self.finish(now, "invalid_control")
         opcode = payload[0]
         if opcode == 0x04:  # AUDIO_START: reason, codec, stream.
-            if len(payload) != 4 or payload[2] not in (1, 2) or not (
+            if len(payload) != 4 or payload[2] != 2 or not (
                     (payload[1] == 3 and 1 <= payload[3] <= 128)
                     or (payload[1] == 0 and payload[3] == 0)):
                 self.control_result = "unsupported_voice_stream"

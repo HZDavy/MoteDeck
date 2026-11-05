@@ -193,6 +193,19 @@ class HidTapState(str, Enum):
     STOPPED = "stopped"
 
 
+# 返回键/音量键补充通道不可恢复的失败：遇到任一项就把原因写进
+# hid-tap-degraded.json，下次启动跳过 tap，不再反复弹授权。
+HID_TAP_DEGRADED_STATUSES = frozenset(
+    {
+        HidTapState.AUTHORIZATION_CANCELLED.value,
+        HidTapState.AUTHORIZATION_FAILED.value,
+        HidTapState.UNAVAILABLE.value,
+    }
+)
+# 用户手动关掉补充通道时上报给界面的状态（开关显示为关）。
+HID_TAP_DISABLED_STATUS = "disabled_by_user"
+
+
 @dataclass(frozen=True)
 class _TcpOwnerRow:
     local_port: int

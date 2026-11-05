@@ -207,6 +207,11 @@ _VOICE_TAP_MAX_SECONDS = 0.18
 # 变成一次语音输入。只有一直按住、越过这个阈值才是长按，这时才下发那一记
 # KEY_DOWN，松手再 KEY_UP。窗口与短按判定共用同一个阈值，两边不会打架。
 _VOICE_SHORTCUT_PRESS_DELAY_SECONDS = _VOICE_TAP_MAX_SECONDS
+# 谷歌遥控器的语音键要经 BLE 和接收端转发，主机看到的按下→松开比小米实体键
+# 长一截：实测正常轻点就有 0.18~0.25 秒，沿用 0.18 的窗口会把一半短按判成
+# 长按（于是短按变成一次没反应的语音触发）。这里单独放宽到 0.35 秒，长按
+# 实测在 1.2 秒以上，仍然分得干净。
+_CHROMECAST_VOICE_TAP_MAX_SECONDS = 0.35
 # 插件语音只按"按住多久"分岔，不看音量：按下就开遥控器话筒并把 PCM 缓进
 # 一个约 0.8s 的环形缓冲，按满 ``_PLUGIN_VOICE_HOLD_SECONDS`` 才开插件会话
 # 并把缓冲一起补发（插件在 session_accepted 之前会自己暂存），所以开口的
@@ -286,7 +291,14 @@ class RC003App:
         # Process scope never rewrites key_bindings.json: the resolved overlay
         # only lives in memory, while the active profile is recorded in
         # app_profiles.json so the settings window can highlight it.
-        self._preset_store = app_profiles.AppProfileStore(self._config_root)
+        self._preset_store = app_profiles.AppProfileStore(
+            self._config_root, self._remote_profile)
+        # 软件方案按型号分库，但列表共用：启动时先把另一台遥控器上的方案
+        # 补过来，避免服务先跑起来时这台看不到那些应用。
+        try:
+            self._preset_store.adopt_apps_from_siblings()
+        except Exception:  # noqa: BLE001 - 同步失败不影响启动
+            pass
         self._presets_mtime_ns = self._settings_file_mtime_ns(self._preset_store.path)
         # Tracked separately from the hotkey table: editing one app's mapping
         # must re-resolve the overlay that is live right now.
@@ -963,19 +975,86 @@ class RC003App:
                 disable_forwarding=lambda: setattr(
                     self, "_voice_pcm_forwarding_enabled", False
                 ),
-                voice_inject_mode=self._chromecast_voice_inject_mode,
+                prepare_shortcut=self._prepare_chromecast_voice_shortcut,
+                claim_detection=self._claim_chromecast_mic_detection,
+                press_delay_seconds=self._chromecast_voice_press_delay,
+                on_short_tap=self._chromecast_voice_short_tap,
+                inject_mode=self._chromecast_voice_inject_mode,
             )
         )
 
-    def _chromecast_voice_inject_mode(self) -> Optional[str]:
-        """Chromecast 语音键的注入后端。
+    def _prepare_chromecast_voice_shortcut(self) -> None:
+        """Apply the active voice key's recorded shortcut before the mic opens.
 
-        谷歌遥控器的语音键常常配成普通组合键（key_combo）而不是 VOICE_HOLD，
-        语音槽因此没有归属按钮；按语音一解析，取不到时由
-        ``_voice_slot_inject_mode`` 退回话筒键自己配置的注入方式。
+        The Chromecast remote carries no voice button in the button map, so it
+        resolves its shortcut the same way the Xiaomi mic button does.
         """
 
-        return self._voice_slot_inject_mode(1)
+        slot = self._active_voice_slot()
+        hotkey_text = self._voice_hotkey_text_for_slot(slot)
+        if not hotkey_text:
+            self._clear_voice_hotkey_locked()
+            return
+        try:
+            voice_hotkey = hotkey.HotkeySpec.parse(hotkey_text)
+        except (hotkey.HotkeyParseError, win32_keys.UnknownKeyTokenError) as exc:
+            self._logger.warning(
+                "chromecast voice shortcut ignored: invalid shortcut: %s", exc
+            )
+            self._clear_voice_hotkey_locked()
+            return
+        self._apply_voice_settings_locked(voice_hotkey, update_config=slot == 1)
+
+    def _claim_chromecast_mic_detection(self) -> bool:
+        """Claim one pending 按键检测 request for the Chromecast voice key.
+
+        The Chromecast remote has no HID mic button, so its press only shows up
+        as the voice stream opening. Claiming the request here keeps the
+        shortcut, the recording and the voice-mode switch from firing while the
+        user is only detecting buttons.
+        """
+
+        try:
+            captured = key_detection_bridge.publish_next_button(
+                self._config_root,
+                "mic",
+            )
+        except OSError as exc:
+            self._logger.warning("key detection IPC unavailable: %s", exc)
+            return False
+        if captured:
+            self._logger.info(
+                "key detection captured button=mic source=chromecast_voice; "
+                "voice action suppressed",
+            )
+        return captured
+
+    def _chromecast_voice_press_delay(self) -> float:
+        """Tap window for the Chromecast voice key, or 0 when taps resend.
+
+        Reads the same "延迟发送" switch the Xiaomi mic button uses: when it is
+        on, the shortcut waits out the tap window so a short press only cycles
+        the voice mode and never leaks a key press.
+        """
+
+        if not self._voice_shortcut_press_delay_enabled(self._active_voice_slot()):
+            return 0.0
+        return _CHROMECAST_VOICE_TAP_MAX_SECONDS
+
+    def _chromecast_voice_inject_mode(self) -> Optional[str]:
+        """Inject the remote shortcut the way the mic button's slot asks for.
+
+        The Chromecast remote has no button-map entry of its own, so its voice
+        key must inherit the injection backend of the slot it drives. Falling
+        back to SendInput leaves LLKHF_INJECTED on the stroke, and voice-input
+        hosts ignore an injected 语音键.
+        """
+
+        return self._voice_slot_inject_mode(self._active_voice_slot())
+
+    def _chromecast_voice_short_tap(self) -> None:
+        with self._voice_shortcut.lock:
+            self._handle_voice_short_tap_locked("chromecast short press")
 
     def _cancel_chromecast_mappings(self) -> None:
         with self._input_arbitration_lock:
@@ -1777,14 +1856,56 @@ class RC003App:
                     type(exc).__name__,
                 )
 
+    def _hid_tap_saved_state(self) -> Optional[str]:
+        """Return the state to report instead of starting the tap, if saved."""
+
+        record = config.read_hid_tap_degraded(self._config_root)
+        if record is None:
+            return None
+        if record["state"] == config.HID_TAP_STATE_DISABLED:
+            return frida_compat.HID_TAP_DISABLED_STATUS
+        return record["reason"] or frida_compat.HidTapState.FAILED.value
+
+    def _save_hid_tap_degraded(self, reason: str) -> None:
+        """Remember the first unrecoverable tap failure so later starts skip it."""
+
+        existing = config.read_hid_tap_degraded(self._config_root)
+        if existing is not None:
+            if existing["state"] == config.HID_TAP_STATE_DISABLED:
+                # 用户手动关掉时，自动降级不能把记录改回 degraded。
+                return
+            if existing["reason"] == reason:
+                return
+        if config.save_hid_tap_degraded(
+            self._config_root,
+            state=config.HID_TAP_STATE_DEGRADED,
+            reason=reason,
+        ):
+            self._logger.warning(
+                "RC003 HID report tap degraded; next start skips it: %s", reason
+            )
+
     def _start_hid_report_tap(self) -> None:
         """Start the upstream-derived tap for usages Windows drops.
 
         This is independent of the normal Raw Input listener.  A missing or
         unverified Gadget is a button-only degradation and must not prevent
         BLE voice from starting.
+
+        A saved ``hid-tap-degraded.json`` record (written after an
+        unrecoverable failure, or when the user turned the key channel off)
+        skips the tap entirely, so Windows is never asked to authorize again
+        on every launch.  Only an explicit restart clears that record.
         """
 
+        skip_state = self._hid_tap_saved_state()
+        if skip_state is not None:
+            self._set_runtime_input_state(hid_tap_state=skip_state)
+            self._logger.info(
+                "startup: RC003 HID report tap skipped by saved record; state=%s",
+                skip_state,
+            )
+            return
         self._set_runtime_input_state(hid_tap_state="starting")
         tap = frida_compat.RC003HidReportTap(
             self._on_direct_hid_report,
@@ -2607,6 +2728,8 @@ class RC003App:
             status=str(status),
             detail=str(detail or ""),
         )
+        if status in frida_compat.HID_TAP_DEGRADED_STATUSES:
+            self._save_hid_tap_degraded(str(status))
         self._set_runtime_input_state(hid_tap_state=status)
         interception_ready = status == frida_compat.HidTapState.READY.value
         interception_armed = status in {
@@ -3254,15 +3377,6 @@ class RC003App:
         # 一个话筒键轮换多个语音槽时（短按切换），只有语音一真正绑在话筒键
         # 上，语音二/三没有自己的按钮。此时必须沿用触发按钮的注入方式，
         # 否则会退回 SendInput，右 Alt 这类需要驱动级注入的宿主就收不到。
-        if fallback is None:
-            # 谷歌 TV 等遥控器的语音键常配成普通组合键（key_combo）而不是
-            # VOICE_HOLD，此时没有任何按钮归属该语音槽；沿用话筒键(mic)的注入
-            # 方式，否则这里返回 None 会静默回退 SendInput，同样收不到按键。
-            mic_action = self._primary_button_action("mic")
-            if mic_action is not None:
-                fallback = injection_backend.normalize_inject_mode(
-                    mic_action.inject_mode
-                )
         return fallback
 
     def _voice_slot_uses_interception(self, slot: Optional[int]) -> bool:

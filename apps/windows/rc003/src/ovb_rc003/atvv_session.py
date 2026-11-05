@@ -25,27 +25,11 @@ class ATVVProtocolError(Exception):
 
 
 class UnsupportedSampleRateError(ATVVProtocolError):
-    """Raised when the negotiated codec is neither 8 kHz nor 16 kHz.
+    """Raised when the negotiated codec is not the required 16 kHz mode.
 
-    The client refuses to guess at an arbitrary sample rate rather than risk
-    silently mis-decoding audio; 8 kHz itself is accepted and upsampled.
+    This is a deliberate fail-closed gate: the client refuses to guess at an
+    8 kHz fallback rather than risk silently mis-decoding audio.
     """
-
-
-def _upsample_16k(samples: List[int], sample_rate: float) -> List[int]:
-    """Zero-order-hold upsample to 16 kHz.
-
-    8 kHz ADPCM carries nothing above 4 kHz, so repeating each sample keeps the
-    duration and timbre intact while satisfying the 16 kHz virtual microphone.
-    """
-
-    factor = max(1, int(round(proto.SUPPORTED_SAMPLE_RATE_HZ / sample_rate)))
-    if factor == 1:
-        return samples
-    out: List[int] = []
-    for sample in samples:
-        out.extend([sample] * factor)
-    return out
 
 
 @dataclass(frozen=True)
@@ -178,9 +162,6 @@ class ATVVSession:
         self._dc_filter = proto.DCHighPassFilter()
         self._accumulator = proto.FrameAccumulator()
         self._frame_size = proto.DEFAULT_FRAME_SIZE
-        # 设备协商出的采样率：16 kHz 直接使用，8 kHz（Google TV 遥控器只报 8 kHz）
-        # 在解码后上采样到 16 kHz，虚拟麦克风侧始终按 16 kHz 写入。
-        self._sample_rate = proto.SUPPORTED_SAMPLE_RATE_HZ
         self._version = 0
         self._caps: Optional[proto.ATVVCapabilities] = None
         self._pending_sync: Optional[tuple] = None
@@ -206,13 +187,12 @@ class ATVVSession:
             caps = proto.ATVVCapabilities.parse(payload)
             if caps is None:
                 raise ATVVProtocolError(f"malformed CAPS payload: {payload!r}")
-            if caps.sample_rate not in (8000.0, proto.SUPPORTED_SAMPLE_RATE_HZ):
+            if caps.sample_rate != proto.SUPPORTED_SAMPLE_RATE_HZ:
                 raise UnsupportedSampleRateError(
-                    "this bridge requires ATVV 8 kHz or 16 kHz audio "
+                    "this bridge currently requires ATVV 16 kHz audio "
                     f"(device offered {caps.sample_rate} Hz)"
                 )
             self._caps = caps
-            self._sample_rate = caps.sample_rate
             self._version = caps.version
             self._frame_size = caps.frame_size
             return CapsReceived(caps)
@@ -283,10 +263,7 @@ class ATVVSession:
                 self._pending_sync = None
             decoded = self._decoder.decode(frame)
             centered = self._dc_filter.process(decoded)
-            samples = proto.postprocess(centered, self.gain_db)
-            if self._sample_rate < proto.SUPPORTED_SAMPLE_RATE_HZ:
-                samples = _upsample_16k(samples, self._sample_rate)
-            batches.append((samples, frame_origin))
+            batches.append((proto.postprocess(centered, self.gain_db), frame_origin))
         return batches
 
     def mic_open_command(self) -> bytes:

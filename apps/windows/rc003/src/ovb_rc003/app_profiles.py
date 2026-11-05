@@ -291,6 +291,28 @@ def snapshot(bindings: dict, profile: str = device_catalog.RC003_ID) -> dict:
     return validate_mapping(value, profile)
 
 
+def project_mapping(mapping: dict, source_profile: str,
+                    target_profile: str) -> dict:
+    """把一套软件按键映射换到另一种型号的遥控器上。
+
+    两台遥控器都有的按键原样搬过去；目标型号多出来的按键显式设为禁用，
+    否则它会回落到全局配置，看起来像"这台遥控器也调过"；源型号才有的
+    按键直接丢掉。
+    """
+    if source_profile == target_profile:
+        return validate_mapping(mapping, source_profile, partial=True)
+    source = validate_mapping(mapping, source_profile, partial=True)
+    allowed = set(remote_layout.button_order(target_profile))
+    projected = {field: {} for field in MAPPING_FIELDS}
+    for field in MAPPING_FIELDS:
+        for button, value in source[field].items():
+            if button in allowed:
+                projected[field][button] = copy.deepcopy(value)
+    for button in allowed:
+        projected["bindings"].setdefault(button, {"kind": "disabled", "keys": []})
+    return validate_mapping(projected, target_profile, partial=True)
+
+
 def resolve_mapping(bindings: dict, override: dict | None,
                     profile: str = device_catalog.RC003_ID) -> dict:
     """Lay one app profile over the global bindings, button by button.
@@ -513,9 +535,16 @@ def build_library(profile: str, global_mapping: dict, entries: list[dict], *,
 
 
 class AppProfileStore:
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, profile: str = device_catalog.RC003_ID):
+        # 一个遥控器型号一份应用配置库：小米沿用原来的文件名，其他型号追加
+        # 型号后缀，免得两套按键集合写进同一文件、互相判成“不支持的按键”。
+        self.profile = profile or device_catalog.RC003_ID
+        if self.profile not in PROFILES:
+            raise ValueError("此配置的遥控器型号不受支持。")
         self.root = Path(root)
-        self.path = self.root / FILENAME
+        self.path = self.root / (
+            FILENAME if self.profile == device_catalog.RC003_ID
+            else f"app_profiles.{self.profile}.json")
         self.legacy_path = self.root / LEGACY_FILENAME
 
     def _empty_document(self) -> dict:
@@ -523,7 +552,7 @@ class AppProfileStore:
 
     def _load_legacy(self) -> "dict | None":
         """Convert the legacy library once, leaving its file on disk untouched."""
-        if not self.legacy_path.exists():
+        if self.profile != device_catalog.RC003_ID or not self.legacy_path.exists():
             return None
         legacy = mapping_presets.PresetStore(self.root)._load_document()
         profiles = [{"id": entry["id"], "name": entry["name"], "scope": entry["scope"],
@@ -597,7 +626,8 @@ class AppProfileStore:
                 hotkeys.add(hotkey.casefold())
             result.append({"id": identity, "name": name, "scope": scope, "process": process,
                            "hotkey": hotkey,
-                           "mapping": validate_mapping(entry["mapping"], partial=scope == "app"),
+                           "mapping": validate_mapping(
+                               entry["mapping"], self.profile, partial=scope == "app"),
                            "voice_input_source": source, "voice_local_input_device": device,
                            VOICE_KEYS_FIELD: voice_keys})
         applied = value["applied"]
@@ -715,6 +745,98 @@ class AppProfileStore:
         if len((json.dumps(document, indent=2, sort_keys=True) + "\n").encode("utf-8")) > MAX_BYTES:
             raise ValueError("保存的配置总量超过 2 MB，请先导出或删除不用的配置。")
         config._save_json_atomic(self.path, document)
+        self._mirror_apps(document)
+
+    def _sibling_stores(self) -> "list[AppProfileStore]":
+        """其它遥控器型号的库；软件方案要在它们之间保持一致。"""
+        return [AppProfileStore(self.root, profile) for profile in PROFILES
+                if profile != self.profile]
+
+    def _read_document_only(self) -> dict:
+        """只读本库文件，不迁移、不写盘；供同步时读取隔壁库用。"""
+        return self._validate_document(_read(self.path))
+
+    def _mirror_apps(self, document: dict) -> None:
+        """把软件方案同步到其它遥控器型号的库。
+
+        名字、进程、快捷键和顺序都跟着走，让每台遥控器看到同一份方案列表；
+        按键映射各存一份，新出现的方案按目标型号的按键重新铺一遍，对方没有
+        的按键直接禁用。同步失败不影响本次保存。
+        """
+        apps = [entry for entry in document["profiles"] if entry["scope"] == "app"]
+        for sibling in self._sibling_stores():
+            try:
+                try:
+                    sibling_document = sibling._read_document_only()
+                except FileNotFoundError:
+                    if not apps:
+                        continue
+                    sibling_document = sibling._empty_document()
+                previous = copy.deepcopy(sibling_document)
+                known = {entry["id"]: entry
+                         for entry in sibling_document["profiles"]
+                         if entry["scope"] == "app"}
+                rebuilt = []
+                for entry in apps:
+                    prior = known.get(entry["id"])
+                    mapping = prior["mapping"] if prior is not None else project_mapping(
+                        entry["mapping"], self.profile, sibling.profile)
+                    rebuilt.append({**copy.deepcopy(entry), "mapping": mapping})
+                rebuilt_iter = iter(rebuilt)
+                profiles = []
+                for entry in sibling_document["profiles"]:
+                    if entry["scope"] == "app":
+                        replacement = next(rebuilt_iter, None)
+                        if replacement is not None:
+                            profiles.append(replacement)
+                    else:
+                        profiles.append(entry)
+                profiles.extend(rebuilt_iter)
+                sibling_document["profiles"] = profiles
+                app_ids = {entry["id"] for entry in rebuilt}
+                if document["applied"] == GLOBAL_ID:
+                    sibling_document["applied"] = GLOBAL_ID
+                elif document["applied"] in app_ids:
+                    sibling_document["applied"] = document["applied"]
+                elif sibling_document["applied"] not in app_ids:
+                    sibling_document["applied"] = GLOBAL_ID
+                if sibling_document == previous:
+                    continue
+                config._save_json_atomic(sibling.path, sibling_document)
+            except Exception:  # noqa: BLE001 - 同步失败不能影响本次保存
+                continue
+
+    def adopt_apps_from_siblings(self) -> bool:
+        """把其它型号库里的软件方案并进当前库，返回是否写入了文件。
+
+        分库之前所有方案都在小米库里；另一台遥控器第一次打开时要把它们
+        补过来，映射按自己的按键重新铺一遍（缺的按键禁用）。
+        """
+        document = self._load_document()
+        apps = [entry for entry in document["profiles"] if entry["scope"] == "app"]
+        known_processes = {entry["process"].casefold() for entry in apps}
+        known_ids = {entry["id"] for entry in apps}
+        adopted = []
+        for sibling in self._sibling_stores():
+            try:
+                sibling_document = sibling._read_document_only()
+            except Exception:  # noqa: BLE001 - 隔壁库坏了不影响当前库
+                continue
+            for entry in sibling_document["profiles"]:
+                if entry["scope"] != "app":
+                    continue
+                key = entry["process"].casefold()
+                if entry["id"] in known_ids or key in known_processes:
+                    continue
+                adopted.append({**copy.deepcopy(entry), "mapping": project_mapping(
+                    entry["mapping"], sibling.profile, self.profile)})
+                known_ids.add(entry["id"])
+                known_processes.add(key)
+        if not adopted:
+            return False
+        document["profiles"].extend(adopted)
+        self._save(document)
+        return True
 
     @staticmethod
     def _find(entries: list[dict], identity: str) -> dict:
@@ -750,7 +872,8 @@ class AppProfileStore:
         identity = str(uuid4())
         entries.append({"id": identity, "name": name, "scope": scope, "process": process,
                         "hotkey": hotkey,
-                        "mapping": validate_mapping(mapping, partial=scope == "app"),
+                        "mapping": validate_mapping(
+                            mapping, self.profile, partial=scope == "app"),
                         "voice_input_source": source, "voice_local_input_device": device,
                         VOICE_KEYS_FIELD: validate_voice_keys(voice_keys or [])})
         self._save(document)
@@ -758,7 +881,7 @@ class AppProfileStore:
 
     def copy_profile(self, identity: str, name: str = "", *,
                      bindings: "dict | None" = None,
-                     profile: str = device_catalog.RC003_ID) -> str:
+                     profile: str = "") -> str:
         """Duplicate one profile, voice mode included, under a fresh name.
 
         An application profile stores only its overrides, so copying it needs
@@ -767,6 +890,7 @@ class AppProfileStore:
         """
         document = self._load_document()
         entry = self._find(document["profiles"], identity)
+        profile = profile or self.profile
         mapping = copy.deepcopy(entry["mapping"])
         if entry["scope"] == "app":
             if bindings is None:
@@ -794,7 +918,8 @@ class AppProfileStore:
         """Overwrite one saved profile with the current mapping and voice mode."""
         document = self._load_document()
         entry = self._find(document["profiles"], identity)
-        entry["mapping"] = validate_mapping(mapping, partial=entry["scope"] == "app")
+        entry["mapping"] = validate_mapping(
+            mapping, self.profile, partial=entry["scope"] == "app")
         entry["voice_input_source"], entry["voice_local_input_device"] = validate_voice(
             voice_input_source, voice_local_input_device)
         entry[VOICE_KEYS_FIELD] = validate_voice_keys(voice_keys or [])
@@ -848,7 +973,8 @@ class AppProfileStore:
         """Replace a saved profile's mapping without touching its switching state."""
         document = self._load_document()
         entry = self._find(document["profiles"], identity)
-        entry["mapping"] = validate_mapping(mapping, partial=entry["scope"] == "app")
+        entry["mapping"] = validate_mapping(
+            mapping, self.profile, partial=entry["scope"] == "app")
         self._save(document)
 
     def list_apps(self) -> list[dict]:
@@ -933,7 +1059,8 @@ class AppProfileStore:
                 app.get("voice_local_input_device", default_device))
             created.append({"id": str(uuid4()), "name": name, "scope": "app", "process": process,
                             "hotkey": hotkey,
-                            "mapping": validate_mapping(app["mapping"], partial=True),
+                            "mapping": validate_mapping(
+                                app["mapping"], self.profile, partial=True),
                             "voice_input_source": source,
                             "voice_local_input_device": device,
                             VOICE_KEYS_FIELD: validate_voice_keys(
@@ -1019,7 +1146,8 @@ __all__ = [
     "VOICE_FIELDS", "VOICE_KEY_FIELDS", "VOICE_KEYS_FIELD", "SCHEMA_VERSION",
     "PREVIOUS_SCHEMA_VERSIONS", "LEGACY_SCHEMA_VERSIONS",
     "EXPORT_SCHEMA_VERSION", "EXPORT_FIELDS", "VOICE_MODE_LABELS", "VOICE_DEVICE_MAX_LENGTH",
-    "validate_mapping", "snapshot", "resolve_mapping", "apply_to", "validate_voice",
+    "validate_mapping", "snapshot", "project_mapping", "resolve_mapping", "apply_to",
+    "validate_voice",
     "validate_voice_keys", "plugin_slot_ids",
     "voice_mode_label", "mode_tag", "display_label", "voice_conflicts",
     "voice_conflict_message", "resolve_voice", "build_bundle", "validate_bundle",

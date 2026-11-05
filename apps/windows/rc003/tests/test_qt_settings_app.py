@@ -11930,7 +11930,7 @@ class ThreePageSettingsSourceContractTests(unittest.TestCase):
         self.assertIn('return qsTr("启动服务")', self.device_qml)
 
     def test_device_toggles_share_the_compact_accent_switch(self):
-        self.assertEqual(self.device_qml.count("CompactSwitch {"), 4)
+        self.assertEqual(self.device_qml.count("CompactSwitch {"), 5)
         self.assertNotIn("                    Switch {", self.device_qml)
         self.assertIn("implicitWidth: 38", self.compact_switch_qml)
         self.assertIn("implicitHeight: 22", self.compact_switch_qml)

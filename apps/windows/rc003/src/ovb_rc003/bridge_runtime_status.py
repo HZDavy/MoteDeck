@@ -58,6 +58,7 @@ READY_RAW_INPUT_STATES = frozenset({"ready"})
 READY_HID_TAP_STATES = frozenset({"attached_waiting_for_hid_io", "ready"})
 RC003_PROFILE = "xiaomi-rc003"
 RC001_PROFILE = "xiaomi-rc001"
+CHROMECAST_PROFILE = "chromecast-remote"
 VOICE_RUNTIME_NOT_TESTED = "not_tested"
 VOICE_RUNTIME_ACTIVE = "active"
 VOICE_RUNTIME_MIC_CONFIRMED = "mic_confirmed"
@@ -241,6 +242,10 @@ def button_receiver_usable(
     validation in ``app.py``; it is not a setup action.
     """
 
+    if profile == CHROMECAST_PROFILE:
+        # The Chromecast receiver owns its HID report channel and has neither
+        # Raw Input nor a voice-key physicalizer, so readiness is the tap alone.
+        return hid_tap_state in READY_HID_TAP_STATES
     if profile not in (RC003_PROFILE, RC001_PROFILE):
         return False
     return (

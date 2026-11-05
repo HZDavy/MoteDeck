@@ -181,7 +181,7 @@ class CythonCoreBuildContractTests(unittest.TestCase):
     def test_build_tool_versions_are_pinned(self):
         requirements = _REQUIREMENTS_DEV_PATH.read_text(encoding="utf-8")
         self.assertIn("cython==3.2.8", requirements)
-        self.assertIn("setuptools==84.1.0", requirements)
+        self.assertIn("setuptools==80.9.0", requirements)
 
 
 

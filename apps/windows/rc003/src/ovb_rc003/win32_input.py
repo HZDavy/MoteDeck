@@ -1649,11 +1649,12 @@ def send_voice_key_combo_down(
     *,
     _sender: Optional[VoiceSender] = None,
     _key_down_query: Optional[PhysicalKeyDownQuery] = None,
+    require_tracked_hold: bool = True,
 ) -> None:
     """Press a voice shortcut through the marked virtual-key path."""
 
     vk_codes = win32_keys.resolve_vk_codes(tokens)
-    if _sender is None and _key_down_query is None:
+    if require_tracked_hold and _sender is None and _key_down_query is None:
         _ensure_tracked_hold_available(vk_codes)
     preflight_query = _voice_physical_query_for_sender(
         _sender is not None,

@@ -10,30 +10,21 @@
   <a href="LICENSE.md"><img src="https://img.shields.io/github/license/HZDavy/MoteDeck?style=flat-square&label=license&color=111111&labelColor=55534F" alt="许可"></a>
 </p>
 
-欢迎通过 [Issues](https://github.com/HZDavy/MoteDeck/issues) 提交功能建议与 Bug 反馈，也欢迎直接提交 [Pull Request](https://github.com/HZDavy/MoteDeck/pulls)；使用说明见[使用帮助](https://hzdavy.github.io/MoteDeck/help/)。
+**有问题欢迎反馈🐧群：1134307509**
 
-> [!NOTE]
-> 本项目自身代码几乎全部由 AI 协助开发，可能存在疏漏，由此给您带来的不便敬请谅解。
+MoteDeck 是一个开源的 Windows 小工具：把**小米蓝牙语音遥控器 2 Pro**（RC003）的按键和话筒接进电脑，隔着房间控制应用、按住说话把文字送进当前输入框。
 
-MoteDeck 是一个以遥控器语音控制电脑为核心的 Windows 工具，支持**小米蓝牙语音遥控器 2 Pro**（RC003）、**小米遥控器2**（RC001）与 Google TV 款的**谷歌遥控器**（Chromecast；谷歌 TV 遥控器均为第三方生产，存在多个版本，不能保证所有版本都可以使用），通过按键映射与语音输入，把遥控器变成电脑的快捷键和麦克风；连接 OpenMexia 后还可用语音控制米家设备。
+程序常驻通知区域，全部在本机运行，不上传遥控器地址、按键记录、录音或个人数据。
 
-按键可以映射成键盘快捷键（可选驱动级注入）、鼠标操作或打开应用，同一按键的单击、双击、长按可以各设一个动作；语音键能触发输入法的语音快捷键，也能用本地 SenseVoice 模型离线识别成文字；连接 OpenMexia 后还能用一句语音开关整屋设备。
-
-提供 Windows 10 / 11 x64 的桌面版本，单窗口三页设置界面（设备 / 按键 / 语音），常驻通知区域并支持开机自启；安装包从 [Releases](https://github.com/HZDavy/MoteDeck/releases) 下载，未签名，首次运行按页面提示处理未就绪项即可。
-
-程序全部在本机运行，不上传遥控器地址、按键记录、录音或个人数据。
-
-本项目是基于 GPL-3.0 的 [`nijez/open-voice-bridge`](https://github.com/nijez/open-voice-bridge) Windows 实现的改造版本（Windows 实现的历史仓库为 [`ZSTDJan/windows-remote-mic-app`](https://github.com/ZSTDJan/windows-remote-mic-app)）；上游归属、改动范围与 GPL-3.0 §5(a) 修改声明见 [ATTRIBUTION.md](apps/windows/rc003/ATTRIBUTION.md)；其余第三方组件与上游项目的说明详见[致谢](#上游致谢)。
+本项目是基于 GPL-3.0 的 [`nijez/open-voice-bridge`](https://github.com/nijez/open-voice-bridge) Windows 实现的改造版本（Windows 实现的历史仓库为 [`ZSTDJan/windows-remote-mic-app`](https://github.com/ZSTDJan/windows-remote-mic-app)）；上游归属、改动范围与 GPL-3.0 §5(a) 修改声明见 [ATTRIBUTION.md](apps/windows/rc003/ATTRIBUTION.md)。
 
 ---
 
-## 新增：支持小米遥控器2 与谷歌 TV 遥控器
+## 新增：支持谷歌 Chromecast 遥控器
 
-<img src="./assets/readme/chromecast-support.svg" width="100%" alt="新增支持小米遥控器2 与谷歌 TV 遥控器：MoteDeck 0.1.9 起按键与语音都能用，欢迎测试">
+<img src="./assets/readme/chromecast-support.svg" width="100%" alt="新增支持谷歌 Chromecast 遥控器：0.1.11 起已适配正式谷歌遥控器 9450">
 
-0.1.9 起同时支持**小米遥控器2**（RC001）与 Google TV 款的**谷歌遥控器**（Chromecast）：设备页可以扫描、添加并选择它们，按键页与设备页会切换成对应遥控器的实物图和键位。小米遥控器2 与 2 Pro 的按键一致，语音按住话筒键录音、松手发送。
-
-谷歌 TV 遥控器均为第三方生产，存在多个版本，不能保证所有版本都可以使用；遇到无法识别或按键对不上的版本，欢迎反馈到 [Issues](https://github.com/HZDavy/MoteDeck/issues)。
+0.1.11 起已适配正式谷歌遥控器 9450（Chromecast）：设备页可以扫描、添加并选择它，按键页与设备页会切换成谷歌遥控器的实物图和键位；语音按住话筒键录音、松手发送，「按键检测」也不会再误触发语音动作。
 
 ---
 
@@ -104,9 +95,9 @@ Vokie 原生支持外接语音设备，MoteDeck 按它的插件协议做了适�
 
 到 [Releases](https://github.com/HZDavy/MoteDeck/releases) 下载最新的 `MoteDeckSetup-<版本号>-unsigned.exe`，也可以先在 [官网](https://hzdavy.github.io/MoteDeck/) 查看当前版本与更新说明。
 
-当前正式版为 **0.1.9**。直接下载 [MoteDeckSetup-0.1.9-unsigned.exe](https://github.com/HZDavy/MoteDeck/releases/download/v0.1.9/MoteDeckSetup-0.1.9-unsigned.exe)，或查看 [v0.1.9 版本说明](https://github.com/HZDavy/MoteDeck/releases/tag/v0.1.9)。发布页同时提供 `SHA256SUMS.txt`，下载后可用 `Get-FileHash -Algorithm SHA256` 核对文件。
+当前正式版为 **0.1.11**。直接下载 [MoteDeckSetup-0.1.11-unsigned.exe](https://github.com/HZDavy/MoteDeck/releases/download/v0.1.11/MoteDeckSetup-0.1.11-unsigned.exe)，或查看 [v0.1.11 版本说明](https://github.com/HZDavy/MoteDeck/releases/tag/v0.1.11)。发布页同时提供 `SHA256SUMS.txt`，下载后可用 `Get-FileHash -Algorithm SHA256` 核对文件。
 
-需要 Vokie 插件时，同一版本页提供 [MoteDeck2Vokie-0.1.2.zip](https://github.com/HZDavy/MoteDeck/releases/download/v0.1.9/MoteDeck2Vokie-0.1.2.zip)，也可以直接在软件「语音」页的「外部应用程序支持」里点「下载插件」。
+需要 Vokie 插件时，同一版本页提供 [MoteDeck2Vokie-0.1.2.zip](https://github.com/HZDavy/MoteDeck/releases/download/v0.1.11/MoteDeck2Vokie-0.1.2.zip)，也可以直接在软件「语音」页的「外部应用程序支持」里点「下载插件」。
 
 - 系统要求：64 位 Windows 10 1809 或更高版本。
 - 双击安装包按提示安装，默认装到 `%LOCALAPPDATA%\MoteDeck`，并创建开始菜单与桌面快捷方式；之后从 Windows 设置 → 应用 → MoteDeck 卸载。
@@ -168,7 +159,7 @@ $env:PYTHONPATH = Join-Path (Get-Location) 'src'
 
 ## 关于名字
 
-MoteDeck 由 Mote（远程、轻巧）和 Deck（控制面板）组成。
+MoteDeck 由 Mote（远程、轻巧）和 Deck（控制面板）组成：用一个遥控器，把远处的操作带到手边的控制台上。
 
 ---
 
@@ -186,25 +177,6 @@ MoteDeck 由 Mote（远程、轻巧）和 Deck（控制面板）组成。
 <!-- ALL-CONTRIBUTORS-LIST:START - Do not remove or modify this section -->
 <!-- prettier-ignore-start -->
 <!-- markdownlint-disable -->
-<table>
-  <tbody>
-    <tr>
-      <td align="center" valign="top" width="12.5%"><a href="https://github.com/Ultraw"><img src="https://avatars.githubusercontent.com/u/25666456?v=4?s=80" width="80px;" alt="Ultraw"/><br /><sub><b>Ultraw</b></sub></a><br /><a href="https://github.com/HZDavy/MoteDeck/issues?q=author%3AUltraw" title="Bug reports">🐛</a></td>
-      <td align="center" valign="top" width="12.5%"><a href="https://github.com/vermouth587"><img src="https://avatars.githubusercontent.com/u/50365488?v=4?s=80" width="80px;" alt="vermouth587"/><br /><sub><b>vermouth587</b></sub></a><br /><a href="https://github.com/HZDavy/MoteDeck/issues?q=author%3Avermouth587" title="Bug reports">🐛</a></td>
-      <td align="center" valign="top" width="12.5%"><a href="https://github.com/Auwuwu"><img src="https://avatars.githubusercontent.com/u/118379970?v=4?s=80" width="80px;" alt="Foodooo"/><br /><sub><b>Foodooo</b></sub></a><br /><a href="https://github.com/HZDavy/MoteDeck/issues?q=author%3AAuwuwu" title="Bug reports">🐛</a></td>
-    </tr>
-  </tbody>
-  <tfoot>
-    <tr>
-      <td align="center" size="13px" colspan="8">
-        <img src="https://raw.githubusercontent.com/all-contributors/all-contributors-cli/1b8533af435da9854653492b1327a23a4dbd0a10/assets/logo-small.svg">
-          <a href="https://all-contributors.js.org/docs/en/bot/usage">Add your contributions</a>
-        </img>
-      </td>
-    </tr>
-  </tfoot>
-</table>
-
 <!-- markdownlint-restore -->
 <!-- prettier-ignore-end -->
 
@@ -234,20 +206,9 @@ MoteDeck 由 Mote（远程、轻巧）和 Deck（控制面板）组成。
 
 Windows RC003 客户端在 GPL-3.0 条件下基于 [`nijez/open-voice-bridge`](https://github.com/nijez/open-voice-bridge) 改造，Windows 实现的历史仓库为 [`ZSTDJan/windows-remote-mic-app`](https://github.com/ZSTDJan/windows-remote-mic-app)。感谢原作者的贡献，完整归属说明见 [ATTRIBUTION.md](apps/windows/rc003/ATTRIBUTION.md)。
 
-小米遥控器2（RC001）的实现，以及小米遥控器 2 / 2 Pro 的型号判断（先按蓝牙名匹配，再读 GATT `0x2A24`），参考了 [`GetSayAll/remote-mic-app-windows`](https://github.com/GetSayAll/remote-mic-app-windows)（SayAll Windows 版），由 [Echo](https://github.com/HD838A) 提交（PR #7）。感谢他的公开实现。
-
-驱动级注入用的内核驱动是第三方项目 [Interception](https://github.com/oblitum/Interception)（作者 [oblitum / Francisco Lopes](https://github.com/oblitum)）：使用的是官方发布包里未修改的 `interception.dll` 与 `install-interception.exe`（由官方安装程序安装原版驱动），按 LGPL-3.0 用于非商业用途，许可与校验信息见 [第三方说明](THIRD_PARTY_NOTICES.md)。
-
-离线语音识别用 [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)（Apache-2.0，随包附带并内置 ONNX Runtime）跑 [SenseVoice](https://github.com/QwenAudio/SenseVoice)（MIT，阿里通义实验室）的模型；模型不随包分发，只在用户点击安装时下载，转换后的模型文件由 [csukuangfj](https://github.com/csukuangfj) 提供。
-
 <table>
   <tr>
-    <td width="116" align="center"><a href="https://github.com/nijez"><img src="https://avatars.githubusercontent.com/u/46086777?v=4" width="64px;" alt="nijez"/><br /><sub><b>nijez</b></sub></a><br /><sub>open-voice-bridge</sub></td>
-    <td width="116" align="center"><a href="https://github.com/ZSTDJan"><img src="https://avatars.githubusercontent.com/u/166355097?v=4" width="64px;" alt="ZSTDJan"/><br /><sub><b>ZSTDJan</b></sub></a><br /><sub>windows-remote-mic-app</sub></td>
-    <td width="116" align="center"><a href="https://github.com/HD838A"><img src="https://avatars.githubusercontent.com/u/126734171?v=4" width="64px;" alt="Echo"/><br /><sub><b>Echo</b></sub></a><br /><sub>remote-mic-app-windows</sub></td>
-    <td width="116" align="center"><a href="https://github.com/oblitum"><img src="https://avatars.githubusercontent.com/u/1269815?v=4" width="64px;" alt="oblitum"/><br /><sub><b>oblitum</b></sub></a><br /><sub>Interception</sub></td>
-    <td width="116" align="center"><a href="https://github.com/k2-fsa"><img src="https://avatars.githubusercontent.com/u/71431748?v=4" width="64px;" alt="k2-fsa"/><br /><sub><b>k2-fsa</b></sub></a><br /><sub>sherpa-onnx</sub></td>
-    <td width="116" align="center"><a href="https://github.com/QwenAudio"><img src="https://avatars.githubusercontent.com/u/167062371?v=4" width="64px;" alt="QwenAudio"/><br /><sub><b>QwenAudio</b></sub></a><br /><sub>SenseVoice</sub></td>
-    <td width="116" align="center"><a href="https://github.com/csukuangfj"><img src="https://avatars.githubusercontent.com/u/5284924?v=4" width="64px;" alt="csukuangfj"/><br /><sub><b>csukuangfj</b></sub></a><br /><sub>SenseVoice 模型</sub></td>
+    <td align="center"><a href="https://github.com/nijez"><img src="https://avatars.githubusercontent.com/u/46086777?v=4" width="64px;" alt="nijez"/><br /><sub><b>nijez</b></sub></a><br /><sub>open-voice-bridge</sub></td>
+    <td align="center"><a href="https://github.com/ZSTDJan"><img src="https://avatars.githubusercontent.com/u/166355097?v=4" width="64px;" alt="ZSTDJan"/><br /><sub><b>ZSTDJan</b></sub></a><br /><sub>windows-remote-mic-app</sub></td>
   </tr>
 </table>

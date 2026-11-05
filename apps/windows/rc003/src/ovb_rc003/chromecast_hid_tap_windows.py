@@ -212,9 +212,21 @@ function method(object, slot, result, args) {
   return new NativeFunction(object.readPointer().add(slot * Process.pointerSize).readPointer(), result, args);
 }
 function addressMatches(adapter) {
-  const bytes = new Uint8Array(adapter.add(24).readByteArray(6));
-  for (let i = 0; i < 6; i++) if (bytes[i] !== expectedAddress[i]) return false;
-  return true;
+  // The adapter address sits at a driver-specific offset: some builds keep it
+  // at +24, others at +8 (where +24 is a per-report interface pointer). Scan
+  // the leading bytes for the MAC in either byte order instead of trusting one
+  // fixed offset.
+  const bytes = new Uint8Array(adapter.readByteArray(64));
+  const reversed = expectedAddress.slice().reverse();
+  for (let offset = 0; offset + 6 <= bytes.length; offset++) {
+    let forward = true, backward = true;
+    for (let i = 0; i < 6; i++) {
+      if (bytes[offset + i] !== expectedAddress[i]) forward = false;
+      if (bytes[offset + i] !== reversed[i]) backward = false;
+    }
+    if (forward || backward) return true;
+  }
+  return false;
 }
 function report(buffer) {
   let access = ptr(0);
