@@ -27,6 +27,32 @@ _TESTED_SHA256 = "8a18571ddfa447bd590354ccdf7800b815a098806359ab195d395158f9d07c
 _TESTED_RVA = 0x12FCC
 _HID_SERVICE = "{00001812-0000-1000-8000-00805f9b34fb}"
 _GOOGLE_HARDWARE = "dev_vid&0118d1_pid&9450_rev&0110"
+_GOOGLE_HARDWARE_VARIANT = "dev_vid&0218d1_pid&9450_rev&011b"
+_VARIANT_CODES = {0x41:7, 0x42:3, 0x43:4, 0x44:5, 0x45:6,
+                  0x224:11, 0x223:10, 0xE9:12, 0xEA:13, 0xE2:8,
+                  0x77:14, 0x78:15, 0x19E:1, 0x189:17, 0:0}
+
+
+def _supported_hid_service(name: str) -> bool:
+    return any(re.fullmatch(re.escape(_HID_SERVICE + "_" + hardware)
+                           + r"_[0-9a-f]{12}", name.casefold())
+               for hardware in (_GOOGLE_HARDWARE, _GOOGLE_HARDWARE_VARIANT))
+
+
+def normalize_report(value: bytes, variant: bool = False) -> bytes | None:
+    # Captured from this exact revision with user-labelled physical presses.
+    if not isinstance(value, bytes):
+        return None
+    if variant:
+        if len(value) != 2:
+            return None
+        code = _VARIANT_CODES.get(int.from_bytes(value, 'little'))
+        return bytes((code,)) + bytes(7) if code is not None else None
+    if len(value) == 8 and not any(value[1:]) and value[0] in (0,1,3,4,5,6,7,8,10,11,12,13,14,15,17):
+        return value
+    return None
+
+
 _ADDRESS_SUFFIX = re.compile(r"_([0-9a-f]{12})$", re.I)
 _SYMBOL = "Microsoft::Bluetooth::Profiles::HidOverGatt::HogpGattAdapter::OnReportValueChanged"
 
@@ -35,7 +61,7 @@ class TapError(RuntimeError):
     pass
 
 
-def selected_host_and_address(entity: str) -> tuple[int, str]:
+def _selected_source(entity: str) -> tuple[int, str, bool]:
     """Resolve exactly one selected Google HID service from Windows PnP."""
     import winreg
 
@@ -48,7 +74,7 @@ def selected_host_and_address(entity: str) -> tuple[int, str]:
             for index in range(count):
                 name = winreg.EnumKey(root, index)
                 folded = name.casefold()
-                if not folded.startswith(_HID_SERVICE) or _GOOGLE_HARDWARE not in folded:
+                if not _supported_hid_service(name):
                     continue
                 address = _ADDRESS_SUFFIX.search(name)
                 if address is None:
@@ -66,12 +92,16 @@ def selected_host_and_address(entity: str) -> tuple[int, str]:
                             with winreg.OpenKey(key, r"Device Parameters\WUDFDiagnosticInfo") as info:
                                 pid, _ = winreg.QueryValueEx(info, "HostPid")
                             if type(pid) is int and pid > 0:
-                                found.add((pid, address.group(1).lower()))
+                                found.add((pid, address.group(1).lower(), _GOOGLE_HARDWARE_VARIANT in folded))
     except (OSError, ValueError) as exc:
         raise TapError("hid_source_unconfirmed") from exc
     if len(found) != 1:
         raise TapError("hid_source_unconfirmed")
     return found.pop()
+
+
+def selected_host_and_address(entity: str) -> tuple[int, str]:
+    return _selected_source(entity)[:2]
 
 
 def _pdb_identity(path: Path) -> tuple[str, str]:
@@ -234,13 +264,14 @@ function report(buffer) {
     if (buffer.isNull()) return null;
     const sizeOut = Memory.alloc(4);
     if (method(buffer, 7, "int", ["pointer", "pointer"])(buffer, sizeOut) !== 0) return null;
-    if (sizeOut.readU32() !== 8) return null;
+    const reportSize = sizeOut.readU32();
+    if (reportSize !== 2 && reportSize !== 8) return null;
     const accessOut = Memory.alloc(Process.pointerSize);
     if (method(buffer, 0, "int", ["pointer", "pointer", "pointer"])(buffer, iid, accessOut) !== 0) return null;
     access = accessOut.readPointer();
     const bytesOut = Memory.alloc(Process.pointerSize);
     if (method(access, 3, "int", ["pointer", "pointer"])(access, bytesOut) !== 0) return null;
-    return new Uint8Array(bytesOut.readPointer().readByteArray(8));
+    return new Uint8Array(bytesOut.readPointer().readByteArray(reportSize));
   } finally {
     if (!access.isNull()) method(access, 2, "uint32", ["pointer"])(access);
   }
@@ -251,9 +282,6 @@ Interceptor.attach(callback, {onEnter(args) {
     addressSeen = true;
     const bytes = report(args[2]);
     if (bytes === null) return;
-    const valid = bytes.slice(1).every(value => value === 0) &&
-                  (bytes[0] === 0 || [1,3,4,5,6,7,8,10,11,12,13,14,15,17].includes(bytes[0]));
-    if (!valid) return;
     // The sender interface pointer changes between reports on this driver.
     // Bind by the selected adapter address, never by that transient pointer.
     send({kind:"report", value:Array.from(bytes).map(x => x.toString(16).padStart(2,"0")).join("")});
@@ -282,7 +310,7 @@ class HidTap:
 
     def start(self):
         import frida
-        pid, address = selected_host_and_address(self.entity)
+        pid, address, variant = _selected_source(self.entity)
         rva = callback_rva()
         source = (_SCRIPT.replace("__PATH__", json.dumps(str(MODULE).lower().replace("\\", "/")))
                  .replace("__ADDRESS__", json.dumps(list(bytes.fromhex(address)[::-1])))
@@ -300,7 +328,12 @@ class HidTap:
                     return
                 item = message.get("payload", {})
                 if item.get("kind") == "report":
-                    self._put(("report", item.get("value"), time.monotonic()))
+                    try:
+                        value = normalize_report(bytes.fromhex(item.get("value", "")), variant)
+                    except (ValueError, TypeError):
+                        value = None
+                    if value is not None:
+                        self._put(("report", value.hex(), time.monotonic()))
                 elif item.get("kind") == "hook_ready":
                     self._put(("hook_ready", "", time.monotonic()))
                 elif item.get("kind") == "error":

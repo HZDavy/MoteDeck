@@ -169,8 +169,14 @@ class SelectedDevice:
                                    audio=int(audio.characteristic_properties), control=int(control.characteristic_properties),
                                    tx_handle=int(tx.attribute_handle), audio_handle=int(audio.attribute_handle),
                                    control_handle=int(control.attribute_handle))
-        if tuple(int(c.attribute_handle) for c in (tx, audio, control)) != _VERIFIED_VOICE_DECLARATIONS:
-            raise PipeError("unsupported_layout")
+        declarations = tuple(int(c.attribute_handle) for c in (tx, audio, control))
+        if declarations != _VERIFIED_VOICE_DECLARATIONS:
+            from .chromecast_hid_tap_windows import _selected_source
+            # Same UUIDs and properties, observed declaration layout on 011B.
+            # Only direct WinRT callbacks are permitted; no ATT handle guesses.
+            if not (direct and declarations == (0x51, 0x53, 0x56)
+                    and _selected_source(self.entity)[2]):
+                raise PipeError("unsupported_layout")
         self.voice_tx = tx
         properties = tx.characteristic_properties
         if properties & GattCharacteristicProperties.WRITE:
