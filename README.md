@@ -192,6 +192,7 @@ MoteDeck 由 Mote（远程、轻巧）和 Deck（控制面板）组成。
       <td align="center" valign="top" width="12.5%"><a href="https://github.com/Ultraw"><img src="https://avatars.githubusercontent.com/u/25666456?v=4?s=80" width="80px;" alt="Ultraw"/><br /><sub><b>Ultraw</b></sub></a><br /><a href="https://github.com/HZDavy/MoteDeck/issues?q=author%3AUltraw" title="Bug reports">🐛</a></td>
       <td align="center" valign="top" width="12.5%"><a href="https://github.com/vermouth587"><img src="https://avatars.githubusercontent.com/u/50365488?v=4?s=80" width="80px;" alt="vermouth587"/><br /><sub><b>vermouth587</b></sub></a><br /><a href="https://github.com/HZDavy/MoteDeck/issues?q=author%3Avermouth587" title="Bug reports">🐛</a></td>
       <td align="center" valign="top" width="12.5%"><a href="https://github.com/Auwuwu"><img src="https://avatars.githubusercontent.com/u/118379970?v=4?s=80" width="80px;" alt="Foodooo"/><br /><sub><b>Foodooo</b></sub></a><br /><a href="https://github.com/HZDavy/MoteDeck/issues?q=author%3AAuwuwu" title="Bug reports">🐛</a></td>
+      <td align="center" valign="top" width="12.5%"><a href="https://github.com/SONNY-SUN-331"><img src="https://avatars.githubusercontent.com/u/279549537?v=4?s=80" width="80px;" alt="Sonny Sun"/><br /><sub><b>Sonny Sun</b></sub></a><br /><a href="https://github.com/HZDavy/MoteDeck/issues?q=author%3ASONNY-SUN-331" title="Bug reports">🐛</a></td>
     </tr>
   </tbody>
   <tfoot>
