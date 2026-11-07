@@ -65,6 +65,15 @@
       "contributions": [
         "bug"
       ]
+    },
+    {
+      "login": "lyxc135",
+      "name": "lyxc135",
+      "avatar_url": "https://avatars.githubusercontent.com/u/100792424?v=4",
+      "profile": "https://github.com/lyxc135",
+      "contributions": [
+        "bug"
+      ]
     }
   ],
   "commitType": "docs",
