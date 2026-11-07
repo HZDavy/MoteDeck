@@ -56,6 +56,15 @@
       "contributions": [
         "bug"
       ]
+    },
+    {
+      "login": "yunxiujun",
+      "name": "yunxiujun",
+      "avatar_url": "https://avatars.githubusercontent.com/u/72745658?v=4",
+      "profile": "https://github.com/yunxiujun",
+      "contributions": [
+        "bug"
+      ]
     }
   ],
   "commitType": "docs",
