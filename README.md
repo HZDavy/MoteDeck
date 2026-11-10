@@ -205,7 +205,7 @@ MoteDeck 由 Mote（远程、轻巧）和 Deck（控制面板）组成。
     <tr>
       <td align="center" valign="top" width="12.5%"><a href="https://github.com/cnjingrui"><img src="https://avatars.githubusercontent.com/u/39755035?v=4&size=80" width="80px" height="80px" alt="cnjingrui"/><br /><sub><b>cnjingrui</b></sub></a><br /><a href="https://github.com/HZDavy/MoteDeck/issues?q=author%3Acnjingrui" title="Bug reports">🐛</a></td>
       <td align="center" valign="top" width="12.5%"><a href="https://github.com/shaofengye"><img src="https://avatars.githubusercontent.com/u/14912408?v=4&size=80" width="80px" height="80px" alt="shaofengye"/><br /><sub><b>shaofengye</b></sub></a><br /><a href="https://github.com/HZDavy/MoteDeck/issues?q=author%3Ashaofengye" title="Bug reports">🐛</a></td>
-      <td align="center" valign="top" width="12.5%"><a href="https://github.com/Echo009"><img src="https://avatars.githubusercontent.com/u/24402043?v=4&size=80" width="80px" height="80px" alt="Echo009"/><br /><sub><b>Echo009</b></sub></a><br /><a href="https://github.com/HZDavy/MoteDeck/issues?q=author%3AEcho009" title="Bug reports">🐛</a></td>
+      <td align="center" valign="top" width="12.5%"><a href="https://github.com/Echo009"><img src="https://avatars.githubusercontent.com/u/24402043?v=4&size=80" width="80px" height="80px" alt="Echo009"/><br /><sub><b>Echo009</b></sub></a><br /><a href="https://github.com/HZDavy/MoteDeck/issues?q=author%3AEcho009" title="Bug reports">🐛</a> <a href="#ideas-Echo009" title="Ideas, Planning, & Feedback">🤔</a></td>
     </tr>
   </tbody>
   <tfoot>
