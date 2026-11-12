@@ -112,6 +112,15 @@
         "bug",
         "ideas"
       ]
+    },
+    {
+      "login": "leophegorse",
+      "name": "leophegorse",
+      "avatar_url": "https://avatars.githubusercontent.com/u/152304465?v=4",
+      "profile": "https://github.com/leophegorse",
+      "contributions": [
+        "bug"
+      ]
     }
   ],
   "commitType": "docs",
