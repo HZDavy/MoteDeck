@@ -106,6 +106,7 @@ class BridgeRuntimeStatus:
     voice_runtime_state: str = VOICE_RUNTIME_NOT_TESTED
     voice_runtime_provider: str = ""
     voice_runtime_updated_at: Optional[float] = None
+    voice_mic_blocked_reason: str = ""
     battery_level: Optional[int] = None
     remote_model: str = ""
 
@@ -270,6 +271,7 @@ def publish_status(
     voice_runtime_state: str = VOICE_RUNTIME_NOT_TESTED,
     voice_runtime_provider: str = "",
     voice_runtime_updated_at: Optional[float] = None,
+    voice_mic_blocked_reason: str = "",
     battery_level: Optional[int] = None,
     remote_model: str = "",
     session_id: Optional[int] = None,
@@ -308,6 +310,7 @@ def publish_status(
         voice_runtime_state=str(voice_runtime_state),
         voice_runtime_provider=str(voice_runtime_provider),
         voice_runtime_updated_at=voice_runtime_updated_at,
+        voice_mic_blocked_reason=str(voice_mic_blocked_reason),
         battery_level=battery_level,
         remote_model=str(remote_model),
     )
@@ -338,6 +341,7 @@ def publish_status(
                 "voice_runtime_state": status.voice_runtime_state,
                 "voice_runtime_provider": status.voice_runtime_provider,
                 "voice_runtime_updated_at": status.voice_runtime_updated_at,
+                "voice_mic_blocked_reason": status.voice_mic_blocked_reason,
                 "battery_level": status.battery_level,
                 "remote_model": status.remote_model,
             },
@@ -396,6 +400,7 @@ def _read_status_file(path: Path) -> Optional[BridgeRuntimeStatus]:
             "last_button_source",
             "voice_runtime_state",
             "voice_runtime_provider",
+            "voice_mic_blocked_reason",
             "remote_model",
         )
     }
@@ -449,6 +454,7 @@ def _read_status_file(path: Path) -> Optional[BridgeRuntimeStatus]:
         voice_active=voice_active,
         voice_runtime_state=string_fields["voice_runtime_state"],
         voice_runtime_provider=string_fields["voice_runtime_provider"],
+        voice_mic_blocked_reason=string_fields["voice_mic_blocked_reason"],
         voice_runtime_updated_at=(
             None
             if voice_runtime_updated_at is None

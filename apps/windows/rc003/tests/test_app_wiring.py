@@ -5351,6 +5351,40 @@ class VoiceMappingProductBoundaryTests(_AppWiringTestCase):
         self.assertEqual(ups, [])
         self.assertNotIn(DEFAULT_VOICE_TOKENS, downs)
         self.assertEqual(self.app._ble_session.mic_close_calls, 1)
+        # The silent drop must surface as a published runtime block reason so
+        # the settings UI can tell the user why holding the mic does nothing.
+        self.assertEqual(
+            self.app._runtime_voice_mic_blocked, "mic_ordinary_mapping"
+        )
+
+    def test_restoring_the_mic_voice_mapping_clears_the_published_block(self):
+        self.app._bindings["bindings"]["mic"] = key_mapping.ButtonAction(
+            key_mapping.ActionKind.ARROW_UP
+        ).to_dict()
+        with mock.patch.object(win32_input, "send_arrow_up"):
+            self.app._on_button_event("mic", True, event_source="hid_tap")
+            self.app._on_control_event(MicButtonPressed())
+            self.app._on_control_event(AudioStarted(session_id=1))
+        self.assertEqual(
+            self.app._runtime_voice_mic_blocked, "mic_ordinary_mapping"
+        )
+
+        self.app._bindings["bindings"]["mic"] = key_mapping.ButtonAction(
+            key_mapping.ActionKind.VOICE_HOLD
+        ).to_dict()
+        downs = []
+        with mock.patch.object(
+            win32_input,
+            "send_voice_key_combo_down",
+            side_effect=lambda keys: downs.append(tuple(keys)),
+        ):
+            self.app._on_button_event("mic", True, event_source="hid_tap")
+            self.app._on_control_event(MicButtonPressed())
+            self.app._on_control_event(AudioStarted(session_id=2))
+            self.app._on_button_event("mic", False, event_source="hid_tap")
+
+        self.assertEqual(self.app._runtime_voice_mic_blocked, "")
+        self.assertTrue(downs)
 
 
     def test_ordinary_mic_same_source_next_press_is_not_suppressed(self):

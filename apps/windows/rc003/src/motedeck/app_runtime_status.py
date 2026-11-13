@@ -108,6 +108,7 @@ class RuntimeStatusMixin:
                     voice_runtime_state=self._runtime_voice_state,
                     voice_runtime_provider=self._runtime_voice_provider,
                     voice_runtime_updated_at=self._runtime_voice_updated_at,
+                    voice_mic_blocked_reason=self._runtime_voice_mic_blocked,
                     battery_level=self._runtime_battery_level,
                     remote_model=self._runtime_remote_model,
                 )
@@ -141,6 +142,21 @@ class RuntimeStatusMixin:
             if active == self._runtime_voice_active:
                 return
             self._runtime_voice_active = active
+        self._publish_runtime_status()
+
+    def _set_runtime_voice_mic_blocked(self, reason: str) -> None:
+        """Publish why unsolicited physical-mic audio is being dropped.
+
+        An empty reason means the physical mic button is (or resolves to) a
+        voice action, so audio flows normally. This mirrors the runtime
+        status plumbing so the settings UI can surface the block instead of
+        leaving the drop visible only in the log file.
+        """
+        reason = str(reason)
+        with self._runtime_status_lock:
+            if reason == self._runtime_voice_mic_blocked:
+                return
+            self._runtime_voice_mic_blocked = reason
         self._publish_runtime_status()
 
     def _set_runtime_battery_level(self, level: Optional[int]) -> None:

@@ -1926,6 +1926,16 @@ Item {
                         titleText: qsTr("语音键")
                         titleObjectName: "voiceKeySectionTitle"
 
+                        UiLabel {
+                            objectName: "voiceMicBlockedWarning"
+                            tokens: root.tokens
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            visible: SettingsController.voiceMicBlockedReason !== ""
+                            color: root.tokens.errorColor
+                            text: qsTr("话筒键当前绑定了普通动作，按住说话时声音会被忽略。请到「按键」页把话筒键的动作改回语音键。")
+                        }
+
                         // 两个短按行为可以同时打开：切换模式换槽位，每条语音键的
                         // “短按延迟发送”把唯一那一次按键推迟下发，避开输入法的
                         // 短按/长按竞争。

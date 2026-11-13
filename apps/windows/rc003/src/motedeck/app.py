@@ -297,6 +297,7 @@ class RC003App(
         self._runtime_voice_active = False
         self._runtime_voice_state = bridge_runtime_status.VOICE_RUNTIME_NOT_TESTED
         self._runtime_voice_provider = ""
+        self._runtime_voice_mic_blocked = ""
         self._runtime_voice_updated_at: Optional[float] = None
         self._runtime_battery_level: Optional[int] = None
         # 连上后读到的 GATT 型号串（0x2A24），只用于界面区分 2 / 2 Pro。
@@ -1005,6 +1006,10 @@ class RC003App(
                     "mic",
                     mic_action,
                 )
+                if is_mic_voice_button:
+                    # The physical mic resolves to a voice action again; any
+                    # previously published block reason is stale.
+                    self._set_runtime_voice_mic_blocked("")
                 if not self._voice_shortcut.controller.active and not is_mic_voice_button:
                     self._abort_voice_audio_start_locked(
                         "physical mic has an ordinary mapping"
@@ -1012,6 +1017,7 @@ class RC003App(
                     self._logger.info(
                         "unsolicited mic audio ignored: physical mic has an ordinary mapping"
                     )
+                    self._set_runtime_voice_mic_blocked("mic_ordinary_mapping")
                     if (
                         self._ble_session is not None
                         and not self._unsolicited_mic_close_pending
