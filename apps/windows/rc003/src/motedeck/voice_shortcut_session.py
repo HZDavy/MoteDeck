@@ -22,6 +22,11 @@ _VOICE_HOTKEY_BACKEND_MARKED = "marked_keybd_event"
 # is re-sent here at the typematic rate.  The first repeat starts at the same
 # 0.55 s boundary the tap/hold gesture uses, so a tap never looks like a hold.
 _VOICE_HOTKEY_REPEAT_INITIAL_DELAY_SECONDS = 0.550
+# Input methods such as WeType mute every other playback session while their
+# voice UI is up, which silently drops our audio into the virtual cable.  The
+# mute guard polls our own playback session at this rate during a hold and
+# unmutes it again when something external muted it.
+_VOICE_MUTE_GUARD_POLL_SECONDS = 0.05
 
 @dataclass(frozen=True)
 class ShortcutServices:
@@ -59,6 +64,10 @@ class VoiceShortcutSession:
         self.repeat_timer: Optional[object] = None
         self.repeat_token: Optional[object] = None
         self.repeat_stopping = True
+        self.mute_guard = None
+        self.mute_guard_timer: Optional[object] = None
+        self.mute_guard_token: Optional[object] = None
+        self.mute_guard_stopping = True
         self.timer_factory = threading.Timer
 
     def recorded_tokens(self) -> Tuple[str, ...]:
@@ -85,6 +94,7 @@ class VoiceShortcutSession:
         if action == voice_controller.VoiceHostAction.KEY_UP:
             # Stop the typematic re-sends before the release edge goes out.
             self._stop_hold_repeat_locked()
+            self._stop_mute_guard_locked()
             # The release must go out on the same injection mode the press used.
             if inject_mode is None:
                 inject_mode = self.pending_inject_mode
@@ -102,6 +112,10 @@ class VoiceShortcutSession:
         )
         try:
             if action == voice_controller.VoiceHostAction.KEY_DOWN:
+                # Arm before the injection: input methods that mute other
+                # playback (WeType) do so as soon as the hotkey arrives, and
+                # the guard only tracks sessions that are still unmuted.
+                self._prepare_mute_guard_locked()
                 self.pending_tokens = tokens
                 self.pending_backend = backend
                 self.pending_inject_mode = inject_mode
@@ -111,6 +125,7 @@ class VoiceShortcutSession:
             if action == voice_controller.VoiceHostAction.KEY_DOWN:
                 self.active_backend = backend
                 self._start_hold_repeat_locked()
+                self._start_mute_guard_polling_locked()
             if action == voice_controller.VoiceHostAction.KEY_UP:
                 self.pending_tokens = None
                 self.pending_backend = None
@@ -120,6 +135,7 @@ class VoiceShortcutSession:
             return True
         except win32_input.Win32InputUnavailableError:
             self._stop_hold_repeat_locked()
+            self._stop_mute_guard_locked()
             if action == voice_controller.VoiceHostAction.KEY_DOWN:
                 self.pending_tokens = None
                 self.pending_backend = None
@@ -129,6 +145,7 @@ class VoiceShortcutSession:
             return False
         except win32_input.InputCleanupIncompleteError:
             self._stop_hold_repeat_locked()
+            self._stop_mute_guard_locked()
             self.pending_tokens = tokens
             self.pending_backend = backend
             self.pending_inject_mode = inject_mode
@@ -139,6 +156,7 @@ class VoiceShortcutSession:
             return False
         except OSError:
             self._stop_hold_repeat_locked()
+            self._stop_mute_guard_locked()
             if action == voice_controller.VoiceHostAction.KEY_DOWN:
                 self.pending_tokens = None
                 self.pending_backend = None
@@ -237,6 +255,104 @@ class VoiceShortcutSession:
                 except Exception:
                     pass
 
+    def _prepare_mute_guard_locked(self) -> None:
+        """Arm the playback mute guard before the hotkey is injected.
+
+        Input methods such as WeType mute every other playback session while
+        their voice UI is up, which silently drops our audio into the virtual
+        cable.  Arming has to happen before the injection because the guard
+        only tracks sessions that are still unmuted at prepare time.  Any
+        failure here is silent: a missing guard must never break the hotkey.
+        """
+
+        self._stop_mute_guard_locked()
+        try:
+            guard = self.services.prepare_mute_guard()
+        except Exception:
+            guard = None
+            self.logger.exception("voice playback mute guard prepare failed")
+        self.mute_guard = guard
+
+    def _start_mute_guard_polling_locked(self) -> None:
+        if self.mute_guard is None:
+            return
+        self.mute_guard_stopping = False
+        self.mute_guard_token = object()
+        self._schedule_mute_guard_locked()
+
+    def _schedule_mute_guard_locked(self) -> None:
+        token = self.mute_guard_token
+        if token is None or self.mute_guard_stopping:
+            return
+        try:
+            timer = self.timer_factory(
+                _VOICE_MUTE_GUARD_POLL_SECONDS,
+                lambda: self._mute_guard_tick(token),
+            )
+            timer.daemon = True
+            self.mute_guard_timer = timer
+            timer.start()
+        except Exception:
+            self.mute_guard_timer = None
+            self.mute_guard_stopping = True
+            self.logger.exception("voice playback mute guard timer failed")
+
+    def _mute_guard_tick(self, token: object) -> None:
+        # The COM round-trip runs without the session lock so a release edge
+        # is never blocked behind an audio enumeration.
+        with self.lock:
+            if self.mute_guard_token is not token or self.mute_guard_stopping:
+                return
+            self.mute_guard_timer = None
+            guard = self.mute_guard
+            if guard is None:
+                self.mute_guard_stopping = True
+                return
+        try:
+            result = guard.restore_if_muted()
+        except Exception:
+            with self.lock:
+                if self.mute_guard_token is token:
+                    self.mute_guard_stopping = True
+            self.logger.exception("voice playback mute guard polling failed")
+            return
+        if result == "restored":
+            self.logger.warning(
+                "voice playback was muted externally during the hold; restored"
+            )
+        with self.lock:
+            if self.mute_guard_token is not token or self.mute_guard_stopping:
+                return
+            if result == "session_changed":
+                # The endpoint session was rebuilt (device change): re-arm
+                # from scratch and keep polling while the hold lasts.
+                try:
+                    guard = self.services.prepare_mute_guard()
+                except Exception:
+                    guard = None
+                    self.logger.exception(
+                        "voice playback mute guard re-prepare failed"
+                    )
+                self.mute_guard = guard
+                if guard is None:
+                    self.mute_guard_stopping = True
+                    return
+            self._schedule_mute_guard_locked()
+
+    def _stop_mute_guard_locked(self) -> None:
+        self.mute_guard_stopping = True
+        timer = self.mute_guard_timer
+        self.mute_guard_timer = None
+        self.mute_guard_token = None
+        self.mute_guard = None
+        if timer is not None:
+            cancel = getattr(timer, "cancel", None)
+            if callable(cancel):
+                try:
+                    cancel()
+                except Exception:
+                    pass
+
     def cancel_release_retry(
         self,
         *,
@@ -302,6 +418,7 @@ class VoiceShortcutSession:
         if tokens is None:
             return True
         self._stop_hold_repeat_locked()
+        self._stop_mute_guard_locked()
         try:
             self.send_action(
                 voice_controller.VoiceHostAction.KEY_UP,

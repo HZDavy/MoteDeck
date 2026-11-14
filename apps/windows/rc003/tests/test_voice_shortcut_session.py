@@ -31,6 +31,9 @@ class _ManualTimer:
 def make_session(hotkey_text="ctrl+win", backend=shortcut._VOICE_HOTKEY_BACKEND_MARKED):
     services = mock.Mock()
     services.configured_backend.return_value = backend
+    # No playback mute guard unless a test arms one explicitly: the guard
+    # polls its own timer and would reorder session.timers.
+    services.prepare_mute_guard.return_value = None
     trace = mock.Mock()
     trace.current_context.return_value = {}
     session = shortcut.VoiceShortcutSession(
@@ -327,6 +330,94 @@ class HoldRepeatTests(unittest.TestCase):
             timer.fire()
         self.assertTrue(session.repeat_stopping)
         self.assertIsNone(session.repeat_timer)
+
+
+class MuteGuardTests(unittest.TestCase):
+    def _press(self, session):
+        with mock.patch.object(shortcut.win32_input, "send_voice_key_combo_down"):
+            self.assertTrue(session.apply(voice_controller.VoiceHostAction.KEY_DOWN))
+        return session.timers[-1]
+
+    def test_key_down_arms_the_guard_before_injection_and_polls(self):
+        session, services = make_session()
+        guard = mock.Mock()
+        guard.restore_if_muted.return_value = "waiting"
+        services.prepare_mute_guard.return_value = guard
+        poll = self._press(session)
+        services.prepare_mute_guard.assert_called_once_with()
+        self.assertEqual(poll.delay, shortcut._VOICE_MUTE_GUARD_POLL_SECONDS)
+        timers_before = len(session.timers)
+        poll.fire()
+        guard.restore_if_muted.assert_called_once_with()
+        self.assertEqual(len(session.timers), timers_before + 1)
+        self.assertEqual(
+            session.timers[-1].delay, shortcut._VOICE_MUTE_GUARD_POLL_SECONDS
+        )
+
+    def test_external_mute_is_restored_and_logged(self):
+        session, services = make_session()
+        guard = mock.Mock()
+        guard.restore_if_muted.return_value = "restored"
+        services.prepare_mute_guard.return_value = guard
+        poll = self._press(session)
+        poll.fire()
+        self.assertEqual(session.logger.warning.call_count, 1)
+
+    def test_session_changed_rearms_with_a_fresh_guard(self):
+        session, services = make_session()
+        guard = mock.Mock()
+        guard.restore_if_muted.return_value = "session_changed"
+        fresh = mock.Mock()
+        services.prepare_mute_guard.side_effect = [guard, fresh]
+        poll = self._press(session)
+        timers_before = len(session.timers)
+        poll.fire()
+        self.assertIs(session.mute_guard, fresh)
+        self.assertEqual(len(session.timers), timers_before + 1)
+
+    def test_session_changed_without_a_new_guard_stops_polling(self):
+        session, services = make_session()
+        guard = mock.Mock()
+        guard.restore_if_muted.return_value = "session_changed"
+        services.prepare_mute_guard.side_effect = [guard, None]
+        poll = self._press(session)
+        timers_before = len(session.timers)
+        poll.fire()
+        self.assertTrue(session.mute_guard_stopping)
+        self.assertIsNone(session.mute_guard)
+        self.assertEqual(len(session.timers), timers_before)
+
+    def test_key_up_stops_the_polling_and_discards_the_guard(self):
+        session, services = make_session()
+        guard = mock.Mock()
+        services.prepare_mute_guard.return_value = guard
+        poll = self._press(session)
+        with mock.patch.object(
+            shortcut.win32_input, "send_voice_key_combo_up"
+        ):
+            self.assertTrue(session.apply(voice_controller.VoiceHostAction.KEY_UP))
+        self.assertTrue(poll.cancelled)
+        self.assertIsNone(session.mute_guard)
+        poll.fire()
+        guard.restore_if_muted.assert_not_called()
+
+    def test_failed_polling_stops_the_guard(self):
+        session, services = make_session()
+        guard = mock.Mock()
+        guard.restore_if_muted.side_effect = OSError("audio gone")
+        services.prepare_mute_guard.return_value = guard
+        poll = self._press(session)
+        poll.fire()
+        self.assertTrue(session.mute_guard_stopping)
+        self.assertIsNone(session.mute_guard_timer)
+
+    def test_prepare_failure_never_breaks_the_hotkey(self):
+        session, services = make_session()
+        services.prepare_mute_guard.side_effect = OSError("no audio endpoint")
+        poll = self._press(session)
+        # The poll timer belongs to the hold repeat, not to a mute guard.
+        self.assertEqual(poll.delay, shortcut._VOICE_HOTKEY_REPEAT_INITIAL_DELAY_SECONDS)
+        self.assertIsNone(session.mute_guard)
 
 
 class VoiceControllerTests(unittest.TestCase):
