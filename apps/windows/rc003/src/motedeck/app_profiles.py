@@ -65,7 +65,7 @@ VOICE_KEY_FIELDS = ("id", "name", "hotkey", "source", "device", "enabled", "plug
 # 快照里没有这些字段，所以它们只能是可选字段，不能参与“字段集合必须完全相等”
 # 的校验，否则老数据会让整份配置读取失败。
 OPTIONAL_VOICE_KEY_FIELDS = ("short_press_resend", "gain_steps", "gain_auto",
-                            "tsf_switch", "tsf_profile")
+                            "tsf_switch", "tsf_profile", "plugin_mode")
 VOICE_KEYS_FIELD = "voice_keys"
 ENTRY_FIELDS = ("id", "name", "scope", "process", "hotkey", "mapping",
                 *VOICE_FIELDS, VOICE_KEYS_FIELD)
@@ -180,9 +180,12 @@ def validate_voice_keys(value: object) -> list[dict]:
             raise ValueError("配置里的语音键编号无效。")
         ids.add(slot)
         name, hotkey, plugin = raw["name"], raw["hotkey"], raw["plugin"]
+        # 插件模式 id（如 vokie-quick-note）：旧快照里没有，读取时用空串补齐。
+        plugin_mode = raw.get("plugin_mode", "")
         if (not isinstance(name, str) or len(name) > 64
                 or not isinstance(hotkey, str) or len(hotkey) > 128
                 or not isinstance(plugin, str) or len(plugin) > 64
+                or not isinstance(plugin_mode, str) or len(plugin_mode) > 64
                 or not isinstance(raw["enabled"], bool)):
             raise ValueError("配置里的语音键内容无效。")
         source, device = validate_voice(raw["source"], raw["device"])
@@ -197,6 +200,7 @@ def validate_voice_keys(value: object) -> list[dict]:
                        "hotkey": hotkey.strip().lower(), "source": source,
                        "device": device, "enabled": raw["enabled"],
                        "plugin": plugin.strip().lower(),
+                       "plugin_mode": plugin_mode.strip().lower(),
                        "short_press_resend": raw.get("short_press_resend", False) is not False,
                        "gain_steps": max(-3, min(3, gain_steps)),
                        "gain_auto": raw.get("gain_auto", False) is not False,

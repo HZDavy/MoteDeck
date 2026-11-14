@@ -8,6 +8,7 @@ from . import ble_transport_winrt
 from . import bridge_runtime_status
 from . import hotkey
 from . import key_detection_bridge
+from . import key_mapping
 from . import win32_keys
 from typing import Optional
 from .app_constants import (
@@ -203,6 +204,9 @@ class ChromecastVoiceMixin:
                 begin_asr_capture=self._begin_chromecast_openmexia_voice,
                 forward_asr_pcm=self._feed_chromecast_openmexia_pcm,
                 end_asr_capture=self._end_chromecast_openmexia_voice,
+                mic_passthrough=self._chromecast_mic_passthrough,
+                mic_button_event=self._chromecast_mic_button_event,
+                set_mic_blocked=self._set_runtime_voice_mic_blocked,
             )
         )
 
@@ -287,6 +291,21 @@ class ChromecastVoiceMixin:
             self._voice_slot_is_plugin(slot)
             or self._voice_slot_uses_local_microphone(slot)
         )
+
+    def _chromecast_mic_passthrough(self) -> bool:
+        """话筒键是否绑成了普通动作（非语音）。
+
+        谷歌遥控器的话筒键没有按键边沿，只有语音流事件；绑成普通动作时，
+        这次按下由按键映射执行，语音流被忽略。
+        """
+
+        action = self._primary_button_action("mic")
+        return action is not None and not key_mapping.is_supported_voice_action(action)
+
+    def _chromecast_mic_button_event(self, button_id: str, pressed: bool) -> None:
+        """把话筒键的按下/松开交给普通按键映射路径（与实体按键同一套）。"""
+
+        self._on_button_event(button_id, pressed, event_source="chromecast_voice")
 
     def _chromecast_voice_short_tap(self) -> None:
         """Switch the voice mode on a Chromecast voice-key short press.

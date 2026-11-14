@@ -306,14 +306,15 @@ class VoiceModeToast:
         except Exception:  # noqa: BLE001 - the bubble is best effort
             pass
 
-    def show_level(self, theme: str = "dark", offset: int = 0) -> None:
+    def show_level(self, theme: str = "dark", offset: int = 0) -> bool:
         """开始录音：在和模式气泡相同的位置弹出电平胶囊（不带自动隐藏）。
 
-        ``offset`` 与模式气泡共用同一份设置，位置完全对齐。
+        ``offset`` 与模式气泡共用同一份设置，位置完全对齐。返回 False 表示
+        胶囊没能显示（线程没起来或已停），True 表示显示消息已投递。
         """
 
         if sys.platform != "win32":
-            return
+            return False
         palette = _TOAST_THEMES.get(
             str(theme or "dark").strip().lower(), _TOAST_THEMES["dark"]
         )
@@ -323,14 +324,14 @@ class VoiceModeToast:
             offset_px = 0
         with self._lock:
             if self._stopped or self._failed:
-                return
+                return False
             if not self._ensure_thread_locked():
-                return
+                return False
             self._level_style = (palette, offset_px)
             self._level_values = tuple(0.0 for _ in range(_LEVEL_BAR_COUNT))
             self._level_visible = True
             thread_id = self._thread_id
-        self._post_message(thread_id, WM_LEVEL_SHOW)
+        return self._post_message(thread_id, WM_LEVEL_SHOW)
 
     def update_level(self, levels) -> None:
         """录音中每根柱子的电平（0~1，从左到右）。变化太小就跳过。"""
@@ -369,9 +370,9 @@ class VoiceModeToast:
         self._post_message(thread_id, WM_LEVEL_HIDE)
 
     @staticmethod
-    def _post_message(thread_id: int, message: int) -> None:
+    def _post_message(thread_id: int, message: int) -> bool:
         if not thread_id:
-            return
+            return False
         try:
             user32 = ctypes.windll.user32  # type: ignore[attr-defined]
             user32.PostThreadMessageW.argtypes = (
@@ -381,9 +382,9 @@ class VoiceModeToast:
                 wintypes.LPARAM,
             )
             user32.PostThreadMessageW.restype = wintypes.BOOL
-            user32.PostThreadMessageW(thread_id, message, 0, 0)
+            return bool(user32.PostThreadMessageW(thread_id, message, 0, 0))
         except Exception:  # noqa: BLE001 - the capsule is best effort
-            pass
+            return False
 
     def stop(self) -> None:
         """Tear the pump down; safe to call more than once or before show()."""

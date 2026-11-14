@@ -411,6 +411,10 @@ class RC003App(
         )
         # 已经挂过「输入框弹出」通知的插件桥；Vokie 接下会话时才收气泡。
         self._plugin_voice_toast_bridge: Optional[object] = None
+        # 本次插件会话是不是闪记：Vokie 对外部设备的闪记会话不出任何屏幕
+        # 提示（速记窗口不弹、胶囊也被它自己的规则禁止），所以复用 OpenMexia
+        # 长按的电平胶囊由这边补上。
+        self._plugin_voice_mode_is_quick_note = False
         self._ordinary_mic_lock = threading.Lock()
         self._ordinary_mic_sources_down: set[str] = set()
         self._ordinary_mic_late_sources_down: set[str] = set()

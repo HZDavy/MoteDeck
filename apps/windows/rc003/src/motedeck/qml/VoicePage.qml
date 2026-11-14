@@ -58,6 +58,14 @@ Item {
         || String(SettingsController.voiceRuntimeState) === "mic_confirmed"
         || String(SettingsController.voiceRuntimeState) === "receiving_audio"
         || String(SettingsController.voiceRuntimeState) === "finishing"
+    // 页面在 StackLayout 里常驻，切走再切回来不会重建；只要警告状态还在，
+    // 每次切回语音页都要把提醒胶囊重新弹一次。
+    onVisibleChanged: {
+        if (visible && SettingsController.voiceMicBlockedReason !== "") {
+            voiceMicBlockedBubble.dismissed = false
+            voiceMicBlockedDismissTimer.restart()
+        }
+    }
 
     function checkResult(checkId) {
         const rows = DiagnosticsController.checkResults
@@ -1926,16 +1934,6 @@ Item {
                         titleText: qsTr("语音键")
                         titleObjectName: "voiceKeySectionTitle"
 
-                        UiLabel {
-                            objectName: "voiceMicBlockedWarning"
-                            tokens: root.tokens
-                            Layout.fillWidth: true
-                            wrapMode: Text.WordWrap
-                            visible: SettingsController.voiceMicBlockedReason !== ""
-                            color: root.tokens.errorColor
-                            text: qsTr("话筒键当前绑定了普通动作，按住说话时声音会被忽略。请到「按键」页把话筒键的动作改回语音键。")
-                        }
-
                         // 两个短按行为可以同时打开：切换模式换槽位，每条语音键的
                         // “短按延迟发送”把唯一那一次按键推迟下发，避开输入法的
                         // 短按/长按竞争。
@@ -2381,6 +2379,54 @@ Item {
                     }
                 }
             }
+        }
+    }
+
+    // 话筒键绑了普通动作的提醒胶囊：浮在页面底部，不参与布局、不挤占卡片。
+    // 与按键页的操作反馈气泡同一水平线（中线距页面底 16），5 秒自动收起。
+    Rectangle {
+        id: voiceMicBlockedBubble
+        objectName: "voiceMicBlockedBubble"
+        property bool dismissed: false
+        anchors.horizontalCenter: parent.horizontalCenter
+        y: root.height - 16 - height / 2
+        z: 20
+        width: Math.min(parent.width - 40, voiceMicBlockedLabel.implicitWidth + 22)
+        height: 26
+        radius: height / 2
+        visible: SettingsController.voiceMicBlockedReason !== "" && !dismissed
+        color: root.tokens.surface
+        border.width: 1
+        border.color: root.tokens.errorColor
+
+        onVisibleChanged: {
+            if (visible) {
+                dismissed = false
+                voiceMicBlockedDismissTimer.restart()
+            }
+        }
+
+        UiLabel {
+            id: voiceMicBlockedLabel
+            objectName: "voiceMicBlockedWarning"
+            anchors.centerIn: parent
+            tokens: root.tokens
+            kind: noteKind
+            width: Math.min(implicitWidth, 520)
+            // 与其它页面的提示胶囊一致：行高 1 + 垂直居中，胶囊内上下留白相同
+            lineHeight: 1
+            verticalAlignment: Text.AlignVCenter
+            // 气泡是短提示，不带句尾句号
+            text: qsTr("话筒键当前绑定了普通动作，按住说话时声音会被忽略。请到「按键」页把话筒键的动作改回语音键。").replace(/。+$/, "")
+            color: root.tokens.errorColor
+            elide: Text.ElideRight
+            maximumLineCount: 1
+        }
+
+        Timer {
+            id: voiceMicBlockedDismissTimer
+            interval: 5000
+            onTriggered: voiceMicBlockedBubble.dismissed = true
         }
     }
 

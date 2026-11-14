@@ -119,6 +119,7 @@ class SettingsPresetsMixin:
                         "deferred settings mappings applied after active input became idle"
                     )
                     self._diagnostic_trace.emit("voice_configuration_applied", result="recovered")
+                    self._publish_voice_mic_blocked_from_mapping()
 
     def _apply_pending_settings_if_idle(self) -> None:
         with self._voice_shortcut.lock:
@@ -191,6 +192,7 @@ class SettingsPresetsMixin:
                         self._sync_physical_bindings_to_listener()
                         self._removed_voice_bindings = removed_voice_bindings
                         self._pending_bindings = None
+                        self._publish_voice_mic_blocked_from_mapping()
                     else:
                         self._pending_bindings = refreshed_bindings
                         self._logger.info(
@@ -339,6 +341,7 @@ class SettingsPresetsMixin:
                 self._removed_voice_bindings = dict(
                     replacement.get(config.RUNTIME_REMOVED_VOICE_BINDINGS_KEY, {})
                 )
+                self._publish_voice_mic_blocked_from_mapping()
                 self._logger.info(
                     "preset process override applied; foreground=%s",
                     self._preset_switch_foreground,
@@ -387,6 +390,7 @@ class SettingsPresetsMixin:
             base.get(config.RUNTIME_REMOVED_VOICE_BINDINGS_KEY, {})
         )
         self._sync_physical_bindings_to_listener()
+        self._publish_voice_mic_blocked_from_mapping()
         self._logger.info("preset override cleared; base key bindings restored")
 
     def _remember_applied_profile(self, identity: str) -> None:
@@ -516,6 +520,7 @@ class SettingsPresetsMixin:
                     self._removed_voice_bindings = dict(
                         replacement.get(config.RUNTIME_REMOVED_VOICE_BINDINGS_KEY, {})
                     )
+                    self._publish_voice_mic_blocked_from_mapping()
                 else:
                     self._pending_bindings = replacement
                 self._bindings_mtime_ns = self._settings_file_mtime_ns(

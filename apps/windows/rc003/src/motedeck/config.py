@@ -257,6 +257,7 @@ def _default_voice_key_config(
     device: str = "",
     enabled: bool = True,
     plugin: str = "",
+    plugin_mode: str = "",
     short_press_resend: bool = False,
     gain_steps: int = 0,
     gain_auto: bool = False,
@@ -277,6 +278,9 @@ def _default_voice_key_config(
         "enabled": bool(enabled),
         # 非空表示这条语音键由外部插件提供（当前只有 Vokie）。
         "plugin": plugin_id,
+        # 插件下发的模式 id（如 vokie-quick-note）：用户改名字也不影响
+        # 认回这条语音键和运行时认模式。
+        "plugin_mode": _normalize_plugin_id(plugin_mode),
         # 短按延迟发送：只对这一条非插件语音键生效。按下后把这唯一一次
         # 快捷键推迟一小段时间再注入（松手不再补发第二次），避开同时支持
         # 短按/长按的输入法；插件键的快捷键由插件自己接管，这里保持 False。
@@ -768,23 +772,23 @@ def _normalize_voice_key_configs(config: Dict[str, Any]) -> None:
         device = device.strip() if isinstance(device, str) else ""
         if source == VOICE_INPUT_SOURCE_REMOTE:
             device = ""
-        normalized.append(
-            _default_voice_key_config(
-                slot=slot,
-                name=_normalize_voice_key_name(raw_entry.get("name", "")),
-                hotkey=_normalize_hotkey_text(raw_entry.get("hotkey", "")),
-                source=source,
-                device=device,
-                enabled=raw_entry.get("enabled", True) is not False,
-                plugin=raw_entry.get("plugin", ""),
-                short_press_resend=raw_entry.get("short_press_resend", False)
-                is not False,
-                gain_steps=raw_entry.get("gain_steps", 0),
-                gain_auto=raw_entry.get("gain_auto", False) is not False,
-                tsf_switch=raw_entry.get("tsf_switch", False) is not False,
-                tsf_profile=raw_entry.get("tsf_profile", ""),
-            )
+        entry = _default_voice_key_config(
+            slot=slot,
+            name=_normalize_voice_key_name(raw_entry.get("name", "")),
+            hotkey=_normalize_hotkey_text(raw_entry.get("hotkey", "")),
+            source=source,
+            device=device,
+            enabled=raw_entry.get("enabled", True) is not False,
+            plugin=raw_entry.get("plugin", ""),
+            plugin_mode=raw_entry.get("plugin_mode", ""),
+            short_press_resend=raw_entry.get("short_press_resend", False)
+            is not False,
+            gain_steps=raw_entry.get("gain_steps", 0),
+            gain_auto=raw_entry.get("gain_auto", False) is not False,
+            tsf_switch=raw_entry.get("tsf_switch", False) is not False,
+            tsf_profile=raw_entry.get("tsf_profile", ""),
         )
+        normalized.append(entry)
     if not normalized:
         normalized = [_default_voice_key_config()]
     # 列表本身就是顺序：语音键配置界面支持上下移动，插件项也要能和自定义项
@@ -835,23 +839,23 @@ def voice_key_configs(config_data: Dict[str, Any]) -> List[Dict[str, Any]]:
         source = _normalize_voice_source(raw_entry.get("source"))
         device = raw_entry.get("device", "")
         device = device.strip() if isinstance(device, str) else ""
-        entries.append(
-            _default_voice_key_config(
-                slot=slot,
-                name=_normalize_voice_key_name(raw_entry.get("name", "")),
-                hotkey=str(raw_entry.get("hotkey", "") or "").strip().lower(),
-                source=source,
-                device="" if source == VOICE_INPUT_SOURCE_REMOTE else device,
-                enabled=raw_entry.get("enabled", True) is not False,
-                plugin=raw_entry.get("plugin", ""),
-                short_press_resend=raw_entry.get("short_press_resend", False)
-                is not False,
-                gain_steps=raw_entry.get("gain_steps", 0),
-                gain_auto=raw_entry.get("gain_auto", False) is not False,
-                tsf_switch=raw_entry.get("tsf_switch", False) is not False,
-                tsf_profile=raw_entry.get("tsf_profile", ""),
-            )
+        entry = _default_voice_key_config(
+            slot=slot,
+            name=_normalize_voice_key_name(raw_entry.get("name", "")),
+            hotkey=str(raw_entry.get("hotkey", "") or "").strip().lower(),
+            source=source,
+            device="" if source == VOICE_INPUT_SOURCE_REMOTE else device,
+            enabled=raw_entry.get("enabled", True) is not False,
+            plugin=raw_entry.get("plugin", ""),
+            plugin_mode=raw_entry.get("plugin_mode", ""),
+            short_press_resend=raw_entry.get("short_press_resend", False)
+            is not False,
+            gain_steps=raw_entry.get("gain_steps", 0),
+            gain_auto=raw_entry.get("gain_auto", False) is not False,
+            tsf_switch=raw_entry.get("tsf_switch", False) is not False,
+            tsf_profile=raw_entry.get("tsf_profile", ""),
         )
+        entries.append(entry)
     if not entries:
         entries = [_default_voice_key_config()]
     return entries
@@ -1399,19 +1403,20 @@ def apply_plugin_voice_keys(
         if slot <= 0:
             break
         used_ids.add(slot)
-        merged.append(
-            _default_voice_key_config(
-                slot=slot,
-                # 认回同一条时保留用户改过的名字；全新行才用插件给的名字。
-                name=previous["name"] if previous else name,
-                hotkey=hotkey,
-                enabled=bool(previous.get("enabled", True)) if previous else True,
-                plugin=plugin,
-                # 插件重连时保留用户给这条键调过的录音增益。
-                gain_steps=previous.get("gain_steps", 0) if previous else 0,
-                gain_auto=previous.get("gain_auto", False) if previous else False,
-            )
+        entry = _default_voice_key_config(
+            slot=slot,
+            # 认回同一条时保留用户改过的名字；全新行才用插件给的名字。
+            name=previous["name"] if previous else name,
+            hotkey=hotkey,
+            enabled=bool(previous.get("enabled", True)) if previous else True,
+            plugin=plugin,
+            # 插件模式 id（如 vokie-quick-note）：用户改名字也能认出是哪个模式。
+            plugin_mode=raw_entry.get("id") or "",
+            # 插件重连时保留用户给这条键调过的录音增益。
+            gain_steps=previous.get("gain_steps", 0) if previous else 0,
+            gain_auto=previous.get("gain_auto", False) if previous else False,
         )
+        merged.append(entry)
     return _with_voice_key_configs(config_data, merged)
 
 

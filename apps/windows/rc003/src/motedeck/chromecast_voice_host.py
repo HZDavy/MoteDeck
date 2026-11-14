@@ -48,6 +48,9 @@ class VoiceHostServices:
     begin_asr_capture: Callable[[], bool] | None = None
     forward_asr_pcm: Callable | None = None
     end_asr_capture: Callable[[], bool] | None = None
+    mic_passthrough: Callable[[], bool] | None = None
+    mic_button_event: Callable[[str, bool], None] | None = None
+    set_mic_blocked: Callable[[str], None] | None = None
 
 
 class VoiceHost:
@@ -74,6 +77,8 @@ class VoiceHost:
         self._press_started = 0.0
         self._detection_press = False
         self._asr_capture = False
+        self._passthrough = False
+        self._passthrough_down_pending = False
 
     # -- receiver-facing API -------------------------------------------------
 
@@ -151,6 +156,23 @@ class VoiceHost:
                 self.state = "detecting"
                 self.reply("ready")
                 return
+            if self._mic_passthrough_active():
+                # 话筒键绑成了普通按键：这次按下交给按键映射执行，不开录音、
+                # 不发语音快捷键。回复 ready 让遥控器保持开麦，松手时才有
+                # host_stop 来抬起注入的按键；音频事件因 decoder 为空被丢弃。
+                # 谷歌遥控器没有按键边沿的 AudioStarted，走不到小米链路的
+                # 仲裁点，所以在这里发布"话筒键绑了普通动作"的警告。
+                self._publish_mic_blocked("mic_ordinary_mapping")
+                self._passthrough = True
+                self._press_delivered = False
+                self.engaged = False
+                self._passthrough_down_pending = True
+                self.state = "detecting"
+                self.reply("ready")
+                return
+            # 走到这里说明话筒键解析成了语音动作：之前发布的"绑了普通按键"
+            # 警告已过期，与小米链路 AudioStarted 仲裁点一样清掉。
+            self._publish_mic_blocked("")
             if services.prepare_shortcut is not None:
                 services.prepare_shortcut()
             if self._begin_asr_capture():
@@ -254,6 +276,42 @@ class VoiceHost:
             )
             return None
 
+    def _mic_passthrough_active(self) -> bool:
+        """话筒键是否绑成了普通按键（非语音动作）。"""
+
+        callback = self.services.mic_passthrough
+        if callback is None:
+            return False
+        try:
+            return bool(callback())
+        except Exception:  # noqa: BLE001 - 映射查询失败不能卡住语音键
+            self.services.logger.exception(
+                "Chromecast mic mapping check failed"
+            )
+            return False
+
+    def _passthrough_button_event(self, pressed) -> None:
+        callback = self.services.mic_button_event
+        if callback is None:
+            return
+        try:
+            callback("mic", pressed)
+        except Exception:  # noqa: BLE001 - 映射执行失败不能卡住语音会话
+            self.services.logger.exception(
+                "Chromecast mic mapping delivery failed"
+            )
+
+    def _publish_mic_blocked(self, reason: str) -> None:
+        callback = self.services.set_mic_blocked
+        if callback is None:
+            return
+        try:
+            callback(reason)
+        except Exception:  # noqa: BLE001 - 警告发布失败不能卡住语音会话
+            self.services.logger.exception(
+                "Chromecast mic blocked publish failed"
+            )
+
     def _begin_asr_capture(self) -> bool:
         """本机识别是否接管这次按下（OpenMexia 语音槽）。"""
 
@@ -355,6 +413,10 @@ class VoiceHost:
             return
         if kind == "host_start":
             self._start_host(attempt)
+            if self._passthrough_down_pending:
+                # 在 shortcut 锁外注入：普通按键映射与语音会话的锁互不嵌套。
+                self._passthrough_down_pending = False
+                self._passthrough_button_event(True)
             return
         if kind == "tap":
             # 上一轮会话还在收尾时遥控器的快速短按：worker 已在本地判完时长，
@@ -363,6 +425,9 @@ class VoiceHost:
                 self._asr_capture = False
                 if self._end_asr_capture():
                     return
+            if self._mic_passthrough_active():
+                # 话筒键绑成了普通按键：短按只走按键映射，不切语音模式。
+                return
             self._notify_short_tap()
             return
         if attempt != self.attempt:
@@ -484,10 +549,13 @@ class VoiceHost:
             )
             detection = self._detection_press
             self._detection_press = False
+            passthrough = self._passthrough
+            self._passthrough = False
             self._cancel_press_delay()
             if (
                 from_remote_release
                 and not detection
+                and not passthrough
                 and not asr_committed
                 and self.failure_result is None
                 and (not delivered or quick_release)
@@ -503,7 +571,9 @@ class VoiceHost:
                 # releasing its shortcut.
                 self._submit_output(tail)
             audio_released = self._finish_playback("Chromecast voice end")
-            released = audio_released and (detection or self._release_shortcut())
+            released = audio_released and (
+                detection or passthrough or self._release_shortcut()
+            )
             services.set_active(False)
             if released:
                 services.apply_pending_settings()
@@ -523,6 +593,9 @@ class VoiceHost:
         self._press_started = 0.0
         if tapped:
             self._notify_short_tap()
+        if passthrough:
+            # 松手抬起注入的普通按键；同样在 shortcut 锁外执行。
+            self._passthrough_button_event(False)
         services.logger.info(
             "Chromecast voice attempt=%s reason=%s released=%s",
             self.attempt, reason or "cleanup", released,

@@ -435,8 +435,9 @@ const KEY_NAME_TOKENS = {
 
 const MODE_DEFINITIONS = [
   { id: 'vokie-ptt', name: '语音输入', configKey: 'pttConfig', fallback: 'ralt' },
-  // 免提输入（toggleConfig）是“按一下开、再按一下关”，遥控器只能按住说话，
-  // 所以这里不列出来，免得给出一个按住就断的键。
+  // 旁听（toggleConfig，切换录音）：插件会话路径下遥控器按住=开录音、松开=
+  // 停录音，正好对上 toggle 的 start/stop，不再有“按住就断”的问题。
+  { id: 'vokie-listen', name: '旁听', configKey: 'toggleConfig', fallback: 'ralt+r' },
   { id: 'vokie-translation', name: '翻译输入', configKey: 'translationConfig', fallback: 'ralt+t' },
   // 同声传译（实时翻译）按用户要求不列出。
   { id: 'vokie-command', name: '语音指令', configKey: 'commandConfig', fallback: 'ralt+space' },
@@ -527,11 +528,24 @@ function readTranslationTargetLanguage() {
   }
 }
 
-function resolveSessionMode(name) {
+function resolveSessionMode(name, modeId) {
+  // MoteDeck 0.2.8 起会带稳定的模式 id（vokie-quick-note 等），用户改了
+  // 语音键名字也认得；旧版本只发名字，走下面的关键词兜底。
+  if (modeId === 'vokie-quick-note') {
+    return { mode: 'recording', extra: { outputRoute: 'quickNote' } };
+  }
+  if (modeId === 'vokie-listen') {
+    return { mode: 'recording', extra: {} };
+  }
   const label = typeof name === 'string' ? name : '';
-  // 闪记：Vokie 的 quickNote 录音管线（recording + outputRoute=quickNote）。
+  // 闪记与旁听共用 recording 会话，靠 options.outputRoute 区分：
+  // 带 'quickNote' → Vokie 走 quickNotePresenter 建语迹闪记；不带 → 普通
+  // toggle 录音（旁听）。这是 Host startPluginSession 的实际分发逻辑。
   if (label.includes('闪记')) {
     return { mode: 'recording', extra: { outputRoute: 'quickNote' } };
+  }
+  if (label.includes('旁听')) {
+    return { mode: 'recording', extra: {} };
   }
   if (label.includes('翻译')) {
     const target = readTranslationTargetLanguage();
@@ -609,7 +623,7 @@ function sendAudioFrame(entry, pcm) {
   entry.sequence += 1;
 }
 
-function startVoiceSession(name, forcedMode) {
+function startVoiceSession(name, forcedMode, modeId) {
   if (!started || stopped || shuttingDown) {
     log('audio_start ignored: plugin not ready');
     return;
@@ -617,7 +631,7 @@ function startVoiceSession(name, forcedMode) {
   abortVoiceSession('device');
   const resolved = forcedMode
     ? { mode: forcedMode, extra: {} }
-    : resolveSessionMode(name);
+    : resolveSessionMode(name, modeId);
   log(`audio_start received: ${name} host=${Boolean(client && client.opened)} bridge=${LINK.status}`);
   const entry = {
     requestId: crypto.randomUUID(),
@@ -681,7 +695,14 @@ function handleSessionResponse(message) {
   const entry = session;
   if (!entry || message.requestId !== entry.requestId) return;
   if (message.type === 'session_rejected') {
-    log(`session_rejected: ${message.reason || 'unknown'}`);
+    // busy 不是插件自己残留会话（这边每次都配对 session_stop），而是 Vokie
+    // 自己的语音通道在忙：本机输入/翻译/闪记正在跑，或者 Vokie 上次会话
+    // 异常结束后忙标志没清掉。协议上没有让 Vokie 空闲的消息，重启可恢复。
+    if (message.reason === 'busy') {
+      log('session_rejected: busy（Vokie 自己的语音通道正忙，重启 Vokie 可恢复）');
+    } else {
+      log(`session_rejected: ${message.reason || 'unknown'}`);
+    }
     // 闪记 / 语音指令会话被拒（老版本 Vokie 没开放）时，退回普通语音输入，
     // 至少让这次按键能正常说话，而不是没反应。
     const retryAsPtt = (entry.mode === 'recording' || entry.mode === 'command')
@@ -917,7 +938,7 @@ class MoteDeckLink {
       return;
     }
     if (payload.type === 'audio_start') {
-      startVoiceSession(payload.mode);
+      startVoiceSession(payload.mode, undefined, payload.modeId);
       return;
     }
     if (payload.type === 'audio') {

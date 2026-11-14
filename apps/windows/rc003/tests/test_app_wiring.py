@@ -114,8 +114,8 @@ class _FakePluginBridge:
     def connected(self):
         return self._connected
 
-    def send_audio_start(self, mode):
-        self.audio_starts.append(mode)
+    def send_audio_start(self, mode, mode_id=""):
+        self.audio_starts.append((mode, mode_id))
         return True
 
     def send_audio(self, pcm):
@@ -1772,7 +1772,7 @@ class HostHotkeyFailureSuppressesMicOpenTests(_AppWiringTestCase):
             # 兜底定时器到点：模式名交给插件，话筒已经开过不重复开。
             self.assertEqual(
                 bridge.audio_starts,
-                [config.voice_key_name(self.app._config, entries[0]["id"])],
+                [(config.voice_key_name(self.app._config, entries[0]["id"]), "")],
             )
             self.assertEqual(self.app._ble_session.mic_open_calls, 1)
             self.assertTrue(self.app._plugin_voice_audio_active)
@@ -5386,6 +5386,71 @@ class VoiceMappingProductBoundaryTests(_AppWiringTestCase):
         self.assertEqual(self.app._runtime_voice_mic_blocked, "")
         self.assertTrue(downs)
 
+    def test_late_audio_start_still_reaches_block_after_voice_to_ordinary_rebind(self):
+        # 复现用户场景：先正常用话筒键开过一次语音会话，松手会留下
+        # "忽略迟到音频开始"标记；随后话筒键改绑方向键，普通路径没人清
+        # 这个标记，设备重试的 AudioStarted 会被一直吞掉，警告永远置不上位。
+        clock = [100.0]
+        self.app._voice_gesture = voice_gesture.VoiceGestureLatch(
+            clock=lambda: clock[0]
+        )
+        with mock.patch.object(
+            win32_input, "send_voice_key_combo_down"
+        ), mock.patch.object(win32_input, "send_voice_key_combo_up"):
+            self.app._on_button_event("mic", True, event_source="hid")
+            clock[0] += voice_gesture.VoiceGestureLatch.DEFAULT_TAP_MAX_SECONDS + 0.01
+            self.app._on_button_event("mic", False, event_source="hid")
+        self.assertTrue(self.app._voice_ignore_audio_start_until_physical_down)
+
+        self.app._bindings["bindings"]["mic"] = key_mapping.ButtonAction(
+            key_mapping.ActionKind.ARROW_UP
+        ).to_dict()
+        with mock.patch.object(win32_input, "send_arrow_up") as arrow:
+            self.app._on_button_event("mic", True, event_source="hid")
+            self.app._on_control_event(AudioStarted(session_id=7))
+
+        # 普通按下清掉了迟到标记，AudioStarted 到达普通映射的仲裁点：
+        # 警告置位、设备被闭麦、方向键照常执行。
+        self.assertTrue(arrow.called)
+        self.assertEqual(
+            self.app._runtime_voice_mic_blocked, "mic_ordinary_mapping"
+        )
+        self.assertEqual(self.app._ble_session.mic_close_calls, 1)
+
+    def test_saving_the_mic_ordinary_mapping_raises_the_block_without_pressing(self):
+        # 用户场景：话筒键绑着普通动作、一次都没按过，切到语音页胶囊不弹——
+        # 警告原本只由按键事件置位。保存重载必须立刻按当前映射置上警告。
+        self.assertEqual(self.app._runtime_voice_mic_blocked, "")
+        bindings = config.default_key_bindings()
+        bindings["bindings"]["mic"] = key_mapping.ButtonAction(
+            key_mapping.ActionKind.ARROW_UP
+        ).to_dict()
+        self._save_bindings(bindings)
+        self.assertEqual(
+            self.app._runtime_voice_mic_blocked, "mic_ordinary_mapping"
+        )
+
+    def test_saving_the_mic_voice_mapping_clears_a_stale_block_without_pressing(self):
+        # 用户场景：话筒键绑普通动作时警告已被按键事件置上，改回语音键并
+        # 保存后切到语音页胶囊还弹一下——旧警告要跟着保存重载一起清掉。
+        self.app._bindings["bindings"]["mic"] = key_mapping.ButtonAction(
+            key_mapping.ActionKind.ARROW_UP
+        ).to_dict()
+        with mock.patch.object(win32_input, "send_arrow_up"):
+            self.app._on_button_event("mic", True, event_source="hid_tap")
+            self.app._on_control_event(MicButtonPressed())
+            self.app._on_control_event(AudioStarted(session_id=1))
+            self.app._on_button_event("mic", False, event_source="hid_tap")
+        self.assertEqual(
+            self.app._runtime_voice_mic_blocked, "mic_ordinary_mapping"
+        )
+
+        bindings = config.default_key_bindings()
+        bindings["bindings"]["mic"] = key_mapping.ButtonAction(
+            key_mapping.ActionKind.VOICE_HOLD
+        ).to_dict()
+        self._save_bindings(bindings)
+        self.assertEqual(self.app._runtime_voice_mic_blocked, "")
 
     def test_ordinary_mic_same_source_next_press_is_not_suppressed(self):
         self.app._bindings["bindings"]["mic"] = key_mapping.ButtonAction(

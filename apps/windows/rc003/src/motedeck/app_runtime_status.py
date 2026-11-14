@@ -32,6 +32,9 @@ class RuntimeStatusMixin:
             self._set_runtime_voice_result(bridge_runtime_status.VOICE_RUNTIME_RECEIVING_AUDIO)
 
     async def run_forever(self) -> None:
+        # 启动时让话筒键警告对齐当前生效的映射：绑着普通动作就直接置上，
+        # 不必等第一次按键事件；绑着语音键则保持干净。
+        self._publish_voice_mic_blocked_from_mapping()
         heartbeat = self._event_loop.create_task(
             self._runtime_status_heartbeat()
         )
@@ -158,6 +161,18 @@ class RuntimeStatusMixin:
                 return
             self._runtime_voice_mic_blocked = reason
         self._publish_runtime_status()
+
+    def _publish_voice_mic_blocked_from_mapping(self) -> None:
+        """让话筒键警告跟随当前生效的映射，而不是只等音频事件置位。
+
+        映射每次变化（保存重载、应用条覆盖/恢复、启动）都会调用这里：
+        话筒键此刻解析成语音动作就清掉警告，绑成普通动作就置上——判定
+        与 AudioStarted 仲裁点完全一致（_is_voice_primary_button）。
+        """
+
+        self._set_runtime_voice_mic_blocked(
+            "" if self._is_voice_primary_button("mic") else "mic_ordinary_mapping"
+        )
 
     def _set_runtime_battery_level(self, level: Optional[int]) -> None:
         resolved = None if level is None else int(level)

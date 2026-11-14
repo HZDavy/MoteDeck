@@ -520,12 +520,20 @@ class VokieBridge(QObject):
             return False
         return self._send(connection, payload)
 
-    def send_audio_start(self, mode: str) -> bool:
-        """Tell the plugin to open a Vokie voice session for ``mode``."""
+    def send_audio_start(self, mode: str, mode_id: str = "") -> bool:
+        """Tell the plugin to open a Vokie voice session for ``mode``.
 
-        return self._send_line(
-            {"type": "audio_start", "mode": str(mode), "sampleRate": 16000}
-        )
+        ``mode_id`` 是插件报过来的稳定模式 id（旧版插件会忽略这个字段）。
+        """
+
+        message: dict = {
+            "type": "audio_start",
+            "mode": str(mode),
+            "sampleRate": 16000,
+        }
+        if mode_id:
+            message["modeId"] = str(mode_id)
+        return self._send_line(message)
 
     def send_audio(self, pcm: bytes) -> bool:
         """Forward one chunk of 16 kHz mono s16le PCM to the plugin."""

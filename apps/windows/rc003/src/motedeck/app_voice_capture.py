@@ -684,9 +684,30 @@ class VoiceCaptureMixin:
         if bridge is None or not bridge.connected():
             return False
         self._watch_plugin_voice_input_box(bridge)
+        entry = config.voice_key_config(self._config, int(slot))
         mode_name = config.voice_key_name(self._config, int(slot))
-        if not bridge.send_audio_start(mode_name):
+        # 插件模式 id 是稳定标识，用户改名字也不变；旧配置还没回填 id 的
+        # 时候退回按名字认。
+        mode_id = str(entry.get("plugin_mode") or "") if entry else ""
+        if not bridge.send_audio_start(mode_name, mode_id):
             return False
+        # 闪记在 Vokie 侧没有任何屏幕提示，复用 OpenMexia 长按的电平胶囊：
+        # 会话一开始就显示，波形由 _on_pcm_frame 逐帧喂进来。
+        self._plugin_voice_mode_is_quick_note = (
+            mode_id == "vokie-quick-note" or "闪记" in mode_name
+        )
+        if self._plugin_voice_mode_is_quick_note:
+            self._reset_asr_capture_locked()
+            # 短按切模式可能挂过「冒新窗口就收气泡」的观察器，先撤掉，
+            # 别把电平胶囊误收掉。
+            try:
+                self._voice_mode_toast_watch.cancel()
+            except BaseException as exc:  # noqa: BLE001 - the capsule is best effort
+                self._logger.warning(
+                    "voice mode toast watch stop failed: error_type=%s",
+                    type(exc).__name__,
+                )
+            self._show_voice_level_capsule()
         # 预录的 PCM 一并补发：插件在 session_accepted 之前会自己攒着，
         # 所以说话的第一个字不会被丢掉。
         buffered = self._take_plugin_voice_capture_frames_locked()
@@ -725,6 +746,9 @@ class VoiceCaptureMixin:
         bridge = vokie_bridge.active_bridge()
         if bridge is not None:
             bridge.send_audio_stop()
+        if self._plugin_voice_mode_is_quick_note:
+            self._plugin_voice_mode_is_quick_note = False
+            self._hide_voice_level_capsule()
         self._logger.info("plugin voice audio stopped on %s", reason)
 
     def _watch_plugin_voice_input_box(self, bridge) -> None:
@@ -733,7 +757,9 @@ class VoiceCaptureMixin:
         if self._plugin_voice_toast_bridge is bridge:
             return
         try:
-            bridge.sessionAccepted.connect(self._hide_voice_mode_toast)
+            bridge.sessionAccepted.connect(self._on_plugin_voice_session_accepted)
+            # 链路断掉的话没人来收常驻胶囊，这边自己收。
+            bridge.pluginDisconnected.connect(self._on_plugin_voice_link_lost)
         except BaseException as exc:  # noqa: BLE001 - the bubble is best effort
             self._logger.warning(
                 "voice mode toast watch failed: error_type=%s",
@@ -741,6 +767,20 @@ class VoiceCaptureMixin:
             )
             return
         self._plugin_voice_toast_bridge = bridge
+
+    def _on_plugin_voice_session_accepted(self) -> None:
+        """Vokie 接下会话：闪记的电平胶囊保持显示，其它模式照旧收气泡。"""
+
+        if self._plugin_voice_mode_is_quick_note:
+            return
+        self._hide_voice_mode_toast()
+
+    def _on_plugin_voice_link_lost(self) -> None:
+        """插件链路断了：电平胶囊没人来收，这边自己收掉。"""
+
+        self._plugin_voice_mode_is_quick_note = False
+        self._hide_voice_level_capsule()
+        self._hide_voice_mode_toast()
 
     def _hide_voice_mode_toast(self) -> None:
         """收起模式气泡，别压在插件自己的输入框上。"""
@@ -845,7 +885,7 @@ class VoiceCaptureMixin:
         if theme == config.VOICE_CYCLE_TOAST_OFF:
             theme = config.VOICE_CYCLE_TOAST_DARK
         try:
-            self._voice_mode_toast.show_level(
+            shown = self._voice_mode_toast.show_level(
                 theme, config.voice_cycle_toast_offset(self._config)
             )
         except BaseException as exc:  # noqa: BLE001 - the capsule is best effort
@@ -1348,6 +1388,9 @@ class VoiceCaptureMixin:
                     samples,
                     self._frame_gain_locked(self._plugin_voice_press_slot, samples),
                 )
+                if self._plugin_voice_mode_is_quick_note:
+                    # 闪记没有 Vokie 自己的提示，波形直接画在这边的电平胶囊上。
+                    self._update_asr_level_locked(frame)
                 if not bridge.send_audio(array.array("h", frame).tobytes()):
                     self._voice_pcm_forwarding_enabled = False
                 return

@@ -340,6 +340,12 @@ class ButtonRoutingMixin:
             self._apply_pending_settings_if_idle()
             return
         if ordinary_mic_handled:
+            # 话筒键已绑成普通按键：清掉上一段语音会话在物理松手时留下的
+            # "忽略迟到音频开始"标记。这个标记只在语音分支的按下沿清除，
+            # 绑成普通按键后没人清它，设备重试的 AudioStarted 会被一直
+            # 吞掉，普通映射的仲裁点（置警告、发闭麦）永远走不到。
+            with self._voice_shortcut.lock:
+                self._voice_ignore_audio_start_until_physical_down = False
             self._apply_pending_settings_if_idle()
             return
 
