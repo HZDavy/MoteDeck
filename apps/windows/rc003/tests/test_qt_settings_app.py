@@ -1509,6 +1509,22 @@ class SettingsControllerTests(unittest.TestCase):
         save_pair.assert_not_called()
         self.assertIn("语音快捷键正在处理", controller.errorMessage)
 
+    def test_mapping_save_asks_the_bridge_to_reload_immediately(self):
+        # 保存映射后 bridge 必须立刻重载：话筒键警告（绑了普通动作）跟着当前
+        # 生效的映射走，不能等下一次按键事件才对齐——否则改绑回语音键后切到
+        # 语音页，胶囊还会弹一下旧警告。
+        controller, model = self._make_controller()
+        model.setActionTextAt(
+            model.index_of("mic"), settings_ui._VOICE_HOLD_DISPLAY
+        )
+        with mock.patch.object(
+            qt_settings_app.bridge_launcher,
+            "reload_in_process_bridge_settings",
+            return_value=True,
+        ) as reload_settings:
+            self.assertTrue(controller._save_mapping())
+        reload_settings.assert_called_once_with()
+
     def test_mapping_save_is_rejected_during_audio_configuration_work(self):
         blockers = (
             (
@@ -5617,6 +5633,45 @@ class SettingsControllerTests(unittest.TestCase):
             ) as opener:
                 self.assertTrue(slot())
                 opener.assert_called_once_with(target)
+
+    def test_plugin_download_resolves_versioned_url_with_fixed_fallback(self):
+        controller, _ = self._make_controller()
+        versioned = qt_settings_app.application_update.PluginDownloadResolution(
+            "https://github.com/HZDavy/MoteDeck/releases/download/v0.2.7/"
+            "MoteDeck2Vokie-0.1.6.zip",
+            "0.1.6",
+        )
+        fallback = qt_settings_app.VOKIE_PLUGIN_URL
+        opened = qt_settings_app.shell_targets.ExternalTargetOutcome.OPENED
+        with mock.patch.object(
+            qt_settings_app.application_update,
+            "resolve_latest_plugin_download",
+            return_value=versioned,
+        ), mock.patch.object(
+            qt_settings_app.shell_targets,
+            "open_external_target",
+            return_value=qt_settings_app.shell_targets.ExternalTargetResult(
+                opened, versioned.download_url
+            ),
+        ) as opener:
+            self.assertTrue(controller.openVokiePluginDownload())
+            opener.assert_called_once_with(versioned.download_url)
+
+        with mock.patch.object(
+            qt_settings_app.application_update,
+            "resolve_latest_plugin_download",
+            side_effect=qt_settings_app.application_update.ApplicationUpdateError(
+                "plugin_unavailable", "GitHub 发布列表中暂无插件包。"
+            ),
+        ), mock.patch.object(
+            qt_settings_app.shell_targets,
+            "open_external_target",
+            return_value=qt_settings_app.shell_targets.ExternalTargetResult(
+                opened, fallback
+            ),
+        ) as opener:
+            self.assertTrue(controller.openVokiePluginDownload())
+            opener.assert_called_once_with(fallback)
 
     def test_export_logs_reports_honestly_when_never_run(self):
         controller, _ = self._make_controller()

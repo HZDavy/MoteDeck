@@ -194,6 +194,7 @@ class SettingsController(QObject):
     _applicationUpdateCheckReady = Signal(object)
     _applicationUpdateDownloadReady = Signal(object)
     _applicationUpdateProgressReady = Signal(object)
+    _vokiePluginDownloadReady = Signal(str)
     asrModelStateChanged = Signal()
     _asrModelInstallReady = Signal(object)
 
@@ -239,6 +240,9 @@ class SettingsController(QObject):
         )
         self._applicationUpdateProgressReady.connect(
             self._on_application_update_progress_ready
+        )
+        self._vokiePluginDownloadReady.connect(
+            self._on_vokie_plugin_download_ready
         )
         self._asrModelInstallReady.connect(self._on_asr_model_install_ready)
         self._asr_model_busy = False
@@ -3166,6 +3170,10 @@ class SettingsController(QObject):
         unsaved_other_settings = self._has_unsaved_non_mapping_settings()
         self._refresh_settings_dirty_state()
         self._set_mapping_auto_save_retry_available(False)
+        # 保存映射后立刻让 bridge 重载：话筒键警告（绑了普通动作）跟着当前
+        # 生效的映射走，不能等下一次按键事件才对齐，否则改绑回语音键后切到
+        # 语音页还会弹一下旧警告。
+        bridge_launcher.reload_in_process_bridge_settings()
         status = "按键映射已自动保存。"
         if unsaved_other_settings:
             status += "其它设置仍未保存。"
@@ -5071,9 +5079,20 @@ class SettingsController(QObject):
 
     @Slot(result=bool)
     def openVokiePluginDownload(self) -> bool:
-        result = shell_targets.open_external_target(VOKIE_PLUGIN_URL)
-        self._report_external_target(result, self._VOICE_PAGE_INDEX)
-        return result.outcome is shell_targets.ExternalTargetOutcome.OPENED
+        # 两处下载按钮（语音页、快速设置弹窗）都走这里：先在后台解析
+        # 带版本号的插件包下载地址，失败回退固定下载链接。
+        def resolve() -> None:
+            try:
+                url = application_update.resolve_latest_plugin_download().download_url
+            except Exception:  # noqa: BLE001 - 解析失败一律回退固定下载链接
+                url = VOKIE_PLUGIN_URL
+            self._emit_background_result(self._vokiePluginDownloadReady, url)
+
+        try:
+            self._start_background_task(resolve, "vokie-plugin-download")
+        except Exception:
+            return False
+        return True
 
     @Slot(result=bool)
     def openOpenMexiaWebsite(self) -> bool:
@@ -8330,6 +8349,11 @@ class SettingsController(QObject):
                 f"无法打开 {result.target}（{result.error}）",
                 page_index,
             )
+
+    def _on_vokie_plugin_download_ready(self, url: str) -> None:
+        self._report_external_target(
+            shell_targets.open_external_target(url), self._VOICE_PAGE_INDEX
+        )
 
     @Slot()
     def openBluetoothSettings(self) -> None:

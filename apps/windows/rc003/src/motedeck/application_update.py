@@ -85,6 +85,12 @@ _SHA256_PATTERN = re.compile(r"^[0-9a-fA-F]{64}$")
 _MANIFEST_LINE_PATTERN = re.compile(
     r"^(?P<hash>[0-9a-f]{64})  (?P<name>[^\\/\r\n]+)$"
 )
+# 插件包资产：新发布约定带版本号（MoteDeck2Vokie-<版本>.zip），旧发布沿用固定名。
+_PLUGIN_VERSIONED_PATTERN = re.compile(
+    rf"^MoteDeck2Vokie-(?P<version>{_VERSION_TEXT_PATTERN})\.zip$"
+)
+_PLUGIN_FIXED_ASSET_NAME = "MoteDeck2Vokie.zip"
+MAX_PLUGIN_PACKAGE_BYTES = 32 * 1024 * 1024
 
 
 class ApplicationUpdateError(RuntimeError):
@@ -925,6 +931,60 @@ def check_for_update(
     else:
         outcome = UpdateCheckOutcome.LOCAL_NEWER
     return ApplicationUpdateCheck(outcome, current, release)
+
+
+@dataclass(frozen=True)
+class PluginDownloadResolution:
+    download_url: str
+    version_text: str  # 旧固定名资产没有版本号，此时为空字符串。
+
+
+def resolve_latest_plugin_download(
+    *,
+    opener: Callable[..., Any] = _default_open,
+    timeout: float = NETWORK_TIMEOUT_SECONDS,
+) -> PluginDownloadResolution:
+    """在发布列表里找最新的 Vokie 插件包资产（带校验过的下载地址）。
+
+    与本体检查更新共用发布列表请求，但插件包命名独立于本体安装包，
+    不能复用 _parse_release。按发布列表从新到旧扫描，跳过草稿发布；
+    同一发布优先取带版本号的资产名，只有旧固定名时也接受。
+    """
+    payload = _fetch_release_list(opener=opener, timeout=timeout)
+    for item in payload:
+        if not isinstance(item, dict) or item.get("draft") is not False:
+            # 草稿或字段异常的发布不参与扫描。
+            continue
+        assets = item.get("assets")
+        if not isinstance(assets, list):
+            continue
+        versioned: list[tuple[dict, str, str]] = []  # (资产, 资产名, 版本号)
+        legacy: list[tuple[dict, str]] = []  # (资产, 资产名)
+        for asset in assets:
+            if not isinstance(asset, dict):
+                continue
+            name = asset.get("name")
+            if not isinstance(name, str):
+                continue
+            match = _PLUGIN_VERSIONED_PATTERN.fullmatch(name)
+            if match is not None:
+                versioned.append((asset, name, match.group("version")))
+            elif name == _PLUGIN_FIXED_ASSET_NAME:
+                legacy.append((asset, name))
+        if versioned:
+            asset, name, version_text = versioned[0]
+        elif legacy:
+            asset, name = legacy[0]
+            version_text = ""
+        else:
+            continue
+        try:
+            parsed = _parse_asset(asset, name, MAX_PLUGIN_PACKAGE_BYTES)
+        except ApplicationUpdateError:
+            # 资产尚未上传完成或信息异常时跳过该发布，继续找更早的发布。
+            continue
+        return PluginDownloadResolution(parsed.download_url, version_text)
+    raise ApplicationUpdateError("plugin_unavailable", "GitHub 发布列表中暂无插件包。")
 
 
 def _verify_bytes_digest(data: bytes, expected: Optional[str]) -> None:

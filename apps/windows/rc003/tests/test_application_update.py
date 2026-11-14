@@ -510,6 +510,91 @@ class UpdateCheckTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, "unsafe_url")
 
 
+class PluginDownloadResolutionTests(unittest.TestCase):
+    @staticmethod
+    def _plugin_asset(name: str, data: bytes, tag: str = "v0.2.7") -> dict:
+        return {
+            "name": name,
+            "size": len(data),
+            "state": "uploaded",
+            "browser_download_url": (
+                f"https://github.com/{application_update.REPOSITORY_SLUG}/"
+                f"releases/download/{tag}/{name}"
+            ),
+        }
+
+    def _release(self, assets, *, draft=False, tag="v0.2.7"):
+        return {
+            "draft": draft,
+            "prerelease": False,
+            "html_url": (
+                f"https://github.com/{application_update.REPOSITORY_SLUG}/"
+                f"releases/tag/{tag}"
+            ),
+            "assets": assets,
+        }
+
+    def test_prefers_versioned_plugin_asset_in_newest_release(self):
+        newest = self._release(
+            [
+                self._plugin_asset("MoteDeck2Vokie-0.1.6.zip", b"plugin"),
+                self._plugin_asset("MoteDeck2Vokie.zip", b"legacy"),
+            ]
+        )
+        older = self._release(
+            [self._plugin_asset("MoteDeck2Vokie-0.1.5.zip", b"older")],
+            tag="v0.2.6",
+        )
+
+        result = application_update.resolve_latest_plugin_download(
+            opener=_api_opener([newest, older])
+        )
+
+        self.assertEqual(result.download_url, newest["assets"][0]["browser_download_url"])
+        self.assertEqual(result.version_text, "0.1.6")
+
+    def test_accepts_legacy_fixed_asset_name_with_empty_version(self):
+        release = self._release([self._plugin_asset("MoteDeck2Vokie.zip", b"plugin")])
+
+        result = application_update.resolve_latest_plugin_download(
+            opener=_api_opener([release])
+        )
+
+        self.assertEqual(result.download_url, release["assets"][0]["browser_download_url"])
+        self.assertEqual(result.version_text, "")
+
+    def test_skips_drafts_and_incomplete_assets_then_uses_older_release(self):
+        draft = self._release(
+            [self._plugin_asset("MoteDeck2Vokie-0.1.9.zip", b"draft")], draft=True
+        )
+        uploading = self._release(
+            [{**self._plugin_asset("MoteDeck2Vokie-0.1.8.zip", b"pending"),
+              "state": "starter"}],
+            tag="v0.2.8",
+        )
+        usable = self._release(
+            [self._plugin_asset("MoteDeck2Vokie-0.1.6.zip", b"plugin")],
+            tag="v0.2.7",
+        )
+
+        result = application_update.resolve_latest_plugin_download(
+            opener=_api_opener([draft, uploading, usable])
+        )
+
+        self.assertEqual(result.download_url, usable["assets"][0]["browser_download_url"])
+        self.assertEqual(result.version_text, "0.1.6")
+
+    def test_raises_when_no_release_ships_the_plugin(self):
+        body_release, _ = _release_payload("0.2.7")
+
+        with self.assertRaises(application_update.ApplicationUpdateError) as caught:
+            application_update.resolve_latest_plugin_download(
+                opener=_api_opener([body_release])
+            )
+
+        self.assertEqual(caught.exception.code, "plugin_unavailable")
+
+
 class ReleasePaginationTests(unittest.TestCase):
     def page_url(self, page, *, numeric=False):
         path = "/repositories/12345/releases" if numeric else f"/repos/{application_update.REPOSITORY_SLUG}/releases"
