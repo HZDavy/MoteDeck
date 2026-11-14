@@ -75,7 +75,8 @@ HELPER_PROTOCOL_VERSION = 1
 # unchanged. Generation 20 renames the helper to MoteDeckHidHelper.exe (with
 # the legacy-name cleanup paths kept for upgrades). Generation 21 refreshes
 # the helper source digest after the motedeck package refactor.
-HELPER_GENERATION = 21
+# Generation 22 refreshes the digest after shared config/identity changes.
+HELPER_GENERATION = 22
 TASK_CONTRACT_VERSION = 5
 MANIFEST_FILENAME = "helper-manifest.json"
 INJECTION_RESULT_FILENAME = "hid-injection-result.json"

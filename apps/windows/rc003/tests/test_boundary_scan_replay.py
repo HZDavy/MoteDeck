@@ -149,6 +149,9 @@ _AUTOSTART_CHECK_EXEMPT_RELATIVE_PATHS = {
     Path("build/check-public-boundary.ps1"),
     Path("src/motedeck/startup_windows.py"),
     Path("installer/MoteDeckSetup.iss"),
+    # Universal rescue installer only deletes its own legacy autostart value
+    # on uninstall; it never writes an autostart entry.
+    Path("installer/MoteDeckSetupUniversal.iss"),
 }
 
 _COMMENT_PREFIX_BY_EXTENSION = {".ps1": "#", ".iss": ";"}

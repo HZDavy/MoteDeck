@@ -207,7 +207,10 @@ $autostartCheckExemptRelativePaths = @(
     "tests/test_boundary_scan_replay.py",
     "build/check-public-boundary.ps1",
     "src/motedeck/startup_windows.py",
-    "installer/MoteDeckSetup.iss"
+    "installer/MoteDeckSetup.iss",
+    # Universal rescue installer only deletes its own legacy autostart value
+    # on uninstall; it never writes an autostart entry.
+    "installer/MoteDeckSetupUniversal.iss"
 )
 
 function Get-NormalizedRelativePath {
