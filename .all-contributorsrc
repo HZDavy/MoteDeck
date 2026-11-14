@@ -130,6 +130,15 @@
       "contributions": [
         "bug"
       ]
+    },
+    {
+      "login": "a199772",
+      "name": "a199772",
+      "avatar_url": "https://avatars.githubusercontent.com/u/56496416?v=4",
+      "profile": "https://github.com/a199772",
+      "contributions": [
+        "bug"
+      ]
     }
   ],
   "commitType": "docs",
