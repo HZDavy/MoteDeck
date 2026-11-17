@@ -214,6 +214,7 @@ MoteDeck 由 Mote（远程、轻巧）和 Deck（控制面板）组成。
       <td align="center" valign="top" width="12.5%"><a href="https://github.com/leophegorse"><img src="https://avatars.githubusercontent.com/u/152304465?v=4&size=80" width="80px" height="80px" alt="leophegorse"/><br /><sub><b>leophegorse</b></sub></a><br /><a href="https://github.com/HZDavy/MoteDeck/issues?q=author%3Aleophegorse" title="Bug reports">🐛</a></td>
       <td align="center" valign="top" width="12.5%"><a href="https://github.com/amea13"><img src="https://avatars.githubusercontent.com/u/64626069?v=4&size=80" width="80px" height="80px" alt="Amea White"/><br /><sub><b>Amea White</b></sub></a><br /><a href="https://github.com/HZDavy/MoteDeck/issues?q=author%3Aamea13" title="Bug reports">🐛</a></td>
       <td align="center" valign="top" width="12.5%"><a href="https://github.com/a199772"><img src="https://avatars.githubusercontent.com/u/56496416?v=4&size=80" width="80px" height="80px" alt="a199772"/><br /><sub><b>a199772</b></sub></a><br /><a href="https://github.com/HZDavy/MoteDeck/issues?q=author%3Aa199772" title="Bug reports">🐛</a></td>
+      <td align="center" valign="top" width="12.5%"><a href="https://github.com/startsnewlife"><img src="https://avatars.githubusercontent.com/u/61904869?v=4&size=80" width="80px" height="80px" alt="Maya"/><br /><sub><b>Maya</b></sub></a><br /><a href="https://github.com/HZDavy/MoteDeck/issues?q=author%3Astartsnewlife" title="Bug reports">🐛</a></td>
     </tr>
   </tbody>
   <tfoot>
