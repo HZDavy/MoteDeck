@@ -28,6 +28,39 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# 兜底：脚本自身异常（安全软件拦截、组策略限制、WMI 不可用、Add-Type 被
+# 禁止等）不能让进程以 1 之类的模糊退出码结束，否则安装程序只能笼统地报
+# “没有完全退出”。统一转成 exitScriptFailed，并留下可读的错误信息。
+trap {
+    # trap 自身也不能再抛错，否则 PowerShell 会以 1 退出，安装程序又只能
+    # 笼统地报“没有完全退出”。
+    try {
+        $trapMessage = "stop-app.ps1 failed: " + $_.Exception.GetType().FullName +
+            ": " + $_.Exception.Message
+        [Console]::Error.WriteLine($trapMessage)
+        try {
+            $trapLogRoot = [System.IO.Path]::Combine(
+                [Environment]::GetFolderPath(
+                    [Environment+SpecialFolder]::LocalApplicationData
+                ),
+                "MoteDeck",
+                "logs"
+            )
+            [void][System.IO.Directory]::CreateDirectory($trapLogRoot)
+            [System.IO.File]::AppendAllText(
+                [System.IO.Path]::Combine($trapLogRoot, "installer-stop.log"),
+                ("{0} {1}{2}" -f [DateTime]::UtcNow.ToString("o"), $trapMessage,
+                    [Environment]::NewLine)
+            )
+        } catch {
+            # 日志写入本身失败时保持静默，退出码仍然是脚本异常码。
+        }
+    } catch {
+        # 诊断信息也拿不到时什么都不做，只保证退出码。
+    }
+    exit 30
+}
+
 $exitOk = 0
 $exitNeedsElevation = 10
 $exitUnsafeToContinue = 20
@@ -35,6 +68,9 @@ $exitProbeFailed = 21
 $exitUserActionRequired = 22
 $exitOtherLocationRunning = 23
 $exitOtherSessionRunning = 24
+# 脚本自身异常（安全软件拦截、组策略禁用脚本、Add-Type 被禁止等）统一用
+# 30 退出，让安装程序能把“清理脚本崩了”和“旧版仍在运行”区分开。
+$exitScriptFailed = 30
 $applicationExitRejectedExitCode = 21
 $maintenanceExitTimeoutSeconds = 50
 $legacyBridgeExitTimeoutSeconds = 10

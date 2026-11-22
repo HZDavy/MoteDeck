@@ -1209,6 +1209,15 @@ begin
   Started := RunStopApplication(StopScript, False, True, ResultCode);
   if not Started then
   begin
+    { 首次安装没有旧版运行文件，也就没有需要关闭的旧进程；此时清理程序
+      起不来（安全软件拦截 PowerShell、组策略限制脚本、Add-Type 被禁止）
+      不应阻断安装。升级时仍然严格拦截，避免覆盖仍在使用的文件。 }
+    if not CurrentRuntimeExists() then
+    begin
+      Log('Fresh install: stop script could not be started; continuing.');
+      Result := True;
+      exit;
+    end;
     ErrorMessage :=
       '无法运行旧进程清理程序；安装已停止，以免覆盖仍在使用的文件。';
     Result := False;
@@ -1246,8 +1255,21 @@ begin
     ErrorMessage :=
       '无法确认旧版状态。请完全退出MoteDeck或重启 Windows 后重试；安装尚未修改文件。'
   else
+  begin
+    { 未知退出码说明清理脚本自身异常退出（被杀软拦截、组策略禁用脚本、
+      WMI 不可用等），并不是“旧版没有退出”。首次安装没有旧版需要清理，
+      继续安装；升级时把真实退出码报出来并写入安装日志，便于定位。 }
+    Log('Stop script returned unexpected exit code ' + IntToStr(ResultCode));
+    if not CurrentRuntimeExists() then
+    begin
+      Log('Fresh install: continuing after unexpected stop script exit code.');
+      Result := True;
+      exit;
+    end;
     ErrorMessage :=
-      'MoteDeck没有完全退出。请完全退出后重试；安装尚未修改文件。';
+      '安装前清理程序异常退出（退出码 ' + IntToStr(ResultCode) +
+      '），可能是安全软件或组策略限制了 PowerShell。请查看安装日志；安装尚未修改文件。';
+  end;
   Result := False;
 end;
 
