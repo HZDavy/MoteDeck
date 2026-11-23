@@ -168,6 +168,15 @@
       "contributions": [
         "bug"
       ]
+    },
+    {
+      "login": "rinceyuan",
+      "name": "Rince Yuan",
+      "avatar_url": "https://avatars.githubusercontent.com/u/6132902?v=4",
+      "profile": "https://github.com/rinceyuan",
+      "contributions": [
+        "bug"
+      ]
     }
   ],
   "commitType": "docs",
