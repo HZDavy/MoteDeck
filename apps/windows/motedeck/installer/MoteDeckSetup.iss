@@ -1261,8 +1261,20 @@ begin
     ErrorMessage :=
       'MoteDeck没有完全退出。请处理旧版窗口并完全退出后重试；安装尚未修改文件。'
   else if ResultCode = StopProbeFailedExitCode then
+  begin
+    { 进程身份读不到时清理脚本会返回 21（典型场景是应用自己以管理员
+      身份启动的语音子进程）。只要没有任何实例互斥体，就说明当前桌面
+      没有正在使用的旧版，应当继续安装，而不是把用户困在“重启 Windows
+      再试”。只有确认实例仍在运行时才保留原来的阻断提示。 }
+    if not RuntimeIsRunning() then
+    begin
+      Log('No running instance: continuing after unconfirmed stop probe.');
+      Result := True;
+      exit;
+    end;
     ErrorMessage :=
-      '无法确认旧版状态。请完全退出MoteDeck或重启 Windows 后重试；安装尚未修改文件。'
+      '无法确认旧版状态。请完全退出MoteDeck或重启 Windows 后重试；安装尚未修改文件。';
+  end
   else
   begin
     { 未知退出码说明清理脚本自身异常退出（被杀软拦截、组策略禁用脚本、
@@ -1287,6 +1299,7 @@ var
   ResultCode: Integer;
   Started: Boolean;
 begin
+  ResultCode := -1;
   Started := RunStopApplication(StopScript, False, False, ResultCode);
   if Started and (ResultCode = 0) then
   begin
@@ -1312,12 +1325,31 @@ begin
       mbError,
       MB_OK
     )
+  else if ResultCode = StopUnsafeToContinueExitCode then
+    MsgBox(
+      'MoteDeck没有完全退出。请完全退出后重新卸载。',
+      mbError,
+      MB_OK
+    )
   else
+  begin
+    { 21 或未知退出码说明清理脚本本身没跑完（解析失败、被安全软件拦截、
+      组策略禁用脚本等），不能据此认定“程序没有退出”。与安装共用同一条
+      原则：没有确认实例在运行就继续卸载，避免出现 0.3.4 那样无论程序
+      是否运行都永远卸不掉的情况。 }
+    if not RuntimeIsRunning() then
+    begin
+      Log('No running instance: continuing uninstall after stop exit code ' +
+        IntToStr(ResultCode));
+      Result := True;
+      exit;
+    end;
     MsgBox(
       'MoteDeck没有完全退出。请完全退出后重新卸载。',
       mbError,
       MB_OK
     );
+  end;
   Result := False;
 end;
 
@@ -1508,14 +1540,21 @@ begin
   StopScript := ExpandConstant('{app}\stop-app.ps1');
   if not FileExists(StopScript) then
   begin
-    MsgBox(
-      '无法找到MoteDeck进程清理程序。卸载尚未开始，请修复或重新安装当前版本后重试。',
-      mbError,
-      MB_OK
-    );
-    ReleaseInstallerMaintenanceMutex;
-    Result := False;
-    exit;
+    { 安装目录被清理工具动过时，只要没有运行中的实例就不该阻断卸载；
+      清理程序缺失且实例确实在运行时才要求修复安装。 }
+    if not RuntimeIsRunning() then
+      Log('stop-app.ps1 is missing; no running instance: continuing uninstall.')
+    else
+    begin
+      MsgBox(
+        '无法找到MoteDeck进程清理程序。卸载尚未开始，请修复或重新安装当前版本后重试。',
+        mbError,
+        MB_OK
+      );
+      ReleaseInstallerMaintenanceMutex;
+      Result := False;
+      exit;
+    end;
   end;
 
   if not StopApplicationForUninstall(StopScript) then

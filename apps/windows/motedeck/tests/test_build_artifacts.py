@@ -1147,6 +1147,43 @@ class InnoSetupScriptTests(unittest.TestCase):
         self.assertIn("未完成 UAC 确认", stop_helper)
         self.assertIn("需要管理员权限关闭正在以管理员身份运行的旧版", stop_helper)
 
+    def test_stop_script_has_utf8_bom_for_windows_powershell(self):
+        # Issue #72 / PR #73: 安装与卸载都用 Windows PowerShell 5.1 执行
+        # stop-app.ps1。无 BOM 时它按系统 ANSI 代码页（中文环境为 GBK 936）
+        # 解码，中文注释会吞掉换行，脚本在解析阶段失败，安装程序只能笼统地
+        # 报“没有完全退出”。BOM 是这个脚本能被 PS 5.1 正确读取的前提。
+        data = (_ISS_PATH.parent / "stop-app.ps1").read_bytes()
+        self.assertTrue(data.startswith(b"\xef\xbb\xbf"))
+
+    def test_stop_script_parses_with_windows_powershell_5_1(self):
+        # Issue #72 建议 3：必须用 Windows PowerShell 5.1 的解析器校验，
+        # 不能用 pwsh 7 代替——两者的编码/语法判定并不相同。
+        if os.name != "nt":
+            self.skipTest("requires Windows PowerShell 5.1")
+        powershell = shutil.which("powershell.exe")
+        if powershell is None:
+            self.skipTest("Windows PowerShell 5.1 not found")
+        stop_script = _ISS_PATH.parent / "stop-app.ps1"
+        env = dict(os.environ, MOTEDECK_STOP_SCRIPT=str(stop_script))
+        command = (
+            "$t=$null; $e=$null; "
+            "[void][System.Management.Automation.Language.Parser]::ParseFile("
+            "$env:MOTEDECK_STOP_SCRIPT,[ref]$t,[ref]$e); "
+            "if ($e.Count -gt 0) { "
+            "Write-Output ('line ' + $e[0].Extent.StartLineNumber + ': ' + "
+            "$e[0].Message); exit 1 }; exit 0"
+        )
+        result = subprocess.run(
+            [powershell, "-NoProfile", "-NonInteractive", "-Command", command],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            env=env,
+        )
+        self.assertEqual(
+            result.returncode, 0, result.stdout + result.stderr
+        )
+
     def test_stop_script_uses_directory_boundary_and_bounded_exit_confirmation(self):
         script = (_ISS_PATH.parent / "stop-app.ps1").read_text(
             encoding="utf-8-sig"

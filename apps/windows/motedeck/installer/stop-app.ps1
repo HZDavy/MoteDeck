@@ -54,9 +54,13 @@ trap {
             )
         } catch {
             # 日志写入本身失败时保持静默，退出码仍然是脚本异常码。
+            # 显式语句：即使文件编码判断失误，空 catch 块也不会被
+            # PowerShell 判成非法结构（EmptyCatchNotLast），保证仍能退出 30。
+            $null = 1
         }
     } catch {
         # 诊断信息也拿不到时什么都不做，只保证退出码。
+        $null = 1
     }
     exit 30
 }
@@ -87,6 +91,11 @@ $windowExitCapabilityProperty = "RemoteMicRC003.ApplicationExitWindowSignalV1"
 $windowExitRequestProperty = "RemoteMicRC003.ApplicationExitWindowRequestV1"
 $windowExitRejectedProperty = "RemoteMicRC003.ApplicationExitWindowRejectedV1"
 $applicationExitRequestMutexName = "Local\RemoteMicRC003_ApplicationExitRequest"
+# 与 single_instance.py 中的常量保持一致；用于在进程身份读不到时判断
+# “到底有没有实例在运行”。
+$settingsInstanceMutexName = "Local\RemoteMicRC003_SettingsInstance"
+$bridgeInstanceMutexName = "Local\RemoteMicRC003_BridgeInstance"
+$handoffMutexName = "Local\RemoteMicRC003_ApplicationHandoff"
 $legacyBridgeWindowTitle = "Remote Mic RC003 bridge tray"
 $legacyExitCommand = 1002
 $wmCommand = 0x0111
@@ -381,6 +390,7 @@ function Show-LegacyShellWindow {
             }
         } catch {
             # Best effort only. The installer message also names the tray exit path.
+            $null = 1
         }
     }
 }
@@ -422,6 +432,58 @@ function Exit-ForRestrictedProcess {
     }
     Write-StopError "$productName process identity could not be verified."
     exit $script:exitProbeFailed
+}
+
+# 进程身份读不到（以管理员身份运行的子进程、被保护进程等）时，不能仅凭
+# “读不到”就阻断安装：安装包里可能根本没有旧版在运行，用户会被迫重启
+# Windows 才能升级。程序自身持有的命名互斥体才是“确实有实例在运行”的
+# 权威证据，所以先查互斥体，只有确认有实例在运行才按受限处理。
+function Test-InstanceMutexRunning {
+    $names = @(
+        $script:settingsInstanceMutexName,
+        $script:bridgeInstanceMutexName,
+        $script:handoffMutexName
+    )
+    $inconclusive = $false
+    foreach ($name in $names) {
+        $handle = $null
+        try {
+            $handle = [System.Threading.Mutex]::OpenExisting($name)
+            return $true
+        } catch [System.Threading.WaitHandleCannotBeOpenedException] {
+            continue
+        } catch {
+            # 无法判断时必须保守：仍按“可能在运行”处理，绝不误覆盖文件。
+            $inconclusive = $true
+        } finally {
+            if ($null -ne $handle) {
+                try {
+                    $handle.Dispose()
+                } catch {
+                    $inconclusive = $true
+                }
+            }
+        }
+    }
+    if ($inconclusive) {
+        return $null
+    }
+    return $false
+}
+
+function Exit-ForUnverifiedProcess {
+    # 身份读不到，但没有任何实例互斥体：说明当前桌面没有正在使用的实例
+    # （典型情况是提权运行的语音子进程，它不持有实例互斥体），安装可以
+    # 继续。互斥体查不出来时才退回受限处理，绝不冒险覆盖正在使用的文件。
+    $instanceRunning = Test-InstanceMutexRunning
+    if ($instanceRunning -eq $false) {
+        Write-StopError (
+            "$productName process identity was unavailable but no running " +
+            "instance owns the application mutex; continuing."
+        )
+        exit $script:exitOk
+    }
+    Exit-ForRestrictedProcess
 }
 
 function Get-TargetSnapshot {
@@ -610,6 +672,7 @@ function Enter-ApplicationExitRequestMutex {
                 $mutex.Dispose()
             } catch {
                 # The caller will fail closed because the mutex is unavailable.
+                $null = 1
             }
         }
         return [PSCustomObject]@{
@@ -796,11 +859,17 @@ function Invoke-LegacyV3FullExit {
 }
 
 $snapshot = Get-TargetSnapshot
-if ($snapshot.UnknownCount -gt 0) {
-    Exit-ForRestrictedProcess
-}
 if ($snapshot.Targets.Count -eq 0) {
+    if ($snapshot.UnknownCount -gt 0) {
+        Exit-ForUnverifiedProcess
+    }
     exit $exitOk
+}
+if ($snapshot.UnknownCount -gt 0) {
+    Write-StopError (
+        "$productName process identity was unavailable for " +
+        "$($snapshot.UnknownCount) process(es); continuing with verifiable ones."
+    )
 }
 
 $windowSignalTargets = @(
@@ -829,10 +898,10 @@ if ($windowSignalTargets.Count -eq 1) {
         exit $exitUnsafeToContinue
     }
     $completedSnapshot = Get-TargetSnapshot
-    if ($completedSnapshot.UnknownCount -gt 0) {
-        Exit-ForRestrictedProcess
-    }
     if ($completedSnapshot.Targets.Count -eq 0) {
+        if ($completedSnapshot.UnknownCount -gt 0) {
+            Exit-ForUnverifiedProcess
+        }
         exit $exitOk
     }
     Write-StopError "$productName restarted while shutdown was being confirmed."
@@ -873,10 +942,10 @@ if ($v3Targets.Count -eq 1) {
         exit $exitUnsafeToContinue
     }
     $completedSnapshot = Get-TargetSnapshot
-    if ($completedSnapshot.UnknownCount -gt 0) {
-        Exit-ForRestrictedProcess
-    }
     if ($completedSnapshot.Targets.Count -eq 0) {
+        if ($completedSnapshot.UnknownCount -gt 0) {
+            Exit-ForUnverifiedProcess
+        }
         exit $exitOk
     }
     Write-StopError "$productName restarted while shutdown was being confirmed."
@@ -884,10 +953,10 @@ if ($v3Targets.Count -eq 1) {
 }
 
 $remainingSnapshot = Get-TargetSnapshot
-if ($remainingSnapshot.UnknownCount -gt 0) {
-    Exit-ForRestrictedProcess
-}
 if ($remainingSnapshot.Targets.Count -eq 0) {
+    if ($remainingSnapshot.UnknownCount -gt 0) {
+        Exit-ForUnverifiedProcess
+    }
     exit $exitOk
 }
 
@@ -897,7 +966,10 @@ $unknownRoles = @(
     }
 )
 if ($unknownRoles.Count -gt 0) {
-    Exit-ForRestrictedProcess
+    # 读不到命令行就无法区分“托盘桥”和“设置窗口”。此时先看实例互斥体：
+    # 没有实例在运行说明这些进程不是当前桌面实例，安装可以继续；否则
+    # 才按受限处理（提权重试）。
+    Exit-ForUnverifiedProcess
 }
 
 $legacyBridgeTargets = @(
