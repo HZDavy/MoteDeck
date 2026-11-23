@@ -1147,6 +1147,13 @@ class InnoSetupScriptTests(unittest.TestCase):
         self.assertIn("未完成 UAC 确认", stop_helper)
         self.assertIn("需要管理员权限关闭正在以管理员身份运行的旧版", stop_helper)
 
+    def test_stop_script_has_utf8_bom_for_windows_powershell(self):
+        # 安装/卸载用 Windows PowerShell 5.1 执行 stop-app.ps1；无 BOM 时它按
+        # ANSI 代码页读取，GBK(936) 系统上中文注释会吞掉换行，脚本解析失败，
+        # 安装程序只能报“没有完全退出”。
+        data = (_ISS_PATH.parent / "stop-app.ps1").read_bytes()
+        self.assertTrue(data.startswith(b"\xef\xbb\xbf"))
+
     def test_stop_script_uses_directory_boundary_and_bounded_exit_confirmation(self):
         script = (_ISS_PATH.parent / "stop-app.ps1").read_text(
             encoding="utf-8-sig"
