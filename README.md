@@ -222,6 +222,9 @@ MoteDeck 由 Mote（远程、轻巧）和 Deck（控制面板）组成。
       <td align="center" valign="top" width="12.5%"><a href="https://github.com/startsnewlife"><img src="https://avatars.githubusercontent.com/u/61904869?v=4&size=80" width="80px" height="80px" alt="Maya"/><br /><sub><b>Maya</b></sub></a><br /><a href="https://github.com/HZDavy/MoteDeck/issues?q=author%3Astartsnewlife" title="Bug reports">🐛</a></td>
       <td align="center" valign="top" width="12.5%"><a href="https://github.com/alonespores"><img src="https://avatars.githubusercontent.com/u/38136877?v=4&size=80" width="80px" height="80px" alt="alonespores"/><br /><sub><b>alonespores</b></sub></a><br /><a href="https://github.com/HZDavy/MoteDeck/issues?q=author%3Aalonespores" title="Bug reports">🐛</a> <a href="#ideas-alonespores" title="Ideas, Planning, & Feedback">🤔</a></td>
     </tr>
+    <tr>
+      <td align="center" valign="top" width="12.5%"><a href="https://github.com/p2o521"><img src="https://avatars.githubusercontent.com/u/25809955?v=4&size=80" width="80px" height="80px" alt="p2o521"/><br /><sub><b>p2o521</b></sub></a><br /><a href="https://github.com/HZDavy/MoteDeck/issues?q=author%3Ap2o521" title="Bug reports">🐛</a></td>
+    </tr>
   </tbody>
   <tfoot>
     <tr>

@@ -159,6 +159,15 @@
         "bug",
         "ideas"
       ]
+    },
+    {
+      "login": "p2o521",
+      "name": "p2o521",
+      "avatar_url": "https://avatars.githubusercontent.com/u/25809955?v=4",
+      "profile": "https://github.com/p2o521",
+      "contributions": [
+        "bug"
+      ]
     }
   ],
   "commitType": "docs",
