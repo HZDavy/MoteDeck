@@ -5002,12 +5002,13 @@ class SettingsController(QObject):
         )
 
     def _on_vokie_plugin_disconnected(self) -> None:
-        # 插件关了或连接断了，它带来的语音键已经没有意义，直接从配置里清掉。
-        self._release_voice_plugin_keys()
+        # 临时断线只更新状态，不删插件语音键：行和按键绑定都留着，插件重连
+        # 后按快捷键认回同一条，用户不用重新设置按键。真正删键只发生在用户
+        # 主动断开（disconnectVoicePlugin）或插件不再提供该模式时。
         self.voicePluginStateChanged.emit()
         self.voiceKeyConfigsChanged.emit()
         self._set_status_message(
-            "MoteDeck2Vokie 插件已断开，插件提供的语音键已清除。",
+            "MoteDeck2Vokie 插件已断开，插件语音键已保留，重连后自动恢复。",
             self._VOICE_PAGE_INDEX,
         )
 

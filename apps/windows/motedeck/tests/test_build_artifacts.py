@@ -663,6 +663,12 @@ class InnoSetupScriptTests(unittest.TestCase):
         )[1].split("else", 1)[0]
         self.assertIn("请登录原管理员账号后重试", unsupported)
         self.assertIn("临时输入另一个管理员账号无效", unsupported)
+        self.assertIn("InputDriverUninstallIncompleteExitCode = 29", code_section)
+        self.assertIn("虚拟按键驱动未能完全卸载", initialize)
+        driver_warning = initialize.split(
+            "if ResultCode = InputDriverUninstallIncompleteExitCode then", 1
+        )[1].split("else", 1)[0]
+        self.assertNotIn("Result := False", driver_warning)
 
     def test_no_autostart_shortcut_or_task(self):
         self.assertNotIn("userstartup", self.effective_text.lower())

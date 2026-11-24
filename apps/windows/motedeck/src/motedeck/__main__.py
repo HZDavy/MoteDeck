@@ -24,8 +24,11 @@ built from the standalone ``src/launcher.py`` entry point - see XRBM-021):
 - ``--install-hid-helper`` / ``--uninstall-hid-helper``  HIDDEN maintenance
                  entry points used by the per-user installer. The ordinary
                  desktop executable records the calling distribution and only
-                 then asks the narrow bundled helper to elevate. These modes
-                 never construct the desktop window or start device resources.
+                 then asks the narrow bundled helper to elevate. Uninstall also
+                 removes whichever bundled virtual-input driver (WinUHid or
+                 Interception) is still registered, so uninstalling the app
+                 never leaves an input driver behind. These modes never
+                 construct the desktop window or start device resources.
 - ``--dry-run``   import every first-party module and exit 0, touching no
                    GUI, BLE, Raw Input, or audio device - the safe smoke
                   check build-candidate.ps1 and
@@ -123,6 +126,7 @@ HID_HELPER_ACCOUNT_UNSUPPORTED_EXIT_CODE = 25
 DESKTOP_PERMISSION_UNAVAILABLE_EXIT_CODE = 26
 INSTALLER_MAINTENANCE_ACTIVE_EXIT_CODE = 27
 LEGACY_BRIDGE_STARTUP_BLOCKED_EXIT_CODE = 28
+INPUT_DRIVER_UNINSTALL_INCOMPLETE_EXIT_CODE = 29
 HID_CONSUMER_REGISTRATION_TIMEOUT_SECONDS = 2.0
 INVALID_ARGUMENTS_EXIT_CODE = 2
 APPLICATION_EXIT_REQUEST_TIMEOUT_SECONDS = 45.0
@@ -352,18 +356,64 @@ def _install_hid_helper() -> int:
     return HID_HELPER_MAINTENANCE_FAILED_EXIT_CODE
 
 
+def _uninstall_installed_input_drivers() -> int:
+    """Remove whichever bundled virtual-input driver is still installed.
+
+    WinUHid and Interception are mutually exclusive, but an older install may
+    leave either one registered.  Removal is best-effort: a declined UAC prompt
+    or a missing bundled installer must not make MoteDeck impossible to
+    uninstall, so this reports an incomplete cleanup code the installer can
+    turn into a warning instead of aborting.
+    """
+
+    if sys.platform != "win32" or dev_session.is_isolated():
+        return 0
+
+    from . import interception_driver_install, interception_runtime_windows
+    from . import winuhid_driver_install
+
+    incomplete = False
+    for name, installed, uninstall in (
+        (
+            "winuhid",
+            lambda: winuhid_driver_install.driver_installed() is True,
+            winuhid_driver_install.uninstall_driver,
+        ),
+        (
+            "interception",
+            interception_runtime_windows.driver_installed,
+            interception_driver_install.uninstall_driver,
+        ),
+    ):
+        try:
+            if not installed():
+                continue
+            uninstall()
+        except Exception as exc:  # noqa: BLE001 - never block uninstall
+            incomplete = True
+            print(
+                f"Input driver uninstall incomplete: driver={name} "
+                f"error_type={type(exc).__name__}",
+                file=sys.stderr,
+            )
+    return (
+        INPUT_DRIVER_UNINSTALL_INCOMPLETE_EXIT_CODE if incomplete else 0
+    )
+
+
 def _uninstall_hid_helper() -> int:
     """Remove the installed copy's ownership and preserve live portable users."""
 
     from . import config, hid_elevation_windows, hid_helper_consumers, logging_setup
 
     root = config.config_root()
+    driver_result = _uninstall_installed_input_drivers()
     state = hid_helper_consumers.uninstall_current_distribution(
         root,
         hid_elevation_windows.request_uninstall_elevation,
     )
     if state.available:
-        return 0
+        return driver_result
     logging_setup.write_parent_hid_helper_event(
         "uninstall_failed",
         available=False,

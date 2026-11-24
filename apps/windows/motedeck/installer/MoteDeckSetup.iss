@@ -13,10 +13,15 @@
 ;   - No [Tasks]/[Icons] entry adds login startup. The installed app exposes
 ;     an explicit per-user option and uninstall removes only its owned value.
 ;   - This INSTALLER SCRIPT never installs, configures, silently modifies,
-;     or removes VB-CABLE or any other driver, and never elevates itself to
-;     do so, during install OR uninstall (XRBM-031 RETRY 1 item 5 - this
-;     comment previously and incorrectly claimed VB-CABLE was never
-;     referenced anywhere in this project at all). The application frozen
+;     or removes VB-CABLE, and never elevates itself to do so, during install
+;     OR uninstall (XRBM-031 RETRY 1 item 5 - this comment previously and
+;     incorrectly claimed VB-CABLE was never referenced anywhere in this
+;     project at all). The only driver cleanup it triggers is at uninstall:
+;     it asks the installed MoteDeck.exe (the same HID-helper maintenance
+;     entry point) to remove whichever bundled virtual-input driver -
+;     WinUHid or Interception - is still registered. That removal runs inside
+;     the application and raises its own real Windows UAC prompt; declining
+;     it warns but never blocks the uninstall. The application frozen
 ;     under {#DistDir} (packaged wholesale by the [Files] entry below) DOES
 ;     carry the official, unmodified VB-CABLE Basic package as opaque
 ;     application data, and its OWN "检查与修复" settings page can
@@ -158,6 +163,7 @@ const
   StopOtherLocationRunningExitCode = 23;
   StopOtherSessionRunningExitCode = 24;
   HidHelperAccountUnsupportedExitCode = 25;
+  InputDriverUninstallIncompleteExitCode = 29;
   ErrorAlreadyExists = 183;
   InstallerMaintenanceMutexName = 'Global\RemoteMicRC003_InstallerMaintenance';
   LegacySettingsMutexName = 'Local\RemoteMicRC003_SettingsInstance';
@@ -1583,20 +1589,34 @@ begin
   if not RunApplicationMaintenance('--uninstall-hid-helper', ResultCode) then
   begin
     if ResultCode = HidHelperAccountUnsupportedExitCode then
+    begin
       MsgBox(
         '当前 Windows 账号不能移除管理员按键组件。请登录原管理员账号后重试；在 UAC 中临时输入另一个管理员账号无效。',
         mbError,
         MB_OK
+      );
+      ReleaseLegacyRuntimeBarriers;
+      ReleaseInstallerMaintenanceMutex;
+      Result := False;
+    end
+    else if ResultCode = InputDriverUninstallIncompleteExitCode then
+      { 驱动没卸干净不能反过来卡住卸载：提示后继续，用户可以重跑卸载重试。 }
+      MsgBox(
+        '虚拟按键驱动未能完全卸载（可能取消了管理员授权）。卸载将继续；如需彻底清理，请重新运行卸载并允许管理员授权。',
+        mbInformation,
+        MB_OK
       )
     else
+    begin
       MsgBox(
         '管理员按键组件未能移除，卸载尚未开始。请确认管理员权限后重试。',
         mbError,
         MB_OK
       );
-    ReleaseLegacyRuntimeBarriers;
-    ReleaseInstallerMaintenanceMutex;
-    Result := False;
+      ReleaseLegacyRuntimeBarriers;
+      ReleaseInstallerMaintenanceMutex;
+      Result := False;
+    end;
   end;
 end;
 

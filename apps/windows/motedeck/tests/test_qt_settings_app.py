@@ -6501,6 +6501,84 @@ class SettingsControllerTests(unittest.TestCase):
         self.assertFalse(rejected["ok"])
         self.assertIn("本地", rejected["message"])
 
+    def _seed_vokie_voice_key(self, controller):
+        seeded = config.apply_plugin_voice_keys(
+            controller._config,
+            config.VOICE_KEY_PLUGIN_VOKIE,
+            [{"id": "vokie-quick-note", "name": "闪记"}],
+        )
+        self.assertTrue(controller._save_voice_config_data(seeded))
+        return next(
+            entry
+            for entry in config.voice_key_configs(controller._config)
+            if entry.get("plugin") == config.VOICE_KEY_PLUGIN_VOKIE
+        )
+
+    def test_temporary_vokie_disconnect_keeps_plugin_voice_keys(self):
+        controller, _ = self._make_controller()
+        plugin_key = self._seed_vokie_voice_key(controller)
+        slot = plugin_key["id"]
+
+        with mock.patch.object(controller._model, "clear_voice_action") as cleared:
+            controller._on_vokie_plugin_disconnected()
+            cleared.assert_not_called()
+
+        self.assertIsNotNone(config.voice_key_config(controller._config, slot))
+        persisted = config.load_config(config.config_path(controller._config_root))
+        self.assertIsNotNone(config.voice_key_config(persisted, slot))
+        self.assertIn("已保留", controller.statusMessage)
+
+    def test_explicit_vokie_disconnect_still_clears_plugin_voice_keys(self):
+        controller, _ = self._make_controller()
+        self._seed_vokie_voice_key(controller)
+
+        controller.disconnectVoicePlugin()
+
+        self.assertFalse(
+            any(
+                entry.get("plugin")
+                for entry in config.voice_key_configs(controller._config)
+            )
+        )
+        persisted = config.load_config(config.config_path(controller._config_root))
+        self.assertFalse(
+            any(
+                entry.get("plugin")
+                for entry in config.voice_key_configs(persisted)
+            )
+        )
+
+    def test_vokie_bridge_stop_does_not_report_temporary_disconnect(self):
+        controller, _ = self._make_controller()
+        bridge = qt_settings_app.vokie_bridge.VokieBridge(controller._config_root)
+        connection = mock.Mock()
+        with bridge._lock:
+            bridge._connection = connection
+            bridge._state = qt_settings_app.vokie_bridge.STATE_CONNECTED
+        disconnected = []
+        bridge.pluginDisconnected.connect(lambda: disconnected.append(True))
+
+        bridge._close_connection()
+        bridge._finish_connection(connection, True, "closed")
+
+        self.assertEqual(disconnected, [])
+
+    def test_vokie_bridge_reports_real_disconnect(self):
+        controller, _ = self._make_controller()
+        bridge = qt_settings_app.vokie_bridge.VokieBridge(controller._config_root)
+        connection = mock.Mock()
+        with bridge._lock:
+            bridge._connection = connection
+            bridge._state = qt_settings_app.vokie_bridge.STATE_CONNECTED
+        disconnected = []
+        bridge.pluginDisconnected.connect(lambda: disconnected.append(True))
+
+        bridge._finish_connection(connection, True, "closed")
+
+        self.assertEqual(disconnected, [True])
+        self.assertIsNone(bridge._connection)
+        self.assertEqual(bridge.state(), qt_settings_app.vokie_bridge.STATE_IDLE)
+
 
 @unittest.skipUnless(_HAS_PYSIDE6, _SKIP_REASON)
 class DiagnosticsControllerTests(unittest.TestCase):

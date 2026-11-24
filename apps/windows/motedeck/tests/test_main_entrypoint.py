@@ -28,9 +28,12 @@ from motedeck import (
     frida_compat,
     hid_elevation_windows,
     hid_helper_consumers,
+    interception_driver_install,
+    interception_runtime_windows,
     logging_setup,
     single_instance,
     windows_diagnostics,
+    winuhid_driver_install,
 )
 
 
@@ -150,7 +153,11 @@ class HidHelperMaintenanceEntrypointTests(unittest.TestCase):
                 return_value=hid_elevation_windows.HidHelperState(
                     True, "helper_kept_for_other_consumer"
                 ),
-            ) as uninstall:
+            ) as uninstall, mock.patch.object(
+                main_module,
+                "_uninstall_installed_input_drivers",
+                return_value=0,
+            ) as drivers:
                 result = main_module._uninstall_hid_helper()
 
         self.assertEqual(result, 0)
@@ -158,6 +165,7 @@ class HidHelperMaintenanceEntrypointTests(unittest.TestCase):
             root,
             hid_elevation_windows.request_uninstall_elevation,
         )
+        drivers.assert_called_once_with()
 
     def test_failed_uninstall_restores_the_current_consumer_marker(self):
         with tempfile.TemporaryDirectory() as raw:
@@ -172,7 +180,9 @@ class HidHelperMaintenanceEntrypointTests(unittest.TestCase):
                 ),
             ) as uninstall, mock.patch.object(
                 logging_setup, "write_parent_hid_helper_event"
-            ) as helper_log:
+            ) as helper_log, mock.patch.object(
+                main_module, "_uninstall_installed_input_drivers", return_value=0
+            ):
                 result = main_module._uninstall_hid_helper()
 
         self.assertEqual(
@@ -200,7 +210,9 @@ class HidHelperMaintenanceEntrypointTests(unittest.TestCase):
                 return_value=hid_elevation_windows.HidHelperState(
                     False, "current_account_cannot_self_elevate"
                 ),
-            ) as uninstall:
+            ) as uninstall, mock.patch.object(
+                main_module, "_uninstall_installed_input_drivers", return_value=0
+            ):
                 result = main_module._uninstall_hid_helper()
 
         self.assertEqual(
@@ -209,6 +221,79 @@ class HidHelperMaintenanceEntrypointTests(unittest.TestCase):
         uninstall.assert_called_once_with(
             root,
             hid_elevation_windows.request_uninstall_elevation,
+        )
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows-only driver cleanup")
+    def test_uninstall_removes_winuhid_when_it_is_installed(self):
+        with mock.patch.object(
+            winuhid_driver_install, "driver_installed", return_value=True
+        ), mock.patch.object(
+            winuhid_driver_install, "uninstall_driver"
+        ) as remove_winuhid, mock.patch.object(
+            interception_runtime_windows, "driver_installed", return_value=False
+        ), mock.patch.object(
+            interception_driver_install, "uninstall_driver"
+        ) as remove_interception:
+            result = main_module._uninstall_installed_input_drivers()
+
+        self.assertEqual(result, 0)
+        remove_winuhid.assert_called_once_with()
+        remove_interception.assert_not_called()
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows-only driver cleanup")
+    def test_uninstall_removes_interception_when_only_it_is_installed(self):
+        with mock.patch.object(
+            winuhid_driver_install, "driver_installed", return_value=False
+        ), mock.patch.object(
+            winuhid_driver_install, "uninstall_driver"
+        ) as remove_winuhid, mock.patch.object(
+            interception_runtime_windows, "driver_installed", return_value=True
+        ), mock.patch.object(
+            interception_driver_install, "uninstall_driver"
+        ) as remove_interception:
+            result = main_module._uninstall_installed_input_drivers()
+
+        self.assertEqual(result, 0)
+        remove_winuhid.assert_not_called()
+        remove_interception.assert_called_once_with()
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows-only driver cleanup")
+    def test_declined_driver_removal_reports_warning_code(self):
+        with mock.patch.object(
+            winuhid_driver_install, "driver_installed", return_value=True
+        ), mock.patch.object(
+            winuhid_driver_install,
+            "uninstall_driver",
+            side_effect=winuhid_driver_install.DriverInstallCancelledError(
+                "uac_cancelled"
+            ),
+        ), mock.patch.object(
+            interception_runtime_windows, "driver_installed", return_value=False
+        ):
+            result = main_module._uninstall_installed_input_drivers()
+
+        self.assertEqual(
+            result, main_module.INPUT_DRIVER_UNINSTALL_INCOMPLETE_EXIT_CODE
+        )
+
+    def test_helper_cleanup_still_succeeds_after_incomplete_driver_removal(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            with mock.patch.object(
+                config, "config_root", return_value=root
+            ), mock.patch.object(
+                main_module,
+                "_uninstall_installed_input_drivers",
+                return_value=main_module.INPUT_DRIVER_UNINSTALL_INCOMPLETE_EXIT_CODE,
+            ), mock.patch.object(
+                hid_helper_consumers,
+                "uninstall_current_distribution",
+                return_value=hid_elevation_windows.HidHelperState(True, ""),
+            ):
+                result = main_module._uninstall_hid_helper()
+
+        self.assertEqual(
+            result, main_module.INPUT_DRIVER_UNINSTALL_INCOMPLETE_EXIT_CODE
         )
 
     def test_hidden_install_mode_never_enters_the_desktop_guards(self):

@@ -478,9 +478,13 @@ class VokieBridge(QObject):
         except OSError:
             pass
         with self._lock:
-            if self._connection is connection:
+            # 只有当前连接结束时才算「插件断开」。stop()/主动断开会先把
+            # self._connection 清空，此时读线程收尾不能再误报一次断开，
+            # 否则退出或主动断开会被当成临时掉线处理。
+            current_connection = self._connection is connection
+            if current_connection:
                 self._connection = None
-            was_connected = self._state == STATE_CONNECTED
+            was_connected = current_connection and self._state == STATE_CONNECTED
             if was_connected:
                 self._state = (
                     STATE_LISTENING if self._server is not None else STATE_IDLE
