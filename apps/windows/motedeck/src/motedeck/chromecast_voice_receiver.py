@@ -10,6 +10,14 @@ import time
 from . import config
 from .chromecast_voice import Recording, GET_CAPABILITIES, CAPABILITIES_TIMEOUT, TAP_MAX_SECONDS, supported_capabilities
 
+# 冷启动时遥控器可能还在睡，Windows 要先把它唤醒才能完成 GATT 服务发现；
+# 首次只等 5 秒就判死会让整个会话都用不了语音。失败后按下面的间隔退避
+# 重试，每次探测超时逐次放宽（最后五次都是 15 秒），成功即停。
+VOICE_OPEN_RETRY_DELAYS = (2, 10, 30, 120, 300)
+VOICE_OPEN_ATTEMPT_TIMEOUTS = (5, 15, 15, 15, 15, 15)
+# 设备明确答复“不支持”这类结果与链路状态无关，重试不会变好。
+_DETERMINISTIC_VOICE_FAILURES = frozenset({"unsupported_voice_capabilities"})
+
 
 class VoiceReceiver:
     def __init__(self, device, send, *, detect_only=False, observation=None, direct_notifications=False):
@@ -74,22 +82,33 @@ class VoiceReceiver:
             self.pipe_failed = True  # Metadata delivery must not interrupt closing a stream.
 
     async def open(self):
+        self.available = False
+        attempts = len(VOICE_OPEN_ATTEMPT_TIMEOUTS)
+        for index in range(attempts):
+            if self.stopping:
+                break
+            if self.observation:
+                self.observation.stage("voice_open_begin")
+            try:
+                timeout = VOICE_OPEN_ATTEMPT_TIMEOUTS[index]
+                if self.direct_notifications:
+                    await self.device.open_voice(direct=True, discovery_timeout=timeout)
+                else:
+                    await self.device.open_voice(discovery_timeout=timeout)
+                if not self.detect_only:
+                    await self._negotiate()
+                self.available = True
+            except Exception as error:
+                self.available = False
+                self._record_attempt()
+                if index + 1 < attempts and self._retryable(error):
+                    await self._reset_failed_attempt()
+                    await asyncio.sleep(VOICE_OPEN_RETRY_DELAYS[index])
+                    continue
+                break
+            self._record_attempt()
+            break
         if self.observation:
-            self.observation.stage("voice_open_begin")
-        try:
-            if self.direct_notifications:
-                await self.device.open_voice(direct=True)
-            else:
-                await self.device.open_voice()
-            if not self.detect_only:
-                await self._negotiate()
-            self.available = True
-        except Exception:
-            self.available = False
-        if self.observation:
-            details = getattr(self.device, "voice_evidence", None)
-            if details:
-                self.observation.gatt(details)
             self.observation.stage("voice_ready" if self.available else "voice_unavailable")
         self.emit("available", 0, "ready" if self.available else "unavailable", time.monotonic())
         if self.available:
@@ -102,6 +121,36 @@ class VoiceReceiver:
                 self.notification(attribute, value, stamp)
         self._startup.clear()
         self._startup_bytes = 0
+
+    def _record_attempt(self):
+        if not self.observation:
+            return
+        details = getattr(self.device, "voice_evidence", None)
+        if details:
+            self.observation.gatt(details)
+
+    def _retryable(self, error):
+        if self.stopping:
+            return False
+        if isinstance(error, ValueError) and str(error) in _DETERMINISTIC_VOICE_FAILURES:
+            return False
+        # status 为 0 说明 Windows 已经答复、是布局对不上，不是链路没醒。
+        details = getattr(self.device, "voice_evidence", None) or {}
+        if details.get("step") in ("service", "characteristics") and details.get("status") == 0:
+            return False
+        return True
+
+    async def _reset_failed_attempt(self):
+        # 上一次可能已经订阅了一部分通知，重试前先释放，避免重复 add_value_changed。
+        try:
+            await self.device.reset_voice()
+        except Exception:
+            pass
+        self._startup.clear()
+        self._startup_bytes = 0
+        self._startup_overflow = False
+        self.capabilities = None
+        self._caps_event.clear()
 
     def effects(self, effects):
         for effect in effects:

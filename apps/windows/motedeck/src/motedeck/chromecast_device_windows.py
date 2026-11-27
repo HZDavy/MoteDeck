@@ -136,14 +136,14 @@ class SelectedDevice:
             service.close()
         return int(result.status) == 0, len(services)
 
-    async def open_voice(self, *, direct=False):
+    async def open_voice(self, *, direct=False, discovery_timeout=5):
         self.voice_evidence = dict(step="service", status=-1, tx=-1, audio=-1, control=-1,
             tx_handle=-1, audio_handle=-1, control_handle=-1, service_count=-1, characteristic_count=-1, mtu=-1)
         from winrt.windows.devices.bluetooth import BluetoothCacheMode
         from winrt.windows.devices.bluetooth.genericattributeprofile import GattCharacteristicProperties, GattWriteOption
         service_id = uuid.UUID("ab5e0001-5a21-4f05-bc7d-af01f617b664")
         result = await asyncio.wait_for(self.device.get_gatt_services_for_uuid_with_cache_mode_async(
-            service_id, BluetoothCacheMode.UNCACHED), 5)
+            service_id, BluetoothCacheMode.UNCACHED), discovery_timeout)
         services = list(result.services)
         self.voice_evidence["status"] = int(result.status)
         self.voice_evidence["service_count"] = len(services)
@@ -157,7 +157,7 @@ class SelectedDevice:
         except Exception:
             pass  # Read-only diagnostic; never create or configure a session.
         self.voice_evidence.update(step="characteristics", status=-1)
-        result = await asyncio.wait_for(self.voice_service.get_characteristics_with_cache_mode_async(BluetoothCacheMode.UNCACHED), 5)
+        result = await asyncio.wait_for(self.voice_service.get_characteristics_with_cache_mode_async(BluetoothCacheMode.UNCACHED), discovery_timeout)
         characteristics = {str(c.uuid).lower(): c for c in result.characteristics}
         self.voice_evidence["status"] = int(result.status)
         self.voice_evidence["characteristic_count"] = len(characteristics)
@@ -243,12 +243,21 @@ class SelectedDevice:
         tokens, self._voice_tokens = self._voice_tokens, []
         subscribed, self._voice_subscribed = self._voice_subscribed, []
         failed = False
+        # 设备已经掉线时写 CCCD 必然失败，这属于链路断开的预期结果，
+        # 不能把一次正常的自动重连判成清理失败。
+        connected = False
+        try:
+            from winrt.windows.devices.bluetooth import BluetoothConnectionStatus
+            connected = (self.device is not None
+                         and self.device.connection_status == BluetoothConnectionStatus.CONNECTED)
+        except Exception:
+            connected = False
         for characteristic, token in tokens:
             try:
                 characteristic.remove_value_changed(token)
             except Exception:
-                failed = True
-        if subscribed:
+                failed = failed or connected
+        if subscribed and connected:
             from winrt.windows.devices.bluetooth.genericattributeprofile import (
                 GattClientCharacteristicConfigurationDescriptorValue as CccdValue,
             )
@@ -262,6 +271,26 @@ class SelectedDevice:
                     failed = True
         if failed:
             raise PipeError("cleanup_failed")
+
+    async def reset_voice(self):
+        """清掉一次失败的语音发现留下的服务与订阅，供退避重试用。
+
+        只重置语音这一路，不动设备/watcher：HID 采集（驱动钩子或 GATT 直连）
+        共用同一个设备对象，整体关闭设备会把按键链路一起打断。
+        """
+
+        try:
+            await self.close_voice()
+        except Exception:
+            pass
+        service, self.voice_service = self.voice_service, None
+        self.voice_tx = None
+        self.voice_attributes = {}
+        if service is not None:
+            try:
+                service.close()
+            except Exception:
+                pass
 
     async def write_voice(self, command):
         from winrt.windows.devices.bluetooth import BluetoothConnectionStatus
@@ -284,16 +313,30 @@ class SelectedDevice:
             writer.close()
 
     def close(self):
+        # 设备对象可能在掉线后已经失效，逐项尽力释放，不让关闭动作反过来
+        # 把一次已确认的断线升级成 cleanup_failed。
         if self.voice_service:
             self.voice_tx = None
-            self.voice_service.close()
+            try:
+                self.voice_service.close()
+            except Exception:
+                pass
             self.voice_service = None
         if self.watcher:
             watcher, self.watcher = self.watcher, None
             for name, token in self.tokens:
-                getattr(watcher, "remove_" + name)(token)
+                try:
+                    getattr(watcher, "remove_" + name)(token)
+                except Exception:
+                    pass
             self.tokens.clear()
-            watcher.stop()
+            try:
+                watcher.stop()
+            except Exception:
+                pass
         if self.device:
             device, self.device = self.device, None
-            device.close()
+            try:
+                device.close()
+            except Exception:
+                pass

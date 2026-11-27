@@ -288,6 +288,8 @@ _PHYSICAL_KEY_REVISIONS: dict[int, int] = {}
 _PHYSICAL_KEY_LAST_EDGE_AT: dict[int, float] = {}
 _PHYSICAL_KEY_TRACKER_EPOCH = 0
 _PHYSICAL_KEY_TRACKER_ACTIVE = False
+# 同时持有跟踪状态的监听器数量：设备按键监听与“只跟踪物理键盘”监听各算一个。
+_PHYSICAL_KEY_TRACKER_OWNERS = 0
 _PHYSICAL_KEY_TRACKER_HEALTHY = False
 # A low-level hook may delay the Windows async state by up to one second.
 # Reconcile only an older hold; ordinary key transitions remain protected.
@@ -338,21 +340,30 @@ def _normalize_physical_keyboard_vk(
 
 
 def _set_physical_keyboard_tracker_active(active: bool) -> bool:
-    """Reset tracker ownership and return whether availability was lost."""
+    """Reset tracker ownership and return whether availability was lost.
+
+    可能同时存在两个监听器（设备按键监听 + 只跟踪物理键盘的监听），
+    用计数保证先停下的那个不会把另一个的可用状态一起关掉。
+    """
 
     global _PHYSICAL_KEY_TRACKER_ACTIVE, _PHYSICAL_KEY_TRACKER_HEALTHY
-    global _PHYSICAL_KEY_TRACKER_EPOCH
+    global _PHYSICAL_KEY_TRACKER_EPOCH, _PHYSICAL_KEY_TRACKER_OWNERS
     with _PHYSICAL_KEY_STATE_LOCK:
         was_available = (
             _PHYSICAL_KEY_TRACKER_ACTIVE and _PHYSICAL_KEY_TRACKER_HEALTHY
         )
-        _PHYSICAL_KEYS_BY_DEVICE.clear()
-        _PHYSICAL_KEY_OWNER_HISTORY.clear()
-        _PHYSICAL_KEY_LAST_EDGE_AT.clear()
-        _PHYSICAL_KEY_TRACKER_EPOCH += 1
-        _PHYSICAL_KEY_TRACKER_ACTIVE = bool(active)
-        _PHYSICAL_KEY_TRACKER_HEALTHY = bool(active)
-        return was_available and not active
+        if active:
+            _PHYSICAL_KEY_TRACKER_OWNERS += 1
+        else:
+            _PHYSICAL_KEY_TRACKER_OWNERS = max(0, _PHYSICAL_KEY_TRACKER_OWNERS - 1)
+        if active or _PHYSICAL_KEY_TRACKER_OWNERS == 0:
+            _PHYSICAL_KEYS_BY_DEVICE.clear()
+            _PHYSICAL_KEY_OWNER_HISTORY.clear()
+            _PHYSICAL_KEY_LAST_EDGE_AT.clear()
+            _PHYSICAL_KEY_TRACKER_EPOCH += 1
+        _PHYSICAL_KEY_TRACKER_ACTIVE = _PHYSICAL_KEY_TRACKER_OWNERS > 0
+        _PHYSICAL_KEY_TRACKER_HEALTHY = _PHYSICAL_KEY_TRACKER_ACTIVE
+        return was_available and not _PHYSICAL_KEY_TRACKER_ACTIVE
 
 
 def _mark_physical_keyboard_tracker_unhealthy() -> bool:

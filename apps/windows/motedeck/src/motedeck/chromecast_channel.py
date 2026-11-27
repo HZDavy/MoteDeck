@@ -29,7 +29,9 @@ _REASONS = frozenset({"source_unconfirmed", "unsupported_layout", "radio_ambiguo
     "input_interface_unavailable", "input_identity_unconfirmed",
     "permission_required", "sensitive_logging_disabled", "sensitive_logging_enable_failed", "configured", "capture_lost", "capture_failed",
     "peer_lost", "stopped", "connection_changed", "input_payload_unavailable",
-    "hid_source_unconfirmed", "hid_symbol_unavailable", "hid_capture_failed", "invalid_message"})
+    "hid_source_unconfirmed", "hid_symbol_unavailable", "hid_capture_failed",
+    "hid_symbol_no_public_pdb", "hid_gatt_unavailable",
+    "hid_host_detached", "hid_callback_failed", "hid_queue_overflow", "invalid_message"})
 DIAGNOSTIC_REASONS = _REASONS | STOP_REASONS | frozenset({"cleanup_unconfirmed", "cleanup_failed"})
 DIAGNOSTIC_STAGES = frozenset({"start", "selection", "logging", "device_open", "source_probe",
     "capture", "receive", "voice_open", "voice_tick", "voice_stop", "voice_close", "capture_stop", "device_close"})

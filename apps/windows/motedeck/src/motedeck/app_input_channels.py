@@ -581,6 +581,41 @@ class InputChannelsMixin:
         with self._raw_input_operation_lock:
             self._start_hid_listener_owned(recovering=recovering)
 
+    def _ensure_physical_keyboard_tracking_listener(self) -> None:
+        """Always keep a keyboard-only Raw Input listener for physical key state.
+
+        遥控器 HID 设备路径可能根本拿不到（按键由驱动拦截提供），而语音组合键
+        必须先确认“键是不是真的按着”才允许注入；没有这个监听器，Shift+D 这类
+        组合会被整体拒绝。它只跟踪键盘、不解码遥控器按键。
+        """
+        with self._raw_input_lifecycle_lock:
+            if getattr(self, "_raw_input_stopping", False):
+                return
+            current = getattr(self, "_raw_tracking_listener", None)
+            if current is not None and bool(getattr(current, "is_running", False)):
+                return
+        listener = raw_input_windows.RawInputButtonListener(lambda *args: None)
+        try:
+            listener.start(None)
+        except Exception:
+            self._logger.exception(
+                "startup: physical keyboard tracking listener unavailable"
+            )
+            return
+        with self._raw_input_lifecycle_lock:
+            if getattr(self, "_raw_input_stopping", False):
+                previous, self._raw_tracking_listener = listener, None
+            else:
+                previous, self._raw_tracking_listener = (
+                    getattr(self, "_raw_tracking_listener", None), listener)
+        if previous is not None and previous is not listener:
+            try:
+                previous.stop()
+            except Exception:
+                self._logger.exception(
+                    "startup: old physical keyboard tracking listener did not stop"
+                )
+
     def _set_raw_listener_state(self, state: str) -> None:
         if self._remote_profile == remote_selection.CHROMECAST_PROFILE:
             # The Chromecast receiver owns the device state (see
@@ -2246,6 +2281,16 @@ class InputChannelsMixin:
                     self._set_runtime_input_state(raw_input_state="stopped")
         else:
             self._set_runtime_input_state(raw_input_state="retained_for_cleanup")
+
+        with self._raw_input_lifecycle_lock:
+            tracking, self._raw_tracking_listener = self._raw_tracking_listener, None
+        if tracking is not None:
+            try:
+                tracking.stop()
+            except Exception:
+                self._logger.exception(
+                    "cleanup: physical keyboard tracking listener did not stop"
+                )
 
         with self._voice_shortcut.lock:
             self._accept_input_events = False

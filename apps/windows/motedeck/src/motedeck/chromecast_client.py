@@ -31,8 +31,13 @@ _MESSAGES = {
     "capture_lost": "谷歌遥控器接收数据有丢失，已取消当前按键；请重新启动服务并导出日志。",
     "input_payload_unavailable": "Windows 只提供了谷歌遥控器的按键包头，缺少按键内容，已停止接收；请导出日志核查。",
     "hid_source_unconfirmed": "未能确认所选谷歌遥控器的按键来源，已停止接收；请导出日志核查。",
-    "hid_symbol_unavailable": "未能定位当前蓝牙驱动的按键入口，已停止接收；请检查网络后重试或导出日志。",
+    "hid_symbol_unavailable": "未能下载当前蓝牙驱动的符号文件，已停止接收；请检查网络后重试或导出日志。",
+    "hid_symbol_no_public_pdb": "当前 Windows 蓝牙驱动版本没有公开符号，已改用备用接收通道；备用通道也失败时请导出日志。",
+    "hid_gatt_unavailable": "当前 Windows 蓝牙驱动版本没有公开符号，备用接收通道也未能建立；请导出日志，我们会在后续版本适配。",
     "hid_capture_failed": "谷歌按键接收没有取得可靠报告，已停止接收；请导出日志核查。",
+    "hid_host_detached": "谷歌遥控器与系统的连接断开了，正在自动重连；长时间未恢复请唤醒遥控器。",
+    "hid_callback_failed": "谷歌按键接收的底层回调异常，正在自动重连；持续失败请导出日志。",
+    "hid_queue_overflow": "谷歌按键接收出现积压，正在自动重连；持续失败请导出日志。",
     "stopped": "Chromecast 按键接收已停止。",
     "peer_identity_failed": "接收进程身份核对失败，本次未开始接收；请提供日志核查。",
     "pipe_connect_failed": "接收进程未能建立通信，本次未开始接收；请提供日志核查。",
@@ -44,13 +49,14 @@ def message(reason):
 
 
 class Client:
-    def __init__(self, entity, *, mode, on_edge, on_lost=None, on_voice=None):
+    def __init__(self, entity, *, mode, on_edge, on_lost=None, on_voice=None, on_reopen=None):
         if mode not in ("detect", "run", "setup") or (mode == "setup" and on_voice is not None):
             raise ValueError("invalid_mode")
         self.identity = SessionIdentity.create(entity)
         self.mode, self.on_edge = mode, on_edge
         self.on_lost = on_lost
         self.on_voice = on_voice
+        self.on_reopen = on_reopen
         self._voice_commands = queue.Queue(maxsize=32)
         self.cancel, self.finished, self.ready = threading.Event(), threading.Event(), threading.Event()
         self.thread = None
@@ -266,6 +272,14 @@ class Client:
                                                 event["time"], event["button"], event["action"]))
                     elif event["type"] == "diagnostic":
                         self._observe_diagnostic(event)
+                        # 接收进程自愈期间用 device_open 的 begin/done 表示
+                        # “正在重连 / 已重新连上”，主程序据此更新连接状态。
+                        if (self.on_reopen is not None and event["stage"] == "device_open"
+                                and self.ready.is_set()):
+                            if event["phase"] == "begin":
+                                self.on_reopen(False)
+                            elif event["phase"] == "done":
+                                self.on_reopen(True)
                         logging.getLogger("motedeck").info(
                             "Chromecast worker: stage=%s phase=%s reason=%s event_kind=%s attribute=%s length=%s report_code=%s tail_nonzero=%s acl_header_parsed=%s acl_issue=%s acl_flags=%s acl_handle=%s acl_boundary=%s acl_declared_length=%s acl_actual_length=%s acl_length_relation=%s acl_handle_valid=%s acl_reserved_flags_clear=%s acl_payload_nonempty=%s acl_length_match=%s l2cap_header_parsed=%s l2cap_declared_length=%s l2cap_cid=%s att_header_parsed=%s att_opcode=%s att_attribute=%s att_missing_length=%s capture_metadata_available=%s capture_layout=%s capture_event_id=%s capture_event_version=%s capture_user_data_length=%s capture_property_length=%s capture_extracted_length=%s capture_length_match=%s",
                             *(event[key] for key in (

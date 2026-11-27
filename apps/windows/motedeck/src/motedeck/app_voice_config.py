@@ -320,6 +320,11 @@ class VoiceConfigMixin:
             )
             return False
         if not win32_input.can_begin_tracked_hold(tokens):
+            # 遥控器按键走驱动拦截时拿不到 HID 设备路径，物理键盘跟踪会一起
+            # 缺失，含字母的语音组合键就会被整体拒绝。这里按需补一个只跟踪
+            # 键盘的监听，再重新判断一次。
+            self._ensure_physical_keyboard_tracking_listener()
+        if not win32_input.can_begin_tracked_hold(tokens):
             self._logger.warning(
                 "voice mapping ignored: physical keyboard tracking is unavailable "
                 "for shortcut=%s",

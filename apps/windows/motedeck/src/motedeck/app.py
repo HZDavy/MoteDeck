@@ -479,6 +479,9 @@ class RC003App(
         self._voice_raw_input_trigger_pending = False
         self._ble_session: Optional[ble_transport_winrt.RC003BleSession] = None
         self._hid_listener: Optional[raw_input_windows.RawInputButtonListener] = None
+        # 只跟踪物理键盘、不解析遥控器按键的监听器：设备路径缺失（驱动拦截模式）
+        # 时语音组合键仍需要它来判断按键是否真的按着。
+        self._raw_tracking_listener: Optional[raw_input_windows.RawInputButtonListener] = None
         self._raw_input_lifecycle_lock = threading.RLock()
         self._raw_input_operation_lock = threading.RLock()
         self._raw_input_generation = 0

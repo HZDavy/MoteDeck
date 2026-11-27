@@ -55,6 +55,18 @@ class ChromecastRuntime:
             return
         self.services.route_edge(edge)
 
+    def on_reopen(self, ready):
+        # 接收进程在同一个提权上下文里自愈：断开时显示等待设备，
+        # 重新附着成功后恢复“已连接”，不需要用户手动重启服务。
+        if self.stopping.is_set():
+            return
+        if ready:
+            self.services.set_input_state(raw_input_state="chromecast_ready", hid_tap_state="ready")
+            self.services.publish_status(bridge_runtime_status.BridgeConnectionState.CONNECTED)
+        else:
+            self.services.set_input_state(raw_input_state="chromecast_reconnecting", hid_tap_state="starting")
+            self.services.publish_status(bridge_runtime_status.BridgeConnectionState.WAITING_FOR_DEVICE)
+
     async def run(self) -> None:
         from .chromecast_client import Client, message
         self.services.set_input_state(raw_input_state="starting", hid_tap_state="starting",
@@ -63,7 +75,8 @@ class ChromecastRuntime:
         self.voice_host = self.services.create_voice_host()
         self.client = Client(self.services.selected_key(), mode="run", on_edge=self.on_edge,
                                   on_lost=self.cancel_input,
-                                  on_voice=self.voice_host.enqueue)
+                                  on_voice=self.voice_host.enqueue,
+                                  on_reopen=self.on_reopen)
         self.voice_host.start(self.client)
         try:
             # Keyboard ownership is shared safety infrastructure, not the

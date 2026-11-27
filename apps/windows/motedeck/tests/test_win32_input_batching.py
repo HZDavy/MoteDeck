@@ -1197,6 +1197,8 @@ class VoiceRightAltOwnershipTests(unittest.TestCase):
             self.assertFalse(self.raw.physical_key_has_ambiguous_owners(self.ralt))
             win32_input.send_voice_key_combo_down(("ralt",))
             win32_input.send_voice_key_combo_up(("ralt",))
+        # 上面第二遍用「重新激活」触发清空；跟踪状态按引用计数，补回这次占用。
+        self.raw._set_physical_keyboard_tracker_active(False)
 
 
 class MarkedVoiceEventConfirmationTests(unittest.TestCase):

@@ -89,6 +89,19 @@ def valid_record(row):
                 and isinstance(counts, dict) and set(counts) == COUNTERS
                 and all(_integer(v) for v in counts.values())
                 and _integer(row["audio_min"], 0, 4096) and _integer(row["audio_max"], 0, 4096))
+    if kind == "symbol_probe":
+        # 驱动构建哈希与符号解析结果：只含系统 DLL 的公开指纹，不含用户名/路径。
+        return (set(row) == {"kind", "elapsed_ms", "state", "sha256", "pdb_index",
+                            "http_status", "pdb_bytes"}
+                and _integer(row["elapsed_ms"])
+                and row["state"] in {"match", "resolved", "no_public_pdb",
+                                    "download_failed", "symbol_missing"}
+                and isinstance(row["sha256"], str) and len(row["sha256"]) == 64
+                and all(c in "0123456789abcdef" for c in row["sha256"])
+                and isinstance(row["pdb_index"], str) and len(row["pdb_index"]) <= 40
+                and all(c in "0123456789ABCDEF" for c in row["pdb_index"])
+                and _integer(row["http_status"], -1, 599)
+                and _integer(row["pdb_bytes"], -1, 2_097_152))
     if kind == "stage":
         return (set(row) == {"kind", "elapsed_ms", "stage"}
                 and _integer(row["elapsed_ms"]) and row["stage"] in STAGES)
@@ -133,6 +146,11 @@ class Observation:
         self._send(dict(kind="source_probe", elapsed_ms=max(0, self._ms(now)), state=state,
                         duration_ms=max(0, min(MAX_COUNT, round((now - started) * 1000))),
                         status=status, services=services, hresult=hresult))
+
+    def symbol_probe(self, state, *, sha256, pdb_index="", http_status=-1, pdb_bytes=-1):
+        self._send(dict(kind="symbol_probe", elapsed_ms=max(0, self._ms(self.clock())),
+                        state=state, sha256=sha256, pdb_index=pdb_index,
+                        http_status=http_status, pdb_bytes=pdb_bytes))
 
     def source_state(self, **data):
         self._send(dict(kind="source_state", elapsed_ms=max(0, self._ms(self.clock())), **data))

@@ -25,6 +25,13 @@ from . import remote_layout, remote_selection
 MODULE = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "drivers" / "umdf" / "microsoft.bluetooth.profiles.hidovergatt.dll"
 _TESTED_SHA256 = "8a18571ddfa447bd590354ccdf7800b815a098806359ab195d395158f9d07cc5"
 _TESTED_RVA = 0x12FCC
+# 已验证构建：DLL 的 SHA256 -> 按键回调 RVA。新增适配时在这里加一行即可，
+# 没有登记的构建继续走微软公开 PDB。地址必须来自该构建本身的符号或实测，
+# 不能靠猜，否则可能 hook 到别的函数。
+_KNOWN_BUILD_RVAS = {_TESTED_SHA256: _TESTED_RVA}
+# 微软确认该构建没有发布符号时记住结果，避免同一进程里反复下载同一个 404。
+_PDB_FAILURES = {}
+SYMBOL_REASONS = frozenset({"hid_symbol_unavailable", "hid_symbol_no_public_pdb"})
 _HID_SERVICE = "{00001812-0000-1000-8000-00805f9b34fb}"
 # A: eight-byte reports; B: two-byte Consumer usages from the same model family.
 _GOOGLE_HARDWARE = (
@@ -108,28 +115,59 @@ def _symbol_cache() -> Path:
     return Path(root) / "RemoteMic" / "HidSymbols"
 
 
-def _ensure_pdb(module: Path) -> Path:
-    name, index = _pdb_identity(module)
+def _record_symbol(record, state, sha256, pdb_index="", http_status=-1, pdb_bytes=-1):
+    """把符号解析结果交给调用方写进诊断日志；只接受合法格式，避免污染证据。"""
+    if record is None or not re.fullmatch(r"[0-9a-f]{64}", sha256):
+        return
+    try:
+        record(state=state, sha256=sha256, pdb_index=pdb_index,
+               http_status=http_status, pdb_bytes=pdb_bytes)
+    except Exception:
+        pass
+
+
+def _ensure_pdb(module: Path, digest: str, record=None) -> tuple[Path, str]:
+    try:
+        name, index = _pdb_identity(module)
+    except TapError:
+        _record_symbol(record, "download_failed", digest)
+        raise
+    cached = _PDB_FAILURES.get(digest)
+    if cached is not None:
+        _record_symbol(record, "no_public_pdb", digest, index, 404)
+        raise TapError(cached)
     target = _symbol_cache() / name / index / name
     if target.is_file() and target.stat().st_size <= 2_097_152 and target.read_bytes()[:32].startswith(b"Microsoft C/C++ MSF 7.00"):
-        return target
+        return target, index
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_name(f"{name}.{os.getpid()}.{threading.get_ident()}.tmp")
     url = f"https://msdl.microsoft.com/download/symbols/{name}/{index}/{name}"
     curl = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "curl.exe"
+    status = -1
     try:
         result = subprocess.run(
-            [str(curl), "--fail", "--location", "--silent", "--show-error", "--max-time", "15",
-             "--max-filesize", "2097152", "--output", str(temporary), url],
+            [str(curl), "--location", "--silent", "--show-error", "--max-time", "15",
+             "--max-filesize", "2097152", "--write-out", "%{http_code}",
+             "--output", str(temporary), url],
             capture_output=True, timeout=18, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
+        text = result.stdout.decode("ascii", "ignore").strip()
+        status = int(text) if text.isdigit() else -1
         if result.returncode or not temporary.is_file() or not 100_000 <= temporary.stat().st_size <= 2_097_152:
+            if status == 404:
+                # 404 表示微软没有公开这个构建的 PDB，重试不会改变结果。
+                _PDB_FAILURES[digest] = "hid_symbol_no_public_pdb"
+                _record_symbol(record, "no_public_pdb", digest, index, status)
+                raise TapError("hid_symbol_no_public_pdb")
+            _record_symbol(record, "download_failed", digest, index, status)
             raise TapError("hid_symbol_unavailable")
         if not temporary.read_bytes()[:32].startswith(b"Microsoft C/C++ MSF 7.00"):
+            _record_symbol(record, "download_failed", digest, index, status)
             raise TapError("hid_symbol_unavailable")
         os.replace(temporary, target)
-        return target
+        return target, index
     except (OSError, subprocess.TimeoutExpired) as exc:
+        _record_symbol(record, "download_failed", digest, index, status)
         raise TapError("hid_symbol_unavailable") from exc
     finally:
         temporary.unlink(missing_ok=True)
@@ -146,8 +184,9 @@ class _SymbolInfo(ctypes.Structure):
                 ("Name", wintypes.WCHAR * 1)]
 
 
-def _resolve_pdb_symbol(module: Path) -> int:
-    _ensure_pdb(module)
+def _resolve_pdb_symbol(module: Path, digest: str, record=None) -> int:
+    target, index = _ensure_pdb(module, digest, record)
+    size = target.stat().st_size
     dbghelp = ctypes.WinDLL("dbghelp", use_last_error=True)
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel32.GetCurrentProcess.restype = wintypes.HANDLE
@@ -163,10 +202,12 @@ def _resolve_pdb_symbol(module: Path) -> int:
     dbghelp.SymCleanup.argtypes = (wintypes.HANDLE,)
     dbghelp.SymCleanup.restype = wintypes.BOOL
     if not dbghelp.SymInitializeW(process, str(_symbol_cache()), False):
+        _record_symbol(record, "symbol_missing", digest, index, 200, size)
         raise TapError("hid_symbol_unavailable")
     try:
         base = dbghelp.SymLoadModuleExW(process, None, str(module), None, 0, 0, None, 0)
         if not base:
+            _record_symbol(record, "symbol_missing", digest, index, 200, size)
             raise TapError("hid_symbol_unavailable")
         matches = []
         callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, ctypes.POINTER(_SymbolInfo), wintypes.ULONG, wintypes.LPVOID)
@@ -180,15 +221,24 @@ def _resolve_pdb_symbol(module: Path) -> int:
 
         callback = callback_type(collect)
         if not dbghelp.SymEnumSymbolsW(process, base, "*", callback, None) or len(matches) != 1:
+            _record_symbol(record, "symbol_missing", digest, index, 200, size)
             raise TapError("hid_symbol_unavailable")
+        _record_symbol(record, "resolved", digest, index, 200, size)
         return matches[0]
     finally:
         dbghelp.SymCleanup(process)
 
 
-def callback_rva(module: Path = MODULE) -> int:
-    digest = hashlib.sha256(module.read_bytes()).hexdigest()
-    rva = _TESTED_RVA if digest == _TESTED_SHA256 else _resolve_pdb_symbol(module)
+def callback_rva(module: Path = MODULE, record=None) -> int:
+    try:
+        digest = hashlib.sha256(module.read_bytes()).hexdigest()
+    except OSError as exc:
+        raise TapError("hid_symbol_unavailable") from exc
+    rva = _KNOWN_BUILD_RVAS.get(digest)
+    if rva is None:
+        rva = _resolve_pdb_symbol(module, digest, record)
+    else:
+        _record_symbol(record, "match", digest)
     import pefile
 
     image = pefile.PE(str(module), fast_load=True)
@@ -287,6 +337,10 @@ class HidTap:
         self.overflow = threading.Event()
         self.session = self.script = None
         self.pid = self.address = None
+        self.symbol = None
+
+    def _note_symbol(self, **row):
+        self.symbol = row
 
     def _put(self, event):
         try:
@@ -298,7 +352,8 @@ class HidTap:
     def start(self):
         import frida
         pid, address = selected_host_and_address(self.entity)
-        rva = callback_rva()
+        self.symbol = None
+        rva = callback_rva(record=self._note_symbol)
         source = (_SCRIPT.replace("__PATH__", json.dumps(str(MODULE).lower().replace("\\", "/")))
                  .replace("__ADDRESS__", json.dumps(list(bytes.fromhex(address)[::-1])))
                  .replace("__RVA__", str(rva))
