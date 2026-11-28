@@ -246,5 +246,64 @@ class SemanticApplicationActionTests(unittest.TestCase):
         self.assertEqual(calls, [])
 
 
+class CloseApplicationTests(unittest.TestCase):
+    def _action(self, mode, target=""):
+        return key_mapping.ButtonAction(
+            key_mapping.ActionKind.CLOSE_APPLICATION,
+            target=target,
+            close_mode=mode,
+        )
+
+    def test_specified_mode_closes_every_matching_window(self):
+        posted = []
+        self.assertTrue(
+            action_executor.close_configured_application(
+                self._action(key_mapping.CLOSE_MODE_SPECIFIED, "chrome.exe"),
+                windows_for_target=lambda target: (11, 22),
+                post_close=lambda hwnd: posted.append(hwnd) or True,
+            )
+        )
+        self.assertEqual(posted, [11, 22])
+
+    def test_current_mode_closes_the_foreground_window(self):
+        posted = []
+        self.assertTrue(
+            action_executor.close_configured_application(
+                self._action(key_mapping.CLOSE_MODE_CURRENT),
+                foreground_window=lambda: 33,
+                post_close=lambda hwnd: posted.append(hwnd) or True,
+            )
+        )
+        self.assertEqual(posted, [33])
+
+    def test_no_matching_window_reports_unavailable(self):
+        self.assertFalse(
+            action_executor.close_configured_application(
+                self._action(key_mapping.CLOSE_MODE_SPECIFIED, "chrome.exe"),
+                windows_for_target=lambda target: (),
+                post_close=lambda hwnd: True,
+            )
+        )
+
+    def test_no_foreground_window_reports_unavailable(self):
+        posted = []
+        self.assertFalse(
+            action_executor.close_configured_application(
+                self._action(key_mapping.CLOSE_MODE_CURRENT),
+                foreground_window=lambda: 0,
+                post_close=lambda hwnd: posted.append(hwnd) or True,
+            )
+        )
+        self.assertEqual(posted, [])
+
+    def test_other_actions_are_not_closed(self):
+        self.assertFalse(
+            action_executor.close_configured_application(
+                key_mapping.ButtonAction(key_mapping.ActionKind.ESCAPE),
+                post_close=lambda hwnd: True,
+            )
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

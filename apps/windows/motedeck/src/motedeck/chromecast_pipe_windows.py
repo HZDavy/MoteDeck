@@ -42,9 +42,18 @@ def _bind(dll, name, result, *arguments):
     return function
 
 
+_API = None
+
+
 def api():
+    global _API
     if sys.platform != "win32":
         raise PipeError("windows_only")
+    if _API is not None:
+        # The peer identity is re-verified once per second while connected.
+        # Re-loading kernel32/advapi32 on every check leaked module handles
+        # over long runs, so bind them once per process.
+        return _API
     k = C.WinDLL("kernel32", use_last_error=True)
     a = C.WinDLL("advapi32", use_last_error=True)
     _bind(k, "CloseHandle", W.BOOL, W.HANDLE)
@@ -70,7 +79,8 @@ def api():
     _bind(a, "ConvertSidToStringSidW", W.BOOL, C.c_void_p, C.POINTER(W.LPWSTR))
     _bind(a, "ConvertStringSecurityDescriptorToSecurityDescriptorW", W.BOOL,
           W.LPCWSTR, W.DWORD, C.POINTER(C.c_void_p), C.c_void_p)
-    return k, a
+    _API = (k, a)
+    return _API
 
 
 @dataclass(frozen=True)

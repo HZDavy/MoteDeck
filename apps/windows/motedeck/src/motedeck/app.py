@@ -65,6 +65,7 @@ import time
 import uuid
 from typing import List, Optional, Tuple
 from . import __version__
+from . import input_focus_windows
 from . import (
     atomic_files,
     audio_output,
@@ -694,9 +695,27 @@ class RC003App(
                 )
             elif action.kind == key_mapping.ActionKind.QUICKER_URI:
                 action_executor.open_quicker_uri(action)
+            elif action.kind == key_mapping.ActionKind.FOCUS_INPUT:
+                # 扫描 UIA / 点击录制位置可能耗时，交给后台线程；只有
+                # 「应用快捷键」模式直接在按键回调里发键。
+                if action.focus_mode == key_mapping.FOCUS_MODE_SHORTCUT:
+                    win32_input.send_key_combo_tap(action.focus_keys)
+                else:
+                    input_focus_windows.request_focus_action(
+                        action, on_failure=self._show_focus_input_hint
+                    )
+            elif action.kind == key_mapping.ActionKind.COMPOSITE:
+                self._start_composite_action(action)
             elif action.kind == key_mapping.ActionKind.OPENMEXIA_DEVICE:
                 # 网络请求交给后台线程，输入回调里只负责排队。
                 self._openmexia_runner.submit(action.device, action.op)
+            elif action.kind == key_mapping.ActionKind.CLOSE_APPLICATION:
+                if not action_executor.close_configured_application(action):
+                    action_error = "application_unavailable"
+                    self._logger.warning(
+                        "close application action unavailable: mode=%s",
+                        action.close_mode,
+                    )
             elif action_executor.is_application_action(action):
                 if not open_configured_application(action):
                     action_error = "application_unavailable"
@@ -741,6 +760,58 @@ class RC003App(
                 error_type=action_error_type,
             )
             self._diagnostic_trace.set_current_action(None)
+
+    def _show_focus_input_hint(self) -> None:
+        """自动识别不到输入框时，提示改用「记录点击位置」。
+
+        Electron 应用默认不建无障碍树，UIA 只扫得到窗口骨架，按键看上去
+        毫无反应；给一个可见提示，用户才知道该换模式而不是以为坏了。
+        """
+
+        theme = config.voice_cycle_toast_theme(self._config)
+        if theme == config.VOICE_CYCLE_TOAST_OFF:
+            return
+        try:
+            self._voice_mode_toast.show(
+                "读不到输入框，请改用「记录点击位置」",
+                theme,
+                config.voice_cycle_toast_offset(self._config),
+            )
+        except BaseException as exc:  # noqa: BLE001 - the hint is best effort
+            self._logger.warning(
+                "focus input hint failed: error_type=%s", type(exc).__name__
+            )
+
+    def _start_composite_action(self, action: key_mapping.ButtonAction) -> None:
+        """按顺序执行组合动作；放到后台线程里，避免等待启动/聚焦时卡住按键。"""
+
+        steps = tuple(action.steps)
+        if not steps:
+            return
+
+        def _run() -> None:
+            for index, step in enumerate(steps):
+                try:
+                    with self._button_action_lock:
+                        self._apply_button_action_locked(step)
+                except Exception:
+                    self._logger.exception(
+                        "composite action step failed: index=%s kind=%s",
+                        index,
+                        step.kind.value,
+                    )
+                if index == len(steps) - 1:
+                    continue
+                # 启动应用后要先让窗口出来，再执行下一步（典型的
+                # 「打开应用 → 聚焦输入框」）；其余动作之间只留很短间隔。
+                if step.kind in key_mapping.APPLICATION_ACTIONS:
+                    time.sleep(1.2)
+                else:
+                    time.sleep(0.12)
+
+        threading.Thread(
+            target=_run, name="motedeck-composite-action", daemon=True
+        ).start()
 
     def _on_control_event(
         self,

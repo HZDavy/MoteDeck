@@ -457,6 +457,11 @@ class _AppWiringTestCase(unittest.TestCase):
         self.app._voice_shortcut.timer_factory = (
             voice_hotkey_release_timer_factory
         )
+        # The voice repeat/guard are long-lived worker threads now. Park them
+        # so a hold left open by one test cannot inject keys into the next
+        # test's backend.
+        self.app._voice_shortcut._repeat_initial_delay = 3600.0
+        self.app._voice_shortcut._mute_poll_seconds = 3600.0
 
     def _use_recorded_repeat_timers(self):
         timers = []
@@ -482,6 +487,8 @@ class _AppWiringTestCase(unittest.TestCase):
             self.app._cancel_voice_hold_watchdog_locked()
             self.app._voice_shortcut.retry_stopping = True
             self.app._voice_shortcut.cancel_release_retry(reset_delay=False)
+            self.app._voice_shortcut._stop_hold_repeat_locked()
+            self.app._voice_shortcut._stop_mute_guard_locked()
         with self.app._voice_key_physicalizer_lifecycle_lock:
             self.app._voice_key_physicalizer_stopping = True
             self.app._cancel_voice_key_physicalizer_retry_locked()
@@ -2901,6 +2908,10 @@ class OrdinaryButtonGestureWiringTests(_AppWiringTestCase):
                 app_module, "open_configured_application", return_value=True
             )))
             effects.append(stack.enter_context(mock.patch.object(
+                app_module.input_focus_windows,
+                "request_focus_action",
+            )))
+            effects.append(stack.enter_context(mock.patch.object(
                 app_module.element_navigation_control_windows,
                 "toggle_element_navigation",
                 return_value=app_module.element_navigation_control_windows.ToggleResult(
@@ -2922,6 +2933,26 @@ class OrdinaryButtonGestureWiringTests(_AppWiringTestCase):
                                     "up", trigger, option
                                 ),
                             )
+                    elif settings_ui.is_close_application_choice_text(option):
+                        # 裸「关闭应用」只用来展开方式选择，必须先选好方式。
+                        for trigger in ("single_click", "double_click"):
+                            self.assertIn(
+                                "请先选择要关闭的应用程序",
+                                settings_ui.button_action_validation_message(
+                                    "up", trigger, option
+                                ),
+                            )
+                        continue
+                    elif option == "组合动作":
+                        # 裸「组合动作」只用来打开编辑弹窗，必须先添加步骤。
+                        for trigger in ("single_click", "double_click"):
+                            self.assertIn(
+                                "请先编辑组合动作",
+                                settings_ui.button_action_validation_message(
+                                    "up", trigger, option
+                                ),
+                            )
+                        continue
                     else:
                         self.assertEqual(settings_ui.button_action_validation_message(
                             "up", "single_click", option
@@ -2940,6 +2971,38 @@ class OrdinaryButtonGestureWiringTests(_AppWiringTestCase):
                     before = sum(effect.call_count for effect in effects)
                     self.app._apply_button_action(action)
                     self.assertEqual(sum(effect.call_count for effect in effects), before + 1)
+
+    def test_focus_input_failure_shows_a_visible_hint(self):
+        recorder = mock.Mock()
+        self.app._voice_mode_toast = recorder
+        self.app._config["voice_cycle_toast_theme"] = config.VOICE_CYCLE_TOAST_DARK
+        self.app._show_focus_input_hint()
+        recorder.show.assert_called_once()
+        self.assertIn("记录点击位置", recorder.show.call_args[0][0])
+        # 用户把气泡主题设成「关闭」时也不再弹，尊重既有设置。
+        self.app._config["voice_cycle_toast_theme"] = config.VOICE_CYCLE_TOAST_OFF
+        self.app._show_focus_input_hint()
+        recorder.show.assert_called_once()
+
+    def test_focus_request_reports_failure_to_the_ui(self):
+        failures = []
+        done = threading.Event()
+
+        def on_failure():
+            failures.append(True)
+            done.set()
+
+        with mock.patch.object(
+            app_module.input_focus_windows,
+            "execute_focus_action",
+            return_value=False,
+        ):
+            app_module.input_focus_windows.request_focus_action(
+                key_mapping.ButtonAction(key_mapping.ActionKind.FOCUS_INPUT),
+                on_failure=on_failure,
+            )
+            self.assertTrue(done.wait(2.0))
+        self.assertEqual(len(failures), 1)
 
     def test_physical_mouse_hold_skips_click_without_recording_cleanup_debt(self):
         with mock.patch.object(

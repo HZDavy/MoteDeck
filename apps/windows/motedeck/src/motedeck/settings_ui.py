@@ -30,7 +30,7 @@ from __future__ import annotations
 import copy
 import re
 from dataclasses import dataclass, replace
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from . import (
     audio_output,
@@ -83,6 +83,56 @@ def application_target_for_launch_text(text: object) -> str:
     return value[len(_LAUNCH_APPLICATION_PREFIX):].strip()
 
 
+# 通用「关闭应用」动作的显示文本：先选关闭方式，再决定关哪个程序。
+_CLOSE_APPLICATION_DISPLAY = "关闭应用"
+_CLOSE_APPLICATION_CURRENT_DISPLAY = "关闭当前应用"
+_CLOSE_APPLICATION_SPECIFIED_PREFIX = "关闭指定应用："
+
+
+def close_application_text(mode: object, target: object = "") -> str:
+    """返回「关闭应用」动作在界面上显示、并在存档里往返的文本。"""
+
+    if key_mapping.normalize_close_mode(mode) == key_mapping.CLOSE_MODE_CURRENT:
+        return _CLOSE_APPLICATION_CURRENT_DISPLAY
+    text = str(target or "").strip()
+    return (
+        f"{_CLOSE_APPLICATION_SPECIFIED_PREFIX}{text}"
+        if text
+        else _CLOSE_APPLICATION_DISPLAY
+    )
+
+
+def is_close_application_text(text: object) -> bool:
+    """判断一行动作文本是不是通用「关闭应用」动作。"""
+
+    value = str(text or "").strip()
+    return (
+        value == _CLOSE_APPLICATION_DISPLAY
+        or value == _CLOSE_APPLICATION_CURRENT_DISPLAY
+        or value.startswith(_CLOSE_APPLICATION_SPECIFIED_PREFIX)
+    )
+
+
+def is_close_application_choice_text(text: object) -> bool:
+    """判断是不是下拉里的「关闭应用」入口（还没选关闭方式）。"""
+
+    return str(text or "").strip() == _CLOSE_APPLICATION_DISPLAY
+
+
+def close_application_mode_for_text(text: object) -> str:
+    value = str(text or "").strip()
+    if value == _CLOSE_APPLICATION_CURRENT_DISPLAY:
+        return key_mapping.CLOSE_MODE_CURRENT
+    return key_mapping.CLOSE_MODE_SPECIFIED
+
+
+def close_application_target_for_text(text: object) -> str:
+    value = str(text or "").strip()
+    if not value.startswith(_CLOSE_APPLICATION_SPECIFIED_PREFIX):
+        return ""
+    return value[len(_CLOSE_APPLICATION_SPECIFIED_PREFIX):].strip()
+
+
 # Reference action names map to semantic values.  The Windows implementation
 # is intentionally behind these values; the dropdown must never turn
 # ``方向上`` back into a generic ``key_combo`` just because the platform uses
@@ -123,6 +173,8 @@ _REFERENCE_ACTION_LABELS: Dict[key_mapping.ActionKind, str] = {
     key_mapping.ActionKind.OPEN_CHROME: "打开 Chrome",
     key_mapping.ActionKind.OPEN_EDGE: "打开 Edge",
     key_mapping.ActionKind.OPEN_ZED: "打开 Zed",
+    key_mapping.ActionKind.FOCUS_INPUT: "聚焦输入框",
+    key_mapping.ActionKind.COMPOSITE: "组合动作",
 }
 _REFERENCE_ACTION_KINDS_BY_LABEL: Dict[str, key_mapping.ActionKind] = {
     label: action_kind for action_kind, label in _REFERENCE_ACTION_LABELS.items()
@@ -176,9 +228,9 @@ ACTION_OPTION_GROUPS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
         ),
     ),
     ("语音", ("语音模式切换",)),
-    # 只有一个通用入口：具体启动哪个程序在按键弹窗里用「选择应用」指定。
-    ("应用", (_LAUNCH_APPLICATION_DISPLAY,)),
-    ("其他", ("禁用",)),
+    # 通用入口：具体启动哪个程序在按键弹窗里用「选择应用」指定。
+    ("应用", (_LAUNCH_APPLICATION_DISPLAY, _CLOSE_APPLICATION_DISPLAY)),
+    ("其他", ("聚焦输入框", "组合动作", "禁用")),
 )
 
 _PRESET_KEY_COMBOS = tuple(
@@ -412,6 +464,16 @@ def _action_to_display(action: key_mapping.ButtonAction) -> str:
         return " · ".join(part for part in (action.device, action.op) if part)
     if action.kind == key_mapping.ActionKind.OPEN_APPLICATION:
         return application_launch_text(action.target)
+    if action.kind == key_mapping.ActionKind.CLOSE_APPLICATION:
+        return close_application_text(action.close_mode, action.target)
+    if action.kind == key_mapping.ActionKind.COMPOSITE:
+        text = composite_action_text(action.steps)
+        register_composite_steps(text, action.steps)
+        return text
+    if action.kind == key_mapping.ActionKind.FOCUS_INPUT:
+        text = focus_action_text(action)
+        register_focus_action(text, action)
+        return text
     reference_label = _REFERENCE_ACTION_LABELS.get(action.kind)
     if reference_label is not None:
         return reference_label
@@ -421,6 +483,106 @@ def _action_to_display(action: key_mapping.ButtonAction) -> str:
     if legacy_action is not None:
         return _REFERENCE_ACTION_LABELS[legacy_action.kind]
     return "+".join(action.keys)
+
+
+COMPOSITE_DISPLAY_PREFIX = "组合动作："
+_MAX_COMPOSITE_TEXT_LENGTH = 300
+
+# 组合动作在按键页里用一行文字展示（「组合动作：打开应用 → 聚焦输入框」），
+# 真正的子动作列表按这行文字登记在这里。加载配置时由 _action_to_display
+# 自动登记，用户新编辑的组合动作在确认时登记，保存时再按文字取回。
+_COMPOSITE_STEPS_BY_TEXT: Dict[str, Tuple[key_mapping.ButtonAction, ...]] = {}
+
+
+def composite_action_text(steps: Sequence[key_mapping.ButtonAction]) -> str:
+    parts = [_action_to_display(step) for step in steps]
+    return (COMPOSITE_DISPLAY_PREFIX + " → ".join(parts))[:_MAX_COMPOSITE_TEXT_LENGTH]
+
+
+def register_composite_steps(
+    text: str, steps: Sequence[key_mapping.ButtonAction]
+) -> None:
+    clean = str(text or "").strip()
+    if not clean.startswith(COMPOSITE_DISPLAY_PREFIX):
+        return
+    _COMPOSITE_STEPS_BY_TEXT[clean] = tuple(steps)
+
+
+def composite_steps_for_text(
+    text: str,
+) -> Tuple[key_mapping.ButtonAction, ...]:
+    return _COMPOSITE_STEPS_BY_TEXT.get(str(text or "").strip(), ())
+
+
+def is_composite_action_text(text: object) -> bool:
+    clean = str(text or "").strip()
+    return clean == _REFERENCE_ACTION_LABELS[
+        key_mapping.ActionKind.COMPOSITE
+    ] or clean.startswith(COMPOSITE_DISPLAY_PREFIX)
+
+
+def is_focus_input_action_text(text: object) -> bool:
+    return str(text or "").strip().startswith(
+        _REFERENCE_ACTION_LABELS[key_mapping.ActionKind.FOCUS_INPUT]
+    )
+
+
+_FOCUS_ACTIONS_BY_TEXT: Dict[str, key_mapping.ButtonAction] = {}
+
+
+def focus_action_text(action: key_mapping.ButtonAction) -> str:
+    label = _REFERENCE_ACTION_LABELS[key_mapping.ActionKind.FOCUS_INPUT]
+    mode = key_mapping.normalize_focus_mode(action.focus_mode)
+    if mode == key_mapping.FOCUS_MODE_ELEMENT:
+        return f"{label}（学习输入框）"
+    if mode == key_mapping.FOCUS_MODE_SHORTCUT:
+        keys = "+".join(action.focus_keys)
+        return f"{label}（快捷键 {keys}）"
+    if mode == key_mapping.FOCUS_MODE_POINT:
+        x = round(float(action.focus_point[0]) * 100)
+        y = round(float(action.focus_point[1]) * 100)
+        return f"{label}（记录位置 {x}%, {y}%）"
+    return label
+
+
+def register_focus_action(text: str, action: key_mapping.ButtonAction) -> None:
+    clean = str(text or "").strip()
+    if clean.startswith(_REFERENCE_ACTION_LABELS[key_mapping.ActionKind.FOCUS_INPUT]):
+        _FOCUS_ACTIONS_BY_TEXT[clean] = action
+
+
+def focus_action_for_text(text: str) -> Optional[key_mapping.ButtonAction]:
+    return _FOCUS_ACTIONS_BY_TEXT.get(str(text or "").strip())
+
+
+# 「组合动作」弹窗里可添加的子动作。param 告诉界面这一项还要不要额外
+# 输入：application = 程序名/路径，hotkey = 快捷键，none = 直接可用。
+COMPOSITE_STEP_CATALOG: Tuple[Tuple[str, str, str], ...] = (
+    (key_mapping.ActionKind.OPEN_APPLICATION.value, _LAUNCH_APPLICATION_DISPLAY, "application"),
+    (key_mapping.ActionKind.FOCUS_INPUT.value, "聚焦输入框", "none"),
+    (key_mapping.ActionKind.KEY_COMBO.value, "快捷键", "hotkey"),
+    (key_mapping.ActionKind.SHOW_DESKTOP.value, "显示桌面", "none"),
+    (key_mapping.ActionKind.APP_SWITCHER.value, "应用切换", "none"),
+    (key_mapping.ActionKind.CONTEXT_MENU.value, "右键菜单", "none"),
+    (key_mapping.ActionKind.SYSTEM_VOLUME_UP.value, "系统音量 +", "none"),
+    (key_mapping.ActionKind.SYSTEM_VOLUME_DOWN.value, "系统音量 −", "none"),
+    (key_mapping.ActionKind.SYSTEM_VOLUME_MUTE.value, "系统静音", "none"),
+    (key_mapping.ActionKind.PLAY_PAUSE.value, "播放 / 暂停", "none"),
+    (key_mapping.ActionKind.ESCAPE.value, "Escape", "none"),
+    (key_mapping.ActionKind.RETURN.value, "回车", "none"),
+    (key_mapping.ActionKind.DELETE_BACKWARD.value, "退格", "none"),
+    (key_mapping.ActionKind.ARROW_UP.value, "方向上", "none"),
+    (key_mapping.ActionKind.ARROW_DOWN.value, "方向下", "none"),
+    (key_mapping.ActionKind.ARROW_LEFT.value, "方向左", "none"),
+    (key_mapping.ActionKind.ARROW_RIGHT.value, "方向右", "none"),
+    (key_mapping.ActionKind.MOUSE_LEFT_CLICK.value, "鼠标左键单击", "none"),
+    (key_mapping.ActionKind.MOUSE_RIGHT_CLICK.value, "鼠标右键单击", "none"),
+    (key_mapping.ActionKind.MOUSE_MIDDLE_CLICK.value, "鼠标中键单击", "none"),
+)
+
+
+def composite_step_catalog() -> Tuple[Tuple[str, str, str], ...]:
+    return COMPOSITE_STEP_CATALOG
 
 
 def normalize_mapping_hotkey_text(text: str) -> str:
@@ -475,6 +637,33 @@ def _display_to_action(text: str) -> key_mapping.ButtonAction:
             key_mapping.ActionKind.OPEN_APPLICATION,
             target=application_target_for_launch_text(text),
         )
+    if is_close_application_text(text):
+        mode = close_application_mode_for_text(text)
+        return key_mapping.ButtonAction(
+            key_mapping.ActionKind.CLOSE_APPLICATION,
+            close_mode=mode,
+            target=(
+                close_application_target_for_text(text)
+                if mode == key_mapping.CLOSE_MODE_SPECIFIED
+                else ""
+            ),
+        )
+    if text == _REFERENCE_ACTION_LABELS[key_mapping.ActionKind.COMPOSITE]:
+        raise hotkey.HotkeyParseError("请先编辑组合动作，添加要执行的动作")
+    if is_composite_action_text(text):
+        steps = composite_steps_for_text(text)
+        if not steps:
+            raise hotkey.HotkeyParseError("组合动作配置已失效，请重新编辑")
+        return key_mapping.ButtonAction(
+            key_mapping.ActionKind.COMPOSITE, steps=steps
+        )
+    if is_focus_input_action_text(text) and text != _REFERENCE_ACTION_LABELS[
+        key_mapping.ActionKind.FOCUS_INPUT
+    ]:
+        action = focus_action_for_text(text)
+        if action is None:
+            raise hotkey.HotkeyParseError("聚焦输入框配置已失效，请重新编辑")
+        return action
     reference_kind = _REFERENCE_ACTION_KINDS_BY_LABEL.get(text)
     if reference_kind is None:
         reference_kind = _LEGACY_REFERENCE_ACTION_KINDS_BY_LABEL.get(text)
@@ -623,6 +812,18 @@ def _validated_button_action(
     ):
         raise SettingsValidationError(
             button_id, f"{trigger_label}：请先选择要启动的应用程序"
+        )
+    if (
+        action.kind == key_mapping.ActionKind.CLOSE_APPLICATION
+        and action.close_mode == key_mapping.CLOSE_MODE_SPECIFIED
+        and not action.target
+    ):
+        raise SettingsValidationError(
+            button_id, f"{trigger_label}：请先选择要关闭的应用程序"
+        )
+    if action.kind == key_mapping.ActionKind.COMPOSITE and not action.steps:
+        raise SettingsValidationError(
+            button_id, f"{trigger_label}：请先添加组合动作要执行的动作"
         )
     if key_mapping.is_voice_action(action):
         if trigger != key_mapping.ButtonTrigger.SINGLE_CLICK.value:

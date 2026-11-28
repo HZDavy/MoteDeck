@@ -68,6 +68,15 @@ class VoiceShortcutSession:
         self.mute_guard_timer: Optional[object] = None
         self.mute_guard_token: Optional[object] = None
         self.mute_guard_stopping = True
+        # One long-lived thread per hold owns the typematic re-sends and one
+        # owns the mute polling.  The old chained timers created a brand-new
+        # OS thread every 30-50 ms for the whole duration of the hold.
+        self.repeat_thread: Optional[threading.Thread] = None
+        self.repeat_wakeup = threading.Event()
+        self.mute_guard_thread: Optional[threading.Thread] = None
+        self.mute_guard_wakeup = threading.Event()
+        self._repeat_initial_delay = _VOICE_HOTKEY_REPEAT_INITIAL_DELAY_SECONDS
+        self._mute_poll_seconds = _VOICE_MUTE_GUARD_POLL_SECONDS
         self.timer_factory = threading.Timer
 
     def recorded_tokens(self) -> Tuple[str, ...]:
@@ -198,62 +207,54 @@ class VoiceShortcutSession:
         ):
             return
         self.repeat_stopping = False
-        self.repeat_token = object()
-        self._schedule_repeat_locked(
-            _VOICE_HOTKEY_REPEAT_INITIAL_DELAY_SECONDS
+        token = object()
+        self.repeat_token = token
+        wakeup = threading.Event()
+        self.repeat_wakeup = wakeup
+        thread = threading.Thread(
+            target=self._repeat_loop,
+            args=(token, wakeup),
+            name="voice-hotkey-repeat",
+            daemon=True,
         )
+        self.repeat_thread = thread
+        thread.start()
 
-    def _schedule_repeat_locked(self, delay: float) -> None:
-        token = self.repeat_token
-        if token is None or self.repeat_stopping:
+    def _repeat_loop(self, token: object, wakeup: threading.Event) -> None:
+        if wakeup.wait(self._repeat_initial_delay):
             return
-        try:
-            timer = self.timer_factory(
-                delay,
-                lambda: self._repeat_tick(token),
-            )
-            timer.daemon = True
-            self.repeat_timer = timer
-            timer.start()
-        except Exception:
-            self.repeat_timer = None
-            self.repeat_stopping = True
-            self.logger.exception("voice hotkey repeat timer failed")
-
-    def _repeat_tick(self, token: object) -> None:
-        # Holding the session lock keeps a release edge from interleaving with
-        # a repeated key-down, which would leave the key stuck down.
-        with self.lock:
-            if self.repeat_token is not token or self.repeat_stopping:
+        while True:
+            # Holding the session lock keeps a release edge from interleaving
+            # with a repeated key-down, which would leave the key stuck down.
+            with self.lock:
+                if self.repeat_token is not token or self.repeat_stopping:
+                    return
+                tokens = self.pending_tokens
+                inject_mode = self.pending_inject_mode
+                if tokens is None:
+                    self.repeat_stopping = True
+                    return
+                try:
+                    injection_backend.backend_for(inject_mode).key_repeat(tokens)
+                except Exception:
+                    self.repeat_stopping = True
+                    self.logger.exception(
+                        "voice hotkey repeat failed; holding stopped"
+                    )
+                    return
+                interval = win32_input.keyboard_repeat_interval()
+            if wakeup.wait(interval):
                 return
-            self.repeat_timer = None
-            tokens = self.pending_tokens
-            inject_mode = self.pending_inject_mode
-            if tokens is None:
-                self.repeat_stopping = True
-                return
-            try:
-                injection_backend.backend_for(inject_mode).key_repeat(tokens)
-            except Exception:
-                self.repeat_stopping = True
-                self.logger.exception(
-                    "voice hotkey repeat failed; holding stopped"
-                )
-                return
-            self._schedule_repeat_locked(win32_input.keyboard_repeat_interval())
 
     def _stop_hold_repeat_locked(self) -> None:
         self.repeat_stopping = True
-        timer = self.repeat_timer
-        self.repeat_timer = None
         self.repeat_token = None
-        if timer is not None:
-            cancel = getattr(timer, "cancel", None)
-            if callable(cancel):
-                try:
-                    cancel()
-                except Exception:
-                    pass
+        self.repeat_timer = None
+        wakeup = self.repeat_wakeup
+        self.repeat_wakeup = threading.Event()
+        self.repeat_thread = None
+        if wakeup is not None:
+            wakeup.set()
 
     def _prepare_mute_guard_locked(self) -> None:
         """Arm the playback mute guard before the hotkey is injected.
@@ -277,81 +278,72 @@ class VoiceShortcutSession:
         if self.mute_guard is None:
             return
         self.mute_guard_stopping = False
-        self.mute_guard_token = object()
-        self._schedule_mute_guard_locked()
+        token = object()
+        self.mute_guard_token = token
+        wakeup = threading.Event()
+        self.mute_guard_wakeup = wakeup
+        thread = threading.Thread(
+            target=self._mute_guard_loop,
+            args=(token, wakeup),
+            name="voice-mute-guard",
+            daemon=True,
+        )
+        self.mute_guard_thread = thread
+        thread.start()
 
-    def _schedule_mute_guard_locked(self) -> None:
-        token = self.mute_guard_token
-        if token is None or self.mute_guard_stopping:
-            return
-        try:
-            timer = self.timer_factory(
-                _VOICE_MUTE_GUARD_POLL_SECONDS,
-                lambda: self._mute_guard_tick(token),
-            )
-            timer.daemon = True
-            self.mute_guard_timer = timer
-            timer.start()
-        except Exception:
-            self.mute_guard_timer = None
-            self.mute_guard_stopping = True
-            self.logger.exception("voice playback mute guard timer failed")
-
-    def _mute_guard_tick(self, token: object) -> None:
-        # The COM round-trip runs without the session lock so a release edge
-        # is never blocked behind an audio enumeration.
-        with self.lock:
-            if self.mute_guard_token is not token or self.mute_guard_stopping:
-                return
-            self.mute_guard_timer = None
-            guard = self.mute_guard
-            if guard is None:
-                self.mute_guard_stopping = True
-                return
-        try:
-            result = guard.restore_if_muted()
-        except Exception:
+    def _mute_guard_loop(self, token: object, wakeup: threading.Event) -> None:
+        while not wakeup.wait(self._mute_poll_seconds):
+            # The COM round-trip runs without the session lock so a release
+            # edge is never blocked behind an audio enumeration.
             with self.lock:
-                if self.mute_guard_token is token:
-                    self.mute_guard_stopping = True
-            self.logger.exception("voice playback mute guard polling failed")
-            return
-        if result == "restored":
-            self.logger.warning(
-                "voice playback was muted externally during the hold; restored"
-            )
-        with self.lock:
-            if self.mute_guard_token is not token or self.mute_guard_stopping:
-                return
-            if result == "session_changed":
-                # The endpoint session was rebuilt (device change): re-arm
-                # from scratch and keep polling while the hold lasts.
-                try:
-                    guard = self.services.prepare_mute_guard()
-                except Exception:
-                    guard = None
-                    self.logger.exception(
-                        "voice playback mute guard re-prepare failed"
-                    )
-                self.mute_guard = guard
+                if self.mute_guard_token is not token or self.mute_guard_stopping:
+                    return
+                guard = self.mute_guard
                 if guard is None:
                     self.mute_guard_stopping = True
                     return
-            self._schedule_mute_guard_locked()
+            try:
+                result = guard.restore_if_muted()
+            except Exception:
+                with self.lock:
+                    if self.mute_guard_token is token:
+                        self.mute_guard_stopping = True
+                self.logger.exception(
+                    "voice playback mute guard polling failed"
+                )
+                return
+            if result == "restored":
+                self.logger.warning(
+                    "voice playback was muted externally during the hold; restored"
+                )
+            with self.lock:
+                if self.mute_guard_token is not token or self.mute_guard_stopping:
+                    return
+                if result == "session_changed":
+                    # The endpoint session was rebuilt (device change): re-arm
+                    # from scratch and keep polling while the hold lasts.
+                    try:
+                        guard = self.services.prepare_mute_guard()
+                    except Exception:
+                        guard = None
+                        self.logger.exception(
+                            "voice playback mute guard re-prepare failed"
+                        )
+                    self.mute_guard = guard
+                    if guard is None:
+                        self.mute_guard_stopping = True
+                        return
 
     def _stop_mute_guard_locked(self) -> None:
         self.mute_guard_stopping = True
-        timer = self.mute_guard_timer
-        self.mute_guard_timer = None
         self.mute_guard_token = None
+        self.mute_guard_timer = None
         self.mute_guard = None
-        if timer is not None:
-            cancel = getattr(timer, "cancel", None)
-            if callable(cancel):
-                try:
-                    cancel()
-                except Exception:
-                    pass
+        wakeup = self.mute_guard_wakeup
+        self.mute_guard_wakeup = threading.Event()
+        self.mute_guard_thread = None
+        if wakeup is not None:
+            wakeup.set()
 
     def cancel_release_retry(
         self,

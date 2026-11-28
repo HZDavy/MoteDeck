@@ -12,10 +12,14 @@ SettingsDialog {
     id: root
     objectName: "launchAppPickerDialog"
     title: qsTr("选择应用程序")
-    titleNote: qsTr("选中后作为「启动应用」要打开的程序。")
+    titleNote: root.purpose === "close"
+        ? qsTr("选中后作为「关闭应用」要关闭的程序。")
+        : qsTr("选中后作为「启动应用」要打开的程序。")
     preferredWidth: 520
     closeButtonObjectName: "launchAppPickerCloseButton"
     standardButtons: Dialog.Ok | Dialog.Cancel
+    // launch：给「启动应用」挑程序；close：给「关闭应用」挑要关的程序。
+    property string purpose: "launch"
     property string errorText: ""
     // 这一行已经选过的程序；打开时自动勾上。它只来自这一行的动作文本，
     // 这一行改成别的动作后文本被覆盖，勾选记忆也就没了。

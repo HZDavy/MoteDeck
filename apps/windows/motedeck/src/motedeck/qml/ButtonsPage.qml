@@ -23,7 +23,87 @@ Item {
         id: launchAppPickerDialog
         tokens: root.tokens
         onApplicationSelected: function(process) {
+            // 从组合动作的某一步打开时，选中结果回填到那一步，而不是按键映射。
+            if (root.appPickerSource === "composite") {
+                compositeActionDialog.setApplicationTarget(process)
+                launchAppPickerDialog.close()
+                return
+            }
+            if (root.appPickerSource === "close_application") {
+                actionEditor.applyCloseApplication(
+                    closeApplicationDialog.targetRow,
+                    closeApplicationDialog.targetTrigger,
+                    "specified", process)
+                launchAppPickerDialog.close()
+                closeApplicationDialog.close()
+                return
+            }
             root.applyPickedApplication(process)
+        }
+    }
+    // 默认用于按键映射；组合动作里的「启动应用」步骤复用它（三级弹窗）。
+    property string appPickerSource: "mapping"
+    // 聚焦输入框弹窗同理：按键映射 / 组合动作的某一步。
+    property string focusDialogSource: "mapping"
+    // 「聚焦输入框」的完整配置弹窗：确认后回填带方式的动作文本。
+    FocusInputDialog {
+        id: focusInputDialog
+        tokens: root.tokens
+        hoverScenePos: root.editorHoverScenePos
+        property int targetRow: -1
+        property string targetTrigger: "single_click"
+        onFocusConfigured: function(text) {
+            // 从组合动作某一步打开时，把配置回填到那一步。
+            if (root.focusDialogSource === "composite") {
+                compositeActionDialog.setFocusConfig(
+                    SettingsController.focusActionPayload(text))
+                return
+            }
+            actionEditor.applyCapturedShortcut(targetRow, targetTrigger, text)
+        }
+    }
+    // 「关闭应用」先选方式；「关闭指定应用」再复用上面的应用选择器。
+    CloseApplicationDialog {
+        id: closeApplicationDialog
+        tokens: root.tokens
+        // 弹窗打开时普通 hover 事件会被编辑面板的 Overlay 吞掉，改用页面
+        // 已有的窗口级鼠标位置旁路来算悬停。
+        hoverScenePos: root.editorHoverScenePos
+        onCurrentRequested: {
+            actionEditor.applyCloseApplication(
+                targetRow, targetTrigger, "current", "")
+            close()
+        }
+        onSpecifiedRequested: {
+            // 保持本弹窗开着，应用选择器作为三级弹窗叠在上面。
+            appPickerRowIndex = targetRow
+            appPickerTrigger = targetTrigger
+            root.appPickerSource = "close_application"
+            launchAppPickerDialog.purpose = "close"
+            launchAppPickerDialog.selectedProcess = ""
+            launchAppPickerDialog.open()
+        }
+    }
+    // 「组合动作」编辑弹窗：确认后把排好的步骤回填成一行动作文本。
+    CompositeActionDialog {
+        id: compositeActionDialog
+        tokens: root.tokens
+        property int targetRow: -1
+        property string targetTrigger: "single_click"
+        onStepsAccepted: function(text) {
+            actionEditor.applyCapturedShortcut(targetRow, targetTrigger, text)
+        }
+        onApplicationPickRequested: {
+            root.appPickerSource = "composite"
+            launchAppPickerDialog.purpose = "launch"
+            launchAppPickerDialog.selectedProcess =
+                compositeActionDialog.pendingApplicationTarget()
+            launchAppPickerDialog.open()
+        }
+        onFocusConfigRequested: {
+            root.focusDialogSource = "composite"
+            focusInputDialog.openForPayload(
+                compositeActionDialog.pendingFocusPayload())
         }
     }
     // The application bar mirrors Logi Options+: the first chip is always the
@@ -319,7 +399,7 @@ Item {
     // 表示清空悬浮状态。
     property point editorHoverScenePos: Qt.point(-1, -1)
     onEditorHoverScenePosChanged: {
-        if (editorHoverScenePos.x < 0)
+        if (editorHoverScenePos.x < 0 || anyActionDialogOpen)
             editorHoverButtonId = ""
         else
             editorHoverButtonId = editorHoverButtonAt(
@@ -327,6 +407,28 @@ Item {
     }
     // 面板关闭后清掉残留的悬浮高亮（过滤器在面板关闭后不再写入）。
     onMappingPanelOpenChanged: if (!mappingPanelOpen) editorHoverButtonId = ""
+    // 任何弹窗盖在按键页上时都不再显示跟随鼠标的按键卡片，避免卡片
+    // 叠在弹窗上面；弹窗打开时同时清掉悬浮状态，关闭后不会残留闪现。
+    readonly property bool anyActionDialogOpen:
+        mappingAppPickerDialog.visible
+        || launchAppPickerDialog.visible
+        || focusInputDialog.visible
+        || closeApplicationDialog.visible
+        || compositeActionDialog.visible
+        || shortcutRecorder.visible
+        || actionEditorNoteDialog.visible
+        || actionEditorDiscardConfirmDialog.visible
+        || restoreMappingDefaultsDialog.visible
+        || mappingBundleDialog.visible
+        || mappingImportConfirmDialog.visible
+        || mappingBundleExportDialog.visible
+        || mappingBundleImportDialog.visible
+        || removeMappingAppConfirmDialog.visible
+        || pluginAppLockedDialog.visible
+        || winuhidInstallConfirmDialog.visible
+        || interceptionInstallConfirmDialog.visible
+        || driverManagerDialog.visible
+    onAnyActionDialogOpenChanged: if (anyActionDialogOpen) editorHoverButtonId = ""
     // 编辑状态退出、回到连线页面：持续检测随之自动结束。
     onMappingPanelExpandedChanged: if (!mappingPanelExpanded
             && SettingsController.keyDetectionActive)
@@ -603,6 +705,8 @@ Item {
     function openApplicationPicker(rowIndex, trigger, currentText) {
         appPickerRowIndex = rowIndex
         appPickerTrigger = trigger || "single_click"
+        appPickerSource = "mapping"
+        launchAppPickerDialog.purpose = "launch"
         // 这一行存的就是全部记忆：改成别的动作后文本变了，勾选自然也消失。
         launchAppPickerDialog.selectedProcess =
             SettingsController.applicationLaunchTarget(currentText)
@@ -1596,6 +1700,31 @@ Item {
         function applyOptionToActiveTrigger(option) {
             if (rowIndex < 0)
                 return
+            const formatted = SettingsController.formatActionText(option)
+            // 「聚焦输入框」先配置方式，再回填。
+            if (SettingsController.isFocusInputText(formatted)) {
+                focusInputDialog.targetRow = rowIndex
+                focusInputDialog.targetTrigger = activeTrigger
+                root.focusDialogSource = "mapping"
+                focusInputDialog.openFor(activeText())
+                return
+            }
+            // 「组合动作」先编辑步骤，确认后回填。
+            if (SettingsController.isCompositeText(formatted)) {
+                compositeActionDialog.targetRow = rowIndex
+                compositeActionDialog.targetTrigger = activeTrigger
+                compositeActionDialog.openFor(activeText())
+                return
+            }
+            // 「关闭应用」先弹方式选择；指定应用时再叠一层应用选择器。
+            if (SettingsController.isCloseApplicationChoiceText(
+                    SettingsController.formatActionText(option))) {
+                root.appPickerSource = "mapping"
+                closeApplicationDialog.targetRow = rowIndex
+                closeApplicationDialog.targetTrigger = activeTrigger
+                closeApplicationDialog.open()
+                return
+            }
             // 「启动应用」要先挑一个程序，挑完再回填。
             if (SettingsController.isLaunchApplicationText(
                     SettingsController.formatActionText(option))) {
@@ -1852,6 +1981,20 @@ Item {
         }
 
         // 「启动应用」选中程序后只回填当前手势，落盘等「完成」。
+        function applyCloseApplication(targetRow, trigger, mode, process) {
+            if (!visible || targetRow !== rowIndex)
+                return
+            const text = SettingsController.closeApplicationText(mode, process)
+            syncing = true
+            if (trigger === "single_click")
+                primaryText = text
+            else if (trigger === "double_click")
+                doubleText = text
+            else if (trigger === "long_press")
+                longText = text
+            syncing = false
+        }
+
         function applyPickedApplication(targetRow, trigger, process) {
             if (!visible || targetRow !== rowIndex)
                 return
@@ -3368,6 +3511,7 @@ Item {
             // 只有编辑状态下、鼠标浮在某颗键上时才显示；关掉面板时渐隐。
             readonly property bool wantVisible:
                 root.mappingPanelExpanded
+                && !root.anyActionDialogOpen
                 && buttonId.length > 0 && root.editorHoverScenePos.x >= 0
             // 关闭面板时 120ms 快速渐隐，让连线卡片等它完全消失后再渐显。
             opacity: wantVisible ? 1 : 0

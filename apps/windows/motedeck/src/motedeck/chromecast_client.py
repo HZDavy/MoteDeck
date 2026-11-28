@@ -49,7 +49,8 @@ def message(reason):
 
 
 class Client:
-    def __init__(self, entity, *, mode, on_edge, on_lost=None, on_voice=None, on_reopen=None):
+    def __init__(self, entity, *, mode, on_edge, on_lost=None, on_voice=None, on_reopen=None,
+                 trace_enabled=None):
         if mode not in ("detect", "run", "setup") or (mode == "setup" and on_voice is not None):
             raise ValueError("invalid_mode")
         self.identity = SessionIdentity.create(entity)
@@ -57,6 +58,7 @@ class Client:
         self.on_lost = on_lost
         self.on_voice = on_voice
         self.on_reopen = on_reopen
+        self._trace_enabled = trace_enabled
         self._voice_commands = queue.Queue(maxsize=32)
         self.cancel, self.finished, self.ready = threading.Event(), threading.Event(), threading.Event()
         self.thread = None
@@ -86,6 +88,23 @@ class Client:
                 and not self._first_worker_failure):
             self._first_worker_failure = event["reason"]
             diagnostics.request(self.identity.entity, event["reason"])
+
+    def _observe_evidence(self, event):
+        # The receiver emits this record every two seconds. Only keep it in
+        # app.log when the user explicitly enabled diagnostic tracing.
+        if not self._tracing:
+            return
+        logging.getLogger("motedeck").info(
+            "Chromecast evidence run=%s seq=%s record=%s",
+            self.identity.generation[:12],
+            event["seq"],
+            json.dumps(event["record"], separators=(",", ":")),
+        )
+
+    @property
+    def _tracing(self):
+        enabled = self._trace_enabled
+        return bool(enabled() if callable(enabled) else enabled)
 
     @property
     def is_running(self):
@@ -259,8 +278,7 @@ class Client:
                         break
                     event = incoming.decode(raw)
                     if event["type"] == "evidence":
-                        logging.getLogger("motedeck").info("Chromecast evidence run=%s seq=%s record=%s",
-                            self.identity.generation[:12], event["seq"], json.dumps(event["record"], separators=(",", ":")))
+                        self._observe_evidence(event)
                     elif event["type"] == "ready":
                         self.ready.set()
                         diagnostics.request(self.identity.entity, "ready")

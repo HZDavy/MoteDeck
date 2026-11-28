@@ -390,6 +390,160 @@ def _launch_command(command: Sequence[str]) -> None:
     )
 
 
+_WM_CLOSE = 0x0010
+_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
+
+def _post_close_message(hwnd: int) -> bool:
+    """Ask one top-level window to close (WM_CLOSE), keeping unsaved state."""
+
+    if sys.platform != "win32":
+        raise OSError("window messages are unavailable")
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.PostMessageW.argtypes = [
+        wintypes.HWND,
+        wintypes.UINT,
+        wintypes.WPARAM,
+        wintypes.LPARAM,
+    ]
+    user32.PostMessageW.restype = wintypes.BOOL
+    return bool(user32.PostMessageW(wintypes.HWND(hwnd), _WM_CLOSE, 0, 0))
+
+
+def _foreground_window() -> int:
+    if sys.platform != "win32":
+        raise OSError("window messages are unavailable")
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.GetForegroundWindow.restype = wintypes.HWND
+    return int(user32.GetForegroundWindow() or 0)
+
+
+def _process_image_path(pid: int) -> str:
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.QueryFullProcessImageNameW.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.LPWSTR,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+    handle = kernel32.OpenProcess(
+        _PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid)
+    )
+    if not handle:
+        return ""
+    try:
+        size = wintypes.DWORD(32768)
+        buffer = ctypes.create_unicode_buffer(size.value)
+        if not kernel32.QueryFullProcessImageNameW(
+            handle, 0, buffer, ctypes.byref(size)
+        ):
+            return ""
+        return buffer.value
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _close_target_matches(target: str, image_path: str) -> bool:
+    if not image_path:
+        return False
+    wanted = str(target or "").strip().strip('"')
+    if not wanted:
+        return False
+    if any(separator in wanted for separator in ("/", "\\")):
+        return os.path.normcase(os.path.abspath(wanted)) == os.path.normcase(
+            os.path.abspath(image_path)
+        )
+    name = Path(wanted).name.casefold()
+    if not name.endswith(".exe"):
+        name += ".exe"
+    return Path(image_path).name.casefold() == name
+
+
+def _windows_for_target(target: str) -> Tuple[int, ...]:
+    """Return every visible top-level window owned by the matching process."""
+
+    if sys.platform != "win32":
+        raise OSError("window enumeration is unavailable")
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    user32.EnumWindows.argtypes = [callback_type, wintypes.LPARAM]
+    user32.EnumWindows.restype = wintypes.BOOL
+    user32.IsWindowVisible.argtypes = [wintypes.HWND]
+    user32.IsWindowVisible.restype = wintypes.BOOL
+    user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
+    user32.GetWindowTextLengthW.restype = ctypes.c_int
+    user32.GetWindowThreadProcessId.argtypes = [
+        wintypes.HWND,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+
+    matches = []
+
+    def visit(hwnd, _lparam):
+        if not user32.IsWindowVisible(hwnd):
+            return True
+        if user32.GetWindowTextLengthW(hwnd) <= 0:
+            return True
+        pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if _close_target_matches(target, _process_image_path(int(pid.value))):
+            matches.append(int(hwnd))
+        return True
+
+    callback = callback_type(visit)
+    user32.EnumWindows(callback, 0)
+    return tuple(matches)
+
+
+def close_configured_application(
+    action: key_mapping.ButtonAction,
+    *,
+    foreground_window: Optional[Callable[[], int]] = None,
+    windows_for_target: Optional[Callable[[str], Iterable[int]]] = None,
+    post_close: Optional[Callable[[int], bool]] = None,
+) -> bool:
+    """Close the configured program (or the current foreground app).
+
+    Only ``WM_CLOSE`` is posted, so applications still get to save their work
+    instead of being terminated behind the user's back.
+    """
+
+    if action.kind != key_mapping.ActionKind.CLOSE_APPLICATION:
+        return False
+    sender = post_close or _post_close_message
+    try:
+        if action.close_mode == key_mapping.CLOSE_MODE_CURRENT:
+            getter = foreground_window or _foreground_window
+            hwnd = int(getter())
+            return bool(hwnd) and bool(sender(hwnd))
+        enumerator = windows_for_target or _windows_for_target
+        handles = tuple(enumerator(action.target))
+    except Exception:
+        return False
+    closed = False
+    for hwnd in handles:
+        try:
+            closed = bool(sender(int(hwnd))) or closed
+        except Exception:
+            continue
+    return closed
+
+
 def _launch_cmux_command(command: Sequence[str]) -> None:
     # The Windows cmux build is a terminal program. It needs its own visible
     # console and standard handles; _launch_command would discard its UI.

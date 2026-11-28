@@ -16,6 +16,7 @@ from . import bridge_launcher
 from . import bridge_runtime_status
 from . import config
 from . import dev_session
+from . import input_focus_windows
 from . import device_catalog
 from . import element_navigation_control_windows
 from . import frida_compat
@@ -3815,6 +3816,159 @@ class SettingsController(QObject):
     @Slot(str, result=str)
     def applicationLaunchTarget(self, text: str) -> str:
         return settings_ui.application_target_for_launch_text(text)
+
+    @Slot(str, result=bool)
+    def isCloseApplicationChoiceText(self, text: str) -> bool:
+        return settings_ui.is_close_application_choice_text(text)
+
+    @Slot(str, str, result=str)
+    def closeApplicationText(self, mode: str, target: str) -> str:
+        return settings_ui.close_application_text(mode, target)
+
+    @Slot(str, result=bool)
+    def isFocusInputText(self, text: str) -> bool:
+        return settings_ui.is_focus_input_action_text(text)
+
+    @Slot(str, result=bool)
+    def isCompositeText(self, text: str) -> bool:
+        return settings_ui.is_composite_action_text(text)
+
+    @Slot(result=str)
+    def focusInputActionText(self) -> str:
+        return "聚焦输入框"
+
+    @Slot(str, result=str)
+    def focusActionPayload(self, text: str) -> str:
+        """把一行「聚焦输入框」文本还原成弹窗可编辑的配置。"""
+
+        try:
+            action = settings_ui._display_to_action(str(text or ""))
+        except Exception:
+            action = None
+        if action is None or action.kind != key_mapping.ActionKind.FOCUS_INPUT:
+            return '{"mode": "auto"}'
+        payload = {"mode": action.focus_mode}
+        if action.focus_mode == key_mapping.FOCUS_MODE_ELEMENT:
+            payload["signature"] = action.focus_signature
+        elif action.focus_mode == key_mapping.FOCUS_MODE_SHORTCUT:
+            payload["keys"] = list(action.focus_keys)
+        elif action.focus_mode == key_mapping.FOCUS_MODE_POINT:
+            payload["point"] = [
+                float(action.focus_point[0]),
+                float(action.focus_point[1]),
+            ]
+        return json.dumps(payload, ensure_ascii=False)
+
+    @Slot(str, str, result=str)
+    def focusActionTextFromPayload(self, mode: str, payload_json: str) -> str:
+        """用弹窗选好的方式与学习数据生成按键页文本；空串表示配置不完整。"""
+
+        try:
+            payload = json.loads(payload_json or "{}")
+        except (TypeError, ValueError):
+            return ""
+        if not isinstance(payload, dict):
+            return ""
+        try:
+            focus_mode = key_mapping.normalize_focus_mode(mode)
+            options = {"focus_mode": focus_mode}
+            if focus_mode == key_mapping.FOCUS_MODE_ELEMENT:
+                signature = str(payload.get("signature") or "").strip()
+                if not signature:
+                    return ""
+                options["focus_signature"] = signature
+            elif focus_mode == key_mapping.FOCUS_MODE_SHORTCUT:
+                raw_keys = payload.get("keys")
+                if not isinstance(raw_keys, (list, tuple)):
+                    return ""
+                keys = tuple(
+                    str(key).strip().lower()
+                    for key in raw_keys
+                    if str(key).strip()
+                )
+                if not keys:
+                    return ""
+                options["focus_keys"] = keys
+            elif focus_mode == key_mapping.FOCUS_MODE_POINT:
+                raw_point = payload.get("point")
+                if not isinstance(raw_point, (list, tuple)) or len(raw_point) != 2:
+                    return ""
+                options["focus_point"] = (
+                    min(max(float(raw_point[0]), 0.0), 1.0),
+                    min(max(float(raw_point[1]), 0.0), 1.0),
+                )
+            action = key_mapping.ButtonAction(
+                key_mapping.ActionKind.FOCUS_INPUT, **options
+            )
+            action.to_dict()
+        except (TypeError, ValueError):
+            return ""
+        text = settings_ui.focus_action_text(action)
+        settings_ui.register_focus_action(text, action)
+        return text
+
+    @Slot(result=str)
+    def captureFocusElement(self) -> str:
+        signature = input_focus_windows.capture_focused_input()
+        if not signature:
+            return ""
+        return json.dumps(signature, ensure_ascii=False)
+
+    @Slot(result=str)
+    def captureFocusPoint(self) -> str:
+        point = input_focus_windows.capture_cursor_point()
+        if not point:
+            return ""
+        return json.dumps(point, ensure_ascii=False)
+
+    @Slot(result=list)
+    def compositeStepCatalog(self) -> List[dict]:
+        return [
+            {"kind": kind, "label": label, "param": param}
+            for kind, label, param in settings_ui.composite_step_catalog()
+        ]
+
+    @Slot(str, result=str)
+    def compositeActionTextFromJson(self, steps_json: str) -> str:
+        """把弹窗里排好序的子动作转成按键页显示文本，并登记配置。
+
+        返回空串表示有任何一步不合法；界面据此提示用户，不写入模型。
+        """
+
+        try:
+            raw = json.loads(steps_json or "[]")
+        except (TypeError, ValueError):
+            return ""
+        if not isinstance(raw, list) or not raw:
+            return ""
+        if len(raw) > key_mapping.MAX_COMPOSITE_STEPS:
+            return ""
+        try:
+            steps = tuple(
+                key_mapping.ButtonAction.from_dict(item) for item in raw
+            )
+        except (KeyError, TypeError, ValueError):
+            return ""
+        for step in steps:
+            if step.kind not in key_mapping.COMPOSITE_STEP_KINDS:
+                return ""
+        text = settings_ui.composite_action_text(steps)
+        settings_ui.register_composite_steps(text, steps)
+        return text
+
+    @Slot(str, result=str)
+    def compositeStepsJson(self, text: str) -> str:
+        """返回一行「组合动作」文本对应的子动作列表，供编辑弹窗回填。"""
+
+        steps = settings_ui.composite_steps_for_text(text)
+        if not steps:
+            return "[]"
+        try:
+            return json.dumps(
+                [step.to_dict() for step in steps], ensure_ascii=False
+            )
+        except (TypeError, ValueError):
+            return "[]"
 
     def _get_voice_slot_options(self) -> List[str]:
         return [

@@ -49,6 +49,49 @@ class ButtonActionSerializationTests(unittest.TestCase):
         restored = key_mapping.ButtonAction.from_dict(action.to_dict())
         self.assertEqual(action, restored)
 
+    def test_round_trip_close_application_specified(self):
+        action = key_mapping.ButtonAction(
+            key_mapping.ActionKind.CLOSE_APPLICATION,
+            target="chrome.exe",
+            close_mode=key_mapping.CLOSE_MODE_SPECIFIED,
+        )
+        data = action.to_dict()
+        self.assertEqual(data["close_mode"], "specified")
+        self.assertEqual(data["target"], "chrome.exe")
+        self.assertEqual(key_mapping.ButtonAction.from_dict(data), action)
+
+    def test_round_trip_close_application_current(self):
+        action = key_mapping.ButtonAction(
+            key_mapping.ActionKind.CLOSE_APPLICATION,
+            close_mode=key_mapping.CLOSE_MODE_CURRENT,
+        )
+        data = action.to_dict()
+        self.assertEqual(data["close_mode"], "current")
+        self.assertNotIn("target", data)
+        self.assertEqual(key_mapping.ButtonAction.from_dict(data), action)
+
+    def test_close_application_requires_a_target_when_specified(self):
+        with self.assertRaises(ValueError):
+            key_mapping.ButtonAction.from_dict(
+                {"kind": "close_application", "close_mode": "specified"}
+            )
+
+    def test_close_application_rejects_a_target_for_current_mode(self):
+        with self.assertRaises(ValueError):
+            key_mapping.ButtonAction.from_dict(
+                {
+                    "kind": "close_application",
+                    "close_mode": "current",
+                    "target": "chrome.exe",
+                }
+            )
+
+    def test_non_close_action_rejects_the_close_mode_field(self):
+        with self.assertRaises(ValueError):
+            key_mapping.ButtonAction.from_dict(
+                {"kind": "escape", "keys": [], "close_mode": "current"}
+            )
+
     def test_round_trip_voice_action_has_empty_keys(self):
         action = key_mapping.ButtonAction(key_mapping.ActionKind.VOICE)
         data = action.to_dict()
@@ -243,6 +286,83 @@ class GestureBindingLookupTests(unittest.TestCase):
             key_mapping.button_combo_action_for(configured, "up").kind,
             key_mapping.ActionKind.QUICKER_URI,
         )
+
+
+class CompositeActionSerializationTests(unittest.TestCase):
+    def test_composite_round_trip_preserves_ordered_steps(self):
+        action = key_mapping.ButtonAction(
+            key_mapping.ActionKind.COMPOSITE,
+            steps=(
+                key_mapping.ButtonAction(
+                    key_mapping.ActionKind.OPEN_APPLICATION, target="chrome.exe"
+                ),
+                key_mapping.ButtonAction(key_mapping.ActionKind.FOCUS_INPUT),
+                key_mapping.ButtonAction(
+                    key_mapping.ActionKind.KEY_COMBO, ("ctrl", "shift", "a")
+                ),
+            ),
+        )
+        data = action.to_dict()
+        self.assertEqual(data["kind"], "composite")
+        self.assertEqual(len(data["steps"]), 3)
+        self.assertEqual(key_mapping.ButtonAction.from_dict(data), action)
+
+    def test_focus_input_round_trip(self):
+        action = key_mapping.ButtonAction(key_mapping.ActionKind.FOCUS_INPUT)
+        self.assertEqual(
+            key_mapping.ButtonAction.from_dict(action.to_dict()), action
+        )
+
+    def test_focus_input_point_round_trip(self):
+        action = key_mapping.ButtonAction(
+            key_mapping.ActionKind.FOCUS_INPUT,
+            focus_mode=key_mapping.FOCUS_MODE_POINT,
+            focus_point=(0.32, 0.78),
+        )
+        restored = key_mapping.ButtonAction.from_dict(action.to_dict())
+        self.assertEqual(restored, action)
+        self.assertAlmostEqual(restored.focus_point[0], 0.32)
+
+    def test_focus_input_shortcut_round_trip(self):
+        action = key_mapping.ButtonAction(
+            key_mapping.ActionKind.FOCUS_INPUT,
+            focus_mode=key_mapping.FOCUS_MODE_SHORTCUT,
+            focus_keys=("ctrl", "f"),
+        )
+        self.assertEqual(
+            key_mapping.ButtonAction.from_dict(action.to_dict()), action
+        )
+
+    def test_focus_input_rejects_unknown_mode(self):
+        with self.assertRaises(ValueError):
+            key_mapping.ButtonAction.from_dict(
+                {"kind": "focus_input", "keys": [], "focus_mode": "magic"}
+            )
+
+    def test_composite_rejects_empty_steps(self):
+        action = key_mapping.ButtonAction(key_mapping.ActionKind.COMPOSITE)
+        with self.assertRaises(ValueError):
+            action.to_dict()
+
+    def test_composite_rejects_nested_composite(self):
+        inner = key_mapping.ButtonAction(
+            key_mapping.ActionKind.COMPOSITE,
+            steps=(key_mapping.ButtonAction(key_mapping.ActionKind.RETURN),),
+        )
+        outer = key_mapping.ButtonAction(
+            key_mapping.ActionKind.COMPOSITE, steps=(inner,)
+        )
+        with self.assertRaises(ValueError):
+            outer.to_dict()
+
+    def test_composite_step_requires_application_target(self):
+        with self.assertRaises((TypeError, ValueError)):
+            key_mapping.ButtonAction.from_dict(
+                {
+                    "kind": "composite",
+                    "steps": [{"kind": "open_application", "keys": []}],
+                }
+            )
 
 
 if __name__ == "__main__":

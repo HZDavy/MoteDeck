@@ -103,6 +103,7 @@ class DisplayRoundTripTests(unittest.TestCase):
         self.assertNotIn("打开 Codex", flattened)
         self.assertNotIn("打开 Claude", flattened)
         self.assertIn("启动应用", flattened)
+        self.assertIn("关闭应用", flattened)
         mouse_group = dict(settings_ui.ACTION_OPTION_GROUPS)["鼠标操作"]
         self.assertEqual(
             mouse_group[:6],
@@ -1125,6 +1126,95 @@ class DescribeLogOpenResultTests(unittest.TestCase):
         )
         text = describe_log_open_result(result)
         self.assertIn("no shell association available", text)
+
+
+class CompositeActionDisplayTests(unittest.TestCase):
+    def test_focus_input_display_round_trip(self):
+        action = key_mapping.ButtonAction(key_mapping.ActionKind.FOCUS_INPUT)
+        text = _action_to_display(action)
+        self.assertEqual(text, "聚焦输入框")
+        self.assertTrue(settings_ui.is_focus_input_action_text(text))
+        self.assertEqual(_display_to_action(text).kind, key_mapping.ActionKind.FOCUS_INPUT)
+
+    def test_focus_point_display_round_trip(self):
+        action = key_mapping.ButtonAction(
+            key_mapping.ActionKind.FOCUS_INPUT,
+            focus_mode=key_mapping.FOCUS_MODE_POINT,
+            focus_point=(0.32, 0.78),
+        )
+        text = _action_to_display(action)
+        self.assertIn("记录位置", text)
+        restored = _display_to_action(text)
+        self.assertEqual(restored.kind, key_mapping.ActionKind.FOCUS_INPUT)
+        self.assertEqual(restored.focus_mode, key_mapping.FOCUS_MODE_POINT)
+        self.assertAlmostEqual(restored.focus_point[0], 0.32)
+        self.assertAlmostEqual(restored.focus_point[1], 0.78)
+
+    def test_composite_with_focus_step_round_trip(self):
+        focus = key_mapping.ButtonAction(
+            key_mapping.ActionKind.FOCUS_INPUT,
+            focus_mode=key_mapping.FOCUS_MODE_POINT,
+            focus_point=(0.3, 0.8),
+        )
+        action = key_mapping.ButtonAction(
+            key_mapping.ActionKind.COMPOSITE, steps=(focus,)
+        )
+        text = _action_to_display(action)
+        self.assertEqual(_display_to_action(text), action)
+
+    def test_close_application_round_trips_both_modes(self):
+        specified = key_mapping.ButtonAction(
+            key_mapping.ActionKind.CLOSE_APPLICATION,
+            target="chrome.exe",
+            close_mode=key_mapping.CLOSE_MODE_SPECIFIED,
+        )
+        text = _action_to_display(specified)
+        self.assertEqual(text, "关闭指定应用：chrome.exe")
+        self.assertEqual(_display_to_action(text), specified)
+
+        current = key_mapping.ButtonAction(
+            key_mapping.ActionKind.CLOSE_APPLICATION,
+            close_mode=key_mapping.CLOSE_MODE_CURRENT,
+        )
+        text = _action_to_display(current)
+        self.assertEqual(text, "关闭当前应用")
+        self.assertEqual(_display_to_action(text), current)
+
+    def test_close_application_choice_requires_a_mode(self):
+        self.assertTrue(settings_ui.is_close_application_choice_text("关闭应用"))
+        self.assertFalse(
+            settings_ui.is_close_application_choice_text("关闭当前应用")
+        )
+        self.assertIn(
+            "请先选择要关闭的应用程序",
+            settings_ui.button_action_validation_message(
+                "up", "single_click", "关闭应用"
+            ),
+        )
+
+    def test_composite_display_round_trip(self):
+        action = key_mapping.ButtonAction(
+            key_mapping.ActionKind.COMPOSITE,
+            steps=(
+                key_mapping.ButtonAction(
+                    key_mapping.ActionKind.OPEN_APPLICATION, target="chrome.exe"
+                ),
+                key_mapping.ButtonAction(key_mapping.ActionKind.FOCUS_INPUT),
+            ),
+        )
+        text = _action_to_display(action)
+        self.assertTrue(settings_ui.is_composite_action_text(text))
+        restored = _display_to_action(text)
+        self.assertEqual(restored.kind, key_mapping.ActionKind.COMPOSITE)
+        self.assertEqual(restored.steps, action.steps)
+
+    def test_new_actions_live_in_the_other_group(self):
+        self.assertEqual(
+            settings_ui.ACTION_OPTION_GROUP_BY_LABEL["聚焦输入框"], "其他"
+        )
+        self.assertEqual(
+            settings_ui.ACTION_OPTION_GROUP_BY_LABEL["组合动作"], "其他"
+        )
 
 
 if __name__ == "__main__":

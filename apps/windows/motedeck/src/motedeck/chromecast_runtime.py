@@ -27,6 +27,7 @@ class RuntimeServices:
     release_inputs: Callable
     route_edge: Callable
     start_battery_monitor: Callable | None = None
+    trace_enabled: Callable[[], bool] | None = None
 
 
 class ChromecastRuntime:
@@ -76,7 +77,8 @@ class ChromecastRuntime:
         self.client = Client(self.services.selected_key(), mode="run", on_edge=self.on_edge,
                                   on_lost=self.cancel_input,
                                   on_voice=self.voice_host.enqueue,
-                                  on_reopen=self.on_reopen)
+                                  on_reopen=self.on_reopen,
+                                  trace_enabled=self.services.trace_enabled)
         self.voice_host.start(self.client)
         try:
             # Keyboard ownership is shared safety infrastructure, not the

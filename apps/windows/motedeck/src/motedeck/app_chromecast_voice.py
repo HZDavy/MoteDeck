@@ -143,6 +143,9 @@ class ChromecastVoiceMixin:
                 release_inputs=self._release_chromecast_inputs,
                 route_edge=self._route_chromecast_edge,
                 start_battery_monitor=self._start_chromecast_battery_monitor,
+                trace_enabled=lambda: bool(
+                    self._config.get("diagnostic_trace_enabled", False)
+                ),
             )
         )
 

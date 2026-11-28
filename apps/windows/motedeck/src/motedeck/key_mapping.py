@@ -113,6 +113,8 @@ class ActionKind(str, Enum):
     OPEN_REMOTE_MIC = "open_remote_mic"
     # 通用「启动应用」：启动用户在界面上选中的任意程序，目标存在 target 里。
     OPEN_APPLICATION = "open_application"
+    # 通用「关闭应用」：关闭指定程序（target）或当前前台应用。
+    CLOSE_APPLICATION = "close_application"
     OPEN_CODEX = "open_codex"
     OPEN_CLAUDE = "open_claude"
     OPEN_CMUX = "open_cmux"
@@ -127,6 +129,10 @@ class ActionKind(str, Enum):
     # 直接控制 OpenMexia 里的一台米家设备。动作本身只描述「哪台设备 + 哪个
     # 操作」，具体怎么执行由 OpenMexia 自己决定。
     OPENMEXIA_DEVICE = "openmexia_device"
+    # 把光标放进当前前台应用最合适的输入框（聊天框、搜索框等）。
+    FOCUS_INPUT = "focus_input"
+    # 组合动作：按顺序执行多个简单动作，例如「打开应用 → 聚焦输入框」。
+    COMPOSITE = "composite"
 
     @classmethod
     def _missing_(cls, value: object):
@@ -326,6 +332,77 @@ APPLICATION_ACTIONS = frozenset(
     }
 )
 
+MAX_COMPOSITE_STEPS = 20
+
+# 「聚焦输入框」的几种工作方式：自动挑选、学习某个输入框、发送应用自己的
+# 聚焦快捷键、记录一个点击位置。
+FOCUS_MODE_AUTO = "auto"
+FOCUS_MODE_ELEMENT = "element"
+FOCUS_MODE_SHORTCUT = "shortcut"
+FOCUS_MODE_POINT = "point"
+FOCUS_MODES = frozenset(
+    {FOCUS_MODE_AUTO, FOCUS_MODE_ELEMENT, FOCUS_MODE_SHORTCUT, FOCUS_MODE_POINT}
+)
+MAX_FOCUS_SIGNATURE_LENGTH = 2048
+
+CLOSE_MODE_SPECIFIED = "specified"
+CLOSE_MODE_CURRENT = "current"
+CLOSE_MODES = frozenset({CLOSE_MODE_SPECIFIED, CLOSE_MODE_CURRENT})
+
+
+def normalize_close_mode(value: object) -> str:
+    mode = str(value or CLOSE_MODE_SPECIFIED).strip().lower()
+    if mode not in CLOSE_MODES:
+        raise ValueError("unknown close application mode")
+    return mode
+
+
+def normalize_focus_mode(value: object) -> str:
+    mode = str(value or FOCUS_MODE_AUTO).strip().lower()
+    if mode not in FOCUS_MODES:
+        raise ValueError("unknown focus input mode")
+    return mode
+
+# 组合动作里允许嵌套的动作：都是「按一下就结束」的简单动作。语音、
+# 鼠标长按、元素导航、OpenMexia 之外的组合动作本身都不能再嵌一层。
+COMPOSITE_STEP_KINDS = frozenset(
+    {
+        ActionKind.KEY_COMBO,
+        ActionKind.ESCAPE,
+        ActionKind.RETURN,
+        ActionKind.ARROW_UP,
+        ActionKind.ARROW_DOWN,
+        ActionKind.ARROW_LEFT,
+        ActionKind.ARROW_RIGHT,
+        ActionKind.DELETE_BACKWARD,
+        ActionKind.SHOW_DESKTOP,
+        ActionKind.CONTEXT_MENU,
+        ActionKind.APP_SWITCHER,
+        ActionKind.SYSTEM_VOLUME_UP,
+        ActionKind.SYSTEM_VOLUME_DOWN,
+        ActionKind.SYSTEM_VOLUME_MUTE,
+        ActionKind.PLAY_PAUSE,
+        ActionKind.MOUSE_LEFT_CLICK,
+        ActionKind.MOUSE_RIGHT_CLICK,
+        ActionKind.MOUSE_MIDDLE_CLICK,
+        ActionKind.QUICKER_URI,
+        ActionKind.OPEN_APPLICATION,
+        ActionKind.OPEN_REMOTE_MIC,
+        ActionKind.OPEN_CODEX,
+        ActionKind.OPEN_CLAUDE,
+        ActionKind.OPEN_CMUX,
+        ActionKind.OPEN_WECHAT,
+        ActionKind.OPEN_CURSOR,
+        ActionKind.OPEN_SLACK,
+        ActionKind.OPEN_WECOM,
+        ActionKind.OPEN_NETEASE_MUSIC,
+        ActionKind.OPEN_CHROME,
+        ActionKind.OPEN_EDGE,
+        ActionKind.OPEN_ZED,
+        ActionKind.FOCUS_INPUT,
+    }
+)
+
 QUICKER_URI_PREFIX = "quicker:runaction:"
 MAX_QUICKER_URI_LENGTH = 2048
 
@@ -443,11 +520,31 @@ class ButtonAction:
     label: str = ""
     # 只有 OPEN_APPLICATION 会带：要启动的进程名或可执行文件路径。
     target: str = ""
+    # 只有 COMPOSITE 会带：按顺序执行的子动作。
+    steps: Tuple["ButtonAction", ...] = field(default_factory=tuple)
+    # 只有 FOCUS_INPUT 会带：聚焦方式与对应的学习数据。
+    focus_mode: str = FOCUS_MODE_AUTO
+    focus_signature: str = ""
+    focus_keys: Tuple[str, ...] = ()
+    focus_point: Tuple[float, float] = (0.5, 0.5)
+    # 只有 CLOSE_APPLICATION 会带：关闭指定程序或当前前台应用。
+    close_mode: str = CLOSE_MODE_SPECIFIED
 
     def to_dict(self) -> dict:
         if self.kind in (ActionKind.MOUSE_WHEEL_UP, ActionKind.MOUSE_WHEEL_DOWN):
             page_key = "pageup" if self.kind == ActionKind.MOUSE_WHEEL_UP else "pagedown"
             data = {"kind": ActionKind.KEY_COMBO.value, "keys": [page_key]}
+        elif self.kind == ActionKind.COMPOSITE:
+            if not self.steps or len(self.steps) > MAX_COMPOSITE_STEPS:
+                raise ValueError("composite action must contain 1-20 steps")
+            serialized = []
+            for step in self.steps:
+                if step.kind not in COMPOSITE_STEP_KINDS:
+                    raise ValueError(
+                        f"action {step.kind.value} cannot be used in a composite action"
+                    )
+                serialized.append(step.to_dict())
+            data = {"kind": self.kind.value, "steps": serialized}
         else:
             data = {"kind": self.kind.value, "keys": list(self.keys)}
             if self.kind == ActionKind.QUICKER_URI:
@@ -458,6 +555,31 @@ class ButtonAction:
                 data["label"] = validate_openmexia_label(self.label)
             elif self.kind == ActionKind.OPEN_APPLICATION:
                 data["target"] = normalize_application_target(self.target)
+            elif self.kind == ActionKind.CLOSE_APPLICATION:
+                mode = normalize_close_mode(self.close_mode)
+                data["close_mode"] = mode
+                if mode == CLOSE_MODE_SPECIFIED:
+                    data["target"] = normalize_application_target(self.target)
+            elif self.kind == ActionKind.FOCUS_INPUT:
+                mode = normalize_focus_mode(self.focus_mode)
+                data["focus_mode"] = mode
+                if mode == FOCUS_MODE_ELEMENT:
+                    signature = str(self.focus_signature or "").strip()
+                    if not signature:
+                        raise ValueError("learned focus element must carry a signature")
+                    data["focus_signature"] = signature[:MAX_FOCUS_SIGNATURE_LENGTH]
+                elif mode == FOCUS_MODE_SHORTCUT:
+                    if not self.focus_keys:
+                        raise ValueError("focus shortcut must contain at least one key")
+                    data["focus_keys"] = [
+                        str(key).strip().lower()
+                        for key in self.focus_keys
+                        if str(key).strip()
+                    ]
+                elif mode == FOCUS_MODE_POINT:
+                    x = min(max(float(self.focus_point[0]), 0.0), 1.0)
+                    y = min(max(float(self.focus_point[1]), 0.0), 1.0)
+                    data["focus_point"] = [x, y]
         # Only written when the button opted out of the default backend, so
         # every file written before per-button injection modes existed keeps
         # its exact previous bytes.
@@ -499,10 +621,91 @@ class ButtonAction:
         elif any(key in data for key in ("device", "op", "label")):
             raise ValueError("non-OpenMexia action must not contain a device")
         target = ""
+        close_mode = CLOSE_MODE_SPECIFIED
         if kind == ActionKind.OPEN_APPLICATION:
             target = normalize_application_target(data.get("target"))
-        elif "target" in data:
-            raise ValueError("non-application action must not contain a target")
+        elif kind == ActionKind.CLOSE_APPLICATION:
+            close_mode = normalize_close_mode(data.get("close_mode"))
+            if close_mode == CLOSE_MODE_SPECIFIED:
+                if not isinstance(data.get("target"), str):
+                    raise ValueError(
+                        "specified close application must carry a target"
+                    )
+                target = normalize_application_target(data.get("target"))
+            elif "target" in data:
+                raise ValueError(
+                    "current-application close must not contain a target"
+                )
+        else:
+            if "target" in data:
+                raise ValueError("non-application action must not contain a target")
+            if "close_mode" in data:
+                raise ValueError("non-close action must not contain a close mode")
+        focus_mode = FOCUS_MODE_AUTO
+        focus_signature = ""
+        focus_keys: Tuple[str, ...] = ()
+        focus_point: Tuple[float, float] = (0.5, 0.5)
+        if kind == ActionKind.FOCUS_INPUT:
+            focus_mode = normalize_focus_mode(data.get("focus_mode"))
+            if focus_mode == FOCUS_MODE_ELEMENT:
+                raw_signature = data.get("focus_signature")
+                if not isinstance(raw_signature, str) or not raw_signature.strip():
+                    raise ValueError("learned focus element must carry a signature")
+                focus_signature = raw_signature.strip()[:MAX_FOCUS_SIGNATURE_LENGTH]
+            elif "focus_signature" in data:
+                raise ValueError("only learned focus actions may carry a signature")
+            if focus_mode == FOCUS_MODE_SHORTCUT:
+                raw_focus_keys = data.get("focus_keys")
+                if (
+                    not isinstance(raw_focus_keys, (list, tuple))
+                    or not raw_focus_keys
+                    or not all(
+                        isinstance(key, str) and key.strip()
+                        for key in raw_focus_keys
+                    )
+                ):
+                    raise ValueError("focus shortcut must contain at least one key")
+                focus_keys = tuple(
+                    key.strip().lower() for key in raw_focus_keys if key.strip()
+                )
+            elif "focus_keys" in data:
+                raise ValueError("only shortcut focus actions may carry keys")
+            if focus_mode == FOCUS_MODE_POINT:
+                raw_point = data.get("focus_point")
+                if not isinstance(raw_point, (list, tuple)) or len(raw_point) != 2:
+                    raise ValueError("recorded focus point must contain two numbers")
+                try:
+                    focus_point = (
+                        min(max(float(raw_point[0]), 0.0), 1.0),
+                        min(max(float(raw_point[1]), 0.0), 1.0),
+                    )
+                except (TypeError, ValueError) as exc:
+                    raise ValueError("recorded focus point must contain two numbers") from exc
+            elif "focus_point" in data:
+                raise ValueError("only recorded focus actions may carry a point")
+        elif any(
+            key in data
+            for key in ("focus_mode", "focus_signature", "focus_keys", "focus_point")
+        ):
+            raise ValueError("non-focus action must not contain focus fields")
+        steps: Tuple[ButtonAction, ...] = ()
+        if kind == ActionKind.COMPOSITE:
+            raw_steps = data.get("steps")
+            if not isinstance(raw_steps, (list, tuple)) or not raw_steps:
+                raise ValueError("composite action must contain at least one step")
+            if len(raw_steps) > MAX_COMPOSITE_STEPS:
+                raise ValueError("composite action contains too many steps")
+            parsed_steps = []
+            for raw_step in raw_steps:
+                step = cls.from_dict(raw_step)
+                if step.kind not in COMPOSITE_STEP_KINDS:
+                    raise ValueError(
+                        f"action {step.kind.value} cannot be used in a composite action"
+                    )
+                parsed_steps.append(step)
+            steps = tuple(parsed_steps)
+        elif "steps" in data:
+            raise ValueError("non-composite action must not contain steps")
         if kind in (ActionKind.MOUSE_WHEEL_UP, ActionKind.MOUSE_WHEEL_DOWN):
             page_key = "pageup" if kind == ActionKind.MOUSE_WHEEL_UP else "pagedown"
             return cls(
@@ -517,6 +720,12 @@ class ButtonAction:
             op=op,
             label=label,
             target=target,
+            steps=steps,
+            focus_mode=focus_mode,
+            focus_signature=focus_signature,
+            focus_keys=focus_keys,
+            focus_point=focus_point,
+            close_mode=close_mode,
         )
 
 
